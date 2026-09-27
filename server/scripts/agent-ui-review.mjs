@@ -1,0 +1,63 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import assert from 'node:assert/strict';
+import {chromium} from 'playwright';
+import {AgentSessions} from '../src/services/agentSessions.ts';
+const config=JSON.parse(await fs.readFile(path.join(os.homedir(),'.codex-mobile-control/server.json'),'utf8'));
+const models=await new AgentSessions({},{}).models();
+const browser=await chromium.launch({channel:'chrome',headless:true});
+const results=[];
+try{
+  for(const width of [320,390,1440]){
+    const context=await browser.newContext({viewport:{width,height:844},isMobile:width<760,hasTouch:width<760});
+    const page=await context.newPage(),errors=[];page.on('pageerror',e=>errors.push(e.message));
+    for(const name of ['console.js','console.css','custom-controls.js'])await page.route('**/'+name,route=>route.fulfill({path:path.resolve('public',name),contentType:name.endsWith('.css')?'text/css':'text/javascript'}));
+    await page.route('**/api/models?agents=all',async route=>{const response=await route.fetch();const data=await response.json();await route.fulfill({json:{...data,models:[...data.models.filter(m=>!m.model.includes('::')),...models]}})});
+    await page.goto('http://127.0.0.1:38457/console');await page.locator('#welcomeConnect').click();await page.locator('#token').fill(config.token);await page.locator('#connectBtn').click();
+    await page.locator('#modelSettingsBtn').waitFor();
+    await page.waitForFunction(()=>document.querySelector('#chatModel option[value]:not([value=""])'));
+    const switchTo=async label=>{
+      if(!await page.locator('#sidebar').isVisible())await (await page.locator('#openDrawer').isVisible()?page.locator('#openDrawer'):page.locator('#mobileDrawer')).click();
+      await page.locator('#harnessBtn').click();
+      await page.evaluate(()=>Promise.all(document.getAnimations().filter(a=>a.effect?.getTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{}))));
+      assert.equal(await page.locator('.harness-dialog .harness-mark').count(),4);
+      assert(await page.locator('.harness-dialog .harness-mark').evaluateAll(nodes=>nodes.every(n=>getComputedStyle(n).color===getComputedStyle(document.querySelector('.harness-name')).color)));
+      assert(await page.locator('.harness-dialog .harness-mark').evaluateAll(nodes=>nodes.every(n=>!n.textContent&&getComputedStyle(n,'::before').maskImage.includes('data:image/svg+xml'))));
+      if(label==='Claude Code')await page.screenshot({path:path.resolve(`../artifacts/harness-icons-${width}.png`)});
+      await page.locator('.harness-option').filter({has:page.locator('.harness-name',{hasText:new RegExp('^'+label+'$')})}).click();
+    };
+    await page.locator('#prompt').fill('Codex 独立草稿');
+    await switchTo('Claude Code');
+    assert.equal(await page.locator('#prompt').inputValue(),'');
+    assert.equal(await page.locator('#chatModel').inputValue(),'claude::default');
+    assert.equal(await page.locator('.model-setting-name').innerText(),'默认模型');
+    assert.equal(await page.locator('.model-setting-effort').isVisible(),false);
+    await page.locator('#modelSettingsBtn').click();assert.equal(await page.getByRole('button',{name:'自定义 (config.toml)',exact:true}).count(),0);await page.locator('.model-settings-close').click();
+    assert.equal(await page.locator('#prompt').getAttribute('placeholder'),'向 Claude Code 描述任务');
+    await page.locator('#prompt').fill('Claude 独立草稿');
+    await switchTo('Codex');assert.equal(await page.locator('#prompt').inputValue(),'Codex 独立草稿');
+    await switchTo('Grok Build');assert.equal(await page.locator('#prompt').inputValue(),'');
+    assert((await page.locator('#chatModel').inputValue()).startsWith('grok::'));
+    await switchTo('Antigravity');assert.equal(await page.locator('.welcome-mark .harness-mark').evaluate(n=>getComputedStyle(n).color),'rgb(165, 165, 165)');assert.equal(await page.locator('.welcome-mark .harness-mark').getAttribute('data-harness'),'antigravity');assert((await page.locator('#chatModel').inputValue()).startsWith('antigravity::'));
+    await page.locator('#modelSettingsBtn').click();await page.locator('#chooseChatModel').click();
+    await page.locator('.choice-option[data-value="antigravity::gemini-3.8-flash-high"]').click();
+    assert.equal(await page.locator('.reasoning-panel').isVisible(),false);await page.keyboard.press('Escape');
+    assert.equal(await page.locator('.model-setting-effort').isVisible(),false);
+    assert((await page.locator('.model-setting-name').innerText()).includes('(High)'));
+    await switchTo('Claude Code');assert.equal(await page.locator('#prompt').inputValue(),'Claude 独立草稿');
+    await page.reload();await page.waitForFunction(()=>document.getElementById('chatModel')?.value==='claude::default');
+    assert.equal(await page.locator('#prompt').inputValue(),'Claude 独立草稿');
+    assert((await page.locator('#chatModel option').evaluateAll(nodes=>nodes.map(n=>n.value))).every(v=>v.startsWith('claude::')));
+    await page.locator('#modelSettingsBtn').click();await page.locator('#chooseChatModel').click();
+    assert.equal(await page.locator('.agent-tabs').count(),0);
+    assert.equal(await page.locator('.model-settings-dialog').evaluate(n=>n.scrollWidth>n.clientWidth+1),false);
+    await page.screenshot({path:path.resolve(`../artifacts/agents-${width}.png`)});
+    await page.keyboard.press('Escape');
+    await page.locator('#prompt').fill('继续优化这个页面');
+    const rect=await page.locator('#composer').boundingBox();assert(rect.x>=0&&rect.x+rect.width<=width+1);
+    await page.screenshot({path:path.resolve(`../artifacts/composer-${width}.png`)});
+    assert.deepEqual(errors,[]);results.push({width,modelMemory:true,isolatedWorkspaces:4,independentDrafts:true,overflow:false,pageErrors:errors});await context.close();
+  }
+  await fs.writeFile('../artifacts/agent-ui-results.json',JSON.stringify(results,null,2));console.log(results);
+}finally{await browser.close();}

@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+.backup/
+artifacts/
+.codex-remote-attachments/
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.jks
+*.keystore
