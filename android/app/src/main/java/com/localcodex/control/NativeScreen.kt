@@ -50,6 +50,7 @@ import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.text.selection.LocalTextSelectionColors
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -1308,7 +1309,7 @@ private fun nativeCommandIcon(name:String)=when(name){
         }}
         s.markdown?.let{NativeDocumentPreview(vm,it,vm::closeMarkdown)}
         s.pdf?.let{pdf->key(pdf){NativePdfPreview(pdf,vm::closePdf)}}
-        s.openedImage?.let{image->key(image.endpoint){NativeImagePreview(image.bitmap,vm,image.endpoint,vm::closeImage)}}
+        s.openedImage?.let{image->key(image.endpoint){NativeImagePreview(image.bitmap,vm,image.endpoint,vm::closeImage,image.endpoints,image.endpoints.indexOf(image.endpoint).coerceAtLeast(0),image.thumbnails)}}
         LaunchedEffect(s.fileFeedbackVisible,s.fileBusy,s.fileError,s.markdown){
             if(s.fileFeedbackVisible&&!s.fileBusy&&s.markdown==null){delay(5000);vm.hideFileFeedback()}
         }
@@ -2260,11 +2261,9 @@ private data class NativeMessageViewState(
     val preferredTile=if(endpoints.size==1&&!draft)156.dp else 110.dp
     // Uploads arrive one at a time. Keep loaded thumbnails when the list grows;
     // an existing image loader does not run again merely because a sibling was added.
-    var previewEndpoint by remember(vm,vm.imageRevision){mutableStateOf<String?>(null)}
     val previewImages=remember(vm,vm.imageRevision){mutableStateMapOf<String,Pair<android.graphics.Bitmap,String>>()}
     LaunchedEffect(endpoints){
         previewImages.keys.filter{it !in endpoints}.forEach{previewImages.remove(it)}
-        if(previewEndpoint !in endpoints)previewEndpoint=null
     }
     BoxWithConstraints(Modifier.testTag(if(draft)"draftImageGallery" else "sentImageGallery")
         .widthIn(max=if(draft)Dp.Unspecified else preferredTile*columns+gap*(columns-1)).fillMaxWidth().padding(bottom=7.dp)){
@@ -2272,7 +2271,7 @@ private data class NativeMessageViewState(
         val tile:@Composable (String)->Unit={endpoint->key(endpoint){
             Box(Modifier.size(tileSize).testTag("imageTile:$endpoint")){
                 NativeImageView(vm,endpoint,Modifier.fillMaxSize(),thumbnail=true,shape=Radius.Card,
-                    onOpen={image->previewImages[endpoint]=image to "";previewEndpoint=endpoint},
+                    onOpen={image->previewImages[endpoint]=image to "";vm.showImage(endpoint,image,endpoints,previewImages)},
                     onLoaded={image,mime->previewImages[endpoint]=image to mime})
                 if(remove!=null)IconButton(onClick={remove(endpoint)},modifier=Modifier.align(Alignment.TopEnd).size(48.dp)){
                     Box(Modifier.size(24.dp).clip(CircleShape).background(Color.Black.copy(alpha=.55f)),contentAlignment=Alignment.Center){
@@ -2287,10 +2286,6 @@ private data class NativeMessageViewState(
             endpoints.chunked(columns).forEach{row->Row(horizontalArrangement=Arrangement.spacedBy(gap)){row.forEach{tile(it)}}}
         }
     }
-    previewEndpoint?.let{endpoint->previewImages[endpoint]?.let{(image,_)->
-        val index=endpoints.indexOf(endpoint)
-        if(index>=0)NativeImagePreview(image,vm,endpoint,{previewEndpoint=null},endpoints,index,previewImages)
-    }}
 }
 @Composable private fun NativeMemoryReferenceAction(references:List<NativeMemoryReference>,modifier:Modifier=Modifier){
     var open by remember{mutableStateOf(false)}
@@ -2611,6 +2606,7 @@ private fun LazyListScope.nativePatchRows(rows:List<PatchLine>,start:Int,end:Int
     }
 }
 @Composable private fun NativeWideMarkdown(text:String,table:Boolean,open:(String)->Unit,cacheOwner:String?=null){
+    val selectionColors=LocalTextSelectionColors.current
     val context=LocalContext.current
     val ink=Ink.toArgb();val wash=Wash.toArgb();val surface=MaterialTheme.colors.surface.toArgb()
     val markwon=LocalChatMarkwon.current?:remember(ink,wash,surface,open){nativeMarkwon(context,open,ink,wash,surface)}
@@ -2653,7 +2649,7 @@ private fun LazyListScope.nativePatchRows(rows:List<PatchLine>,start:Int,end:Int
     AndroidView(factory={android.widget.HorizontalScrollView(it).apply{
         isFillViewport=true;isHorizontalScrollBarEnabled=true
         addView(NativeSelectableTextView(it).apply{setTextColor(android.graphics.Color.rgb(32,33,36));textSize=16f;setTextIsSelectable(true);setPadding(0,12,0,16)},android.widget.FrameLayout.LayoutParams(-2,-2))
-    }},modifier=Modifier.fillMaxWidth(),onReset={scroll->val view=scroll.getChildAt(0) as TextView;view.text="";view.tag=null;scroll.scrollTo(0,0)},onRelease={scroll->(scroll.getChildAt(0) as TextView).text=""},update={scroll->val view=scroll.getChildAt(0) as TextView;view.minWidth=if(table)(520*context.resources.displayMetrics.density).toInt() else 0;view.setTextColor(ink);if(view.tag!=Pair(prepared.source,ink)){markwon.setParsedMarkdown(view,prepared.rendered);view.tag=Pair(prepared.source,ink)};view.movementMethod=android.text.method.ArrowKeyMovementMethod.getInstance()})
+    }},modifier=Modifier.fillMaxWidth(),onReset={scroll->val view=scroll.getChildAt(0) as TextView;view.text="";view.tag=null;scroll.scrollTo(0,0)},onRelease={scroll->(scroll.getChildAt(0) as TextView).text=""},update={scroll->val view=scroll.getChildAt(0) as NativeSelectableTextView;view.applySelectionColors(selectionColors);view.minWidth=if(table)(520*context.resources.displayMetrics.density).toInt() else 0;view.setTextColor(ink);if(view.tag!=Pair(prepared.source,ink)){markwon.setParsedMarkdown(view,prepared.rendered);view.tag=Pair(prepared.source,ink)};view.movementMethod=android.text.method.ArrowKeyMovementMethod.getInstance()})
 }
 private class NativeMarkdownLinkHandler(val open:(String)->Unit)
 private fun nativeMarkwon(context:android.content.Context,open:((String)->Unit)?,ink:Int,wash:Int,surface:Int):Markwon=Markwon.builder(context)
@@ -2670,13 +2666,14 @@ private fun nativeMarkwon(context:android.content.Context,open:((String)->Unit)?
     .usePlugin(MarkwonInlineParserPlugin.create())
     .usePlugin(JLatexMathPlugin.create(16f*context.resources.displayMetrics.scaledDensity){it.inlinesEnabled(true);it.executorService(nativeMathExecutor);it.theme().textColor(ink)}).build()
 @Composable private fun NativeMarkdown(text:String,open:((String)->Unit)?=null,cacheOwner:String?=null){
+    val selectionColors=LocalTextSelectionColors.current
     val context=LocalContext.current
     val ink=Ink.toArgb();val wash=Wash.toArgb();val surface=MaterialTheme.colors.surface.toArgb()
     val markwon=LocalChatMarkwon.current?:remember(ink,wash,surface,open){nativeMarkwon(context,open,ink,wash,surface)}
     val markdownCache=LocalChatMarkdownCache.current?:remember(markwon){NativeMarkdownRenderCache(markwon,background={nativeMarkwon(context,open,ink,wash,surface)})}
     val prepared by rememberNativeRenderedMarkdown(markdownCache,text,cacheOwner)
     val selectAcross by rememberUpdatedState(LocalNativeTextSelection.current)
-    AndroidView(factory={NativeSelectableTextView(it).apply{setTextColor(android.graphics.Color.rgb(36,36,36));textSize=16f;setLineSpacing(2f,1.12f);setTextIsSelectable(true)}},modifier=Modifier.fillMaxWidth(),onReset={it.text="";it.tag=null},onRelease={it.text=""},update={it.setTextColor(ink);if(it.tag!=Pair(prepared.source,ink)){
+    AndroidView(factory={NativeSelectableTextView(it).apply{setTextColor(android.graphics.Color.rgb(36,36,36));textSize=16f;setLineSpacing(2f,1.12f);setTextIsSelectable(true)}},modifier=Modifier.fillMaxWidth(),onReset={it.text="";it.tag=null},onRelease={it.text=""},update={it.applySelectionColors(selectionColors);it.setTextColor(ink);if(it.tag!=Pair(prepared.source,ink)){
         // Hidden trailing HTML can leave paragraph breaks in Markwon's output.
         // Trim the rendered tail, preserving spans and all spacing inside the answer.
         val rendered=prepared.rendered
@@ -2704,6 +2701,7 @@ private fun nativeMarkwon(context:android.content.Context,open:((String)->Unit)?
     };it.movementMethod=android.text.method.ArrowKeyMovementMethod.getInstance()})
 }
 @Composable private fun NativeMarkdownReader(vm:NativeViewModel,document:NativeReadableFile,modifier:Modifier=Modifier,listState:LazyListState=rememberLazyListState()){
+    val selectionColors=LocalTextSelectionColors.current
     val context=LocalContext.current
     val ink=Ink.toArgb();val wash=Wash.toArgb();val surface=MaterialTheme.colors.surface.toArgb()
     val open:(String)->Unit=remember(vm,document){ {href->
@@ -2721,6 +2719,7 @@ private fun nativeMarkwon(context:android.content.Context,open:((String)->Unit)?
                 }
                 part.rendered!=null->AndroidView(factory={NativeSelectableTextView(it).apply{textSize=16f;setLineSpacing(2f,1.12f)}},modifier=Modifier.fillMaxWidth(),
                     onReset={it.text="";it.tag=null},onRelease={it.text=""},update={view->
+                        view.applySelectionColors(selectionColors)
                         view.setTextColor(ink)
                         if(view.tag!==part){
                             val end=part.rendered.indexOfLast{!it.isWhitespace()}+1
@@ -2780,7 +2779,6 @@ private fun nativeMarkwon(context:android.content.Context,open:((String)->Unit)?
     var failure by remember(endpoint,vm.imageRevision){mutableStateOf(false)}
     var failureReason by remember(endpoint,vm.imageRevision){mutableStateOf("")}
     var attempt by remember(endpoint,vm.imageRevision){mutableIntStateOf(0)}
-    var preview by remember(endpoint,vm.imageRevision){mutableStateOf(false)}
     val loadedAction by rememberUpdatedState(onLoaded)
     val openAction by rememberUpdatedState(onOpen)
     LaunchedEffect(endpoint,cached,vm.imageRevision){cached?.let{loadedAction?.invoke(it.first,it.second)}}
@@ -2811,7 +2809,7 @@ private fun nativeMarkwon(context:android.content.Context,open:((String)->Unit)?
     }
     val imageFrame:@Composable (Modifier)->Unit={frame->
         Box(frame.clip(shape).background(Wash).clickable(enabled=bitmap!=null||failure){
-            if(failure){failure=false;attempt++}else bitmap?.let{image->if(openAction!=null)openAction?.invoke(image) else preview=true}
+            if(failure){failure=false;attempt++}else bitmap?.let{image->if(openAction!=null)openAction?.invoke(image) else vm.showImage(endpoint,image)}
         },contentAlignment=Alignment.Center){bitmap?.let{Image(it.asImageBitmap(),"图片",modifier=Modifier.fillMaxSize(),contentScale=if(thumbnail)ContentScale.Crop else ContentScale.Fit)}?:if(failure)Text("${failureReason.ifBlank{"加载失败"}}，点击重试",fontSize=12.sp,color=Muted,textAlign=TextAlign.Center,modifier=Modifier.padding(12.dp)) else CircularProgressIndicator(Modifier.size(18.dp),strokeWidth=2.dp,color=Muted)}
     }
     if(adaptive){
@@ -2827,7 +2825,6 @@ private fun nativeMarkwon(context:android.content.Context,open:((String)->Unit)?
             }else imageFrame(Modifier.fillMaxWidth().height(minOf(96.dp,heightLimit)))
         }
     }else imageFrame(modifier)
-    if(preview)bitmap?.let{NativeImagePreview(it,vm,endpoint,{preview=false})}
 }
 @Composable internal fun NativeImagePreview(initialBitmap:android.graphics.Bitmap,vm:NativeViewModel,endpoint:String,close:()->Unit,endpoints:List<String> = listOf(endpoint),startIndex:Int=0,thumbnails:Map<String,Pair<android.graphics.Bitmap,String>> = emptyMap()){
     val context=LocalContext.current;val scope=rememberCoroutineScope()
@@ -2864,7 +2861,7 @@ private fun nativeMarkwon(context:android.content.Context,open:((String)->Unit)?
     // Compose 1.7's custom-width Dialog measures against screenHeightDp, which
     // excludes the bars. Use native window constraints and size that window in
     // NativeDialogSystemBars instead of accepting that shorter measurement.
-    Dialog(onDismissRequest=close,properties=DialogProperties(usePlatformDefaultWidth=true,decorFitsSystemWindows=false)){
+    Dialog(onDismissRequest=close,properties=DialogProperties(dismissOnClickOutside=false,usePlatformDefaultWidth=true,decorFitsSystemWindows=false)){
         NativeDialogSystemBars(Color.Black,lightIcons=true,immersive=true)
         BoxWithConstraints(Modifier.fillMaxSize()){
                 val density=LocalDensity.current
@@ -2885,9 +2882,9 @@ private fun nativeMarkwon(context:android.content.Context,open:((String)->Unit)?
                         scale=value;pan=clampPan(initialPan,value)
                     };if(target==1f)pan=Offset.Zero}
                 }
-                val showToolbar by remember{derivedStateOf{dismissY<20f}}
+                val showToolbar by remember{derivedStateOf{abs(dismissY)<20f}}
                 Box(Modifier.fillMaxSize().clipToBounds().testTag("imagePreviewGestureSurface").drawBehind{
-                    val fade=(1f-dismissY/(size.height*.7f)).coerceIn(.25f,1f)
+                    val fade=(1f-abs(dismissY)/(size.height*.7f)).coerceIn(.25f,1f)
                     drawRect(AppColor.PreviewBackdrop.copy(alpha=fade))
                 }
                     .pointerInput(width,height){detectTapGestures(onTap={toolbarVisible=!toolbarVisible},onDoubleTap={animateZoom(if(scale>1.01f)1f else 2.5f)})}
@@ -2899,6 +2896,7 @@ private fun nativeMarkwon(context:android.content.Context,open:((String)->Unit)?
                             var total=Offset.Zero
                             var dismissing=false
                             var swiping=false
+                            var transformed=false
                             while(true){
                                 val event=awaitPointerEvent()
                                 val active=event.changes.count{it.pressed}
@@ -2906,7 +2904,8 @@ private fun nativeMarkwon(context:android.content.Context,open:((String)->Unit)?
                                 if(active==0)break
                                 val zoomChange=event.calculateZoom()
                                 val movement=event.calculatePan()
-                                if(active>1||scale>1.01f||zoomChange!=1f){
+                                if(active>1)transformed=true
+                                if(transformed||scale>1.01f||zoomChange!=1f){
                                     motion?.cancel()
                                     dismissing=false;swiping=false;total=Offset.Zero;velocity=VelocityTracker();swipeX=0f;swipeDirection=0
                                     val next=(scale*zoomChange).coerceIn(1f,5f)
@@ -2918,11 +2917,11 @@ private fun nativeMarkwon(context:android.content.Context,open:((String)->Unit)?
                                     event.changes.forEach{it.consume()}
                                 }else{
                                     total+=movement
-                                    if(!dismissing&&total.y>viewConfiguration.touchSlop&&total.y>abs(total.x)*1.25f)dismissing=true
+                                    if(!dismissing&&!swiping&&abs(total.y)>viewConfiguration.touchSlop&&abs(total.y)>abs(total.x)*1.25f)dismissing=true
                                     if(!dismissing&&!swiping&&endpoints.size>1&&abs(total.x)>viewConfiguration.touchSlop&&abs(total.x)>abs(total.y)*1.25f)swiping=true
                                     if(dismissing){
                                         motion?.cancel()
-                                        dismissY=(dismissY+movement.y).coerceAtLeast(0f)
+                                        dismissY=(dismissY+movement.y).coerceIn(-height,height)
                                         event.changes.forEach{it.consume()}
                                     }else if(swiping){
                                         motion?.cancel()
@@ -2957,12 +2956,14 @@ private fun nativeMarkwon(context:android.content.Context,open:((String)->Unit)?
                                 motion=scope.launch{animate(start,0f,animationSpec=tween(220,easing=ControlEase)){value,_->swipeX=value};swipeDirection=0}
                                 return@awaitEachGesture
                             }
-                            val quickDismiss=dismissing&&dismissY>with(density){24.dp.toPx()}&&velocity.calculateVelocity().y>with(density){800.dp.toPx()}
-                            if(dismissY>min(height*.18f,with(density){112.dp.toPx()})||quickDismiss){
+                            val velocityY=velocity.calculateVelocity().y
+                            val quickDismiss=dismissing&&abs(dismissY)>with(density){24.dp.toPx()}&&velocityY*dismissY>0f&&abs(velocityY)>with(density){800.dp.toPx()}
+                            if(dismissing&&(abs(dismissY)>min(height*.18f,with(density){112.dp.toPx()})||quickDismiss)){
                                 val start=dismissY
-                                motion=scope.launch{animate(start,height,animationSpec=tween(160,easing=ControlEase)){value,_->dismissY=value};close()}
+                                val target=if(start<0f)-height else height
+                                motion=scope.launch{animate(start,target,animationSpec=tween(160,easing=ControlEase)){value,_->dismissY=value};close()}
                             }
-                            else if(dismissY>0f){
+                            else if(dismissY!=0f){
                                 val start=dismissY
                                 motion=scope.launch{animate(start,0f,animationSpec=spring(stiffness=Spring.StiffnessMedium,dampingRatio=Spring.DampingRatioNoBouncy)){value,_->dismissY=value}}
                             }

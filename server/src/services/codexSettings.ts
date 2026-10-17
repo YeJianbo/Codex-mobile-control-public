@@ -79,6 +79,12 @@ export async function writeUserSettingsRaw(content: string): Promise<{ path: str
 export async function writeUserSettings(settings: ControlSettings): Promise<ControlSettings> {
   const filePath = userCodexConfigPath();
   const config = await readToml(filePath);
+  if(settings.model?.includes('::')){
+    const provider=asRecord(asRecord(config.model_providers)[readString(config.model_provider)||'openai']);
+    let relay=false;
+    try{const url=new URL(readString(provider.base_url)||'');relay=['127.0.0.1','localhost','[::1]'].includes(url.hostname)&&['/v1','/relay/v1'].includes(url.pathname.replace(/\/$/,''));}catch{}
+    if(!relay)throw new Error('中转模型请在新会话中选择；桌面默认模型仍使用当前官方配置');
+  }
   assignString(config, "model", settings.model);
   assignString(config, "model_provider", settings.modelProvider);
   assignString(config, "approval_policy", settings.approvalPolicy);

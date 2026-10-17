@@ -4,13 +4,13 @@
 
 ## 下载与安装
 
-当前配套发行版为 **0.6.444**，见 [GitHub Releases](https://github.com/YeJianbo/Codex-mobile-control/releases/tag/v0.6.444)。
+当前配套发行版为 **0.6.445**，见 [GitHub Releases](https://github.com/YeJianbo/Codex-mobile-control/releases/tag/v0.6.445)。本版调整设置页分组与边缘渐隐、统一蓝色文字选区，并修复图片预览手势及稳定性、图表提示材质和电脑端管理连接。
 
 | 文件 | 适用情况 |
 | --- | --- |
-| `Codex-Control-0.6.444.apk` | 手机安装或覆盖升级；已有电脑后台继续使用 |
-| `Codex-Control-0.6.444-Setup-x64.exe` | 新电脑安装，内含 Web 控制台、Gateway、Node 及生产依赖 |
-| `Codex-Control-0.6.444-Windows-x64-Release.zip` | Windows 安装程序、同版 APK、使用说明与组件清单 |
+| `Codex-Control-0.6.445.apk` | 手机安装或覆盖升级；已有电脑后台继续使用 |
+| `Codex-Control-0.6.445-Setup-x64.exe` | 新电脑安装，内含 Web 控制台、Gateway、Node 及生产依赖 |
+| `Codex-Control-0.6.445-Windows-x64-Release.zip` | Windows 安装程序、配套 APK、使用说明与组件清单 |
 
 首次使用按 [安装与绑定说明](docs/installation.md) 完成电脑安装和手机扫码；日常操作见 [手机使用说明](docs/mobile-usage.md)。仓库为私有时，下载需要登录有访问权限的 GitHub 账号。
 
@@ -29,7 +29,7 @@
 | 网关内管理页 | `https://电脑地址:38457/manage/` | 沿用设备授权进入管理后台 |
 | Android | 扫描后台绑定二维码 | 手机操作，连接同一网关 |
 
-端口以实际安装配置为准；当前手机管理接口使用本机 `25819` 服务，配套部署应保留此默认管理端口。25819 仅监听回环地址，远程管理经网关认证转发。
+端口以实际安装配置为准。管理服务只监听回环地址，远程管理经网关认证转发；安装器的`-ConsolePort`会同时用于管理服务和网关，源码启动则给两者设置相同的`LOCAL_CONSOLE_PORT`，默认25819。
 
 ## 目标
 

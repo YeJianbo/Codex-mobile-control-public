@@ -21,18 +21,18 @@ import androidx.compose.ui.unit.sp
     onImport:()->Unit,onExport:()->Unit,onRemove:()->Unit,onBack:()->Unit,
 ){
     NativeManagementPage("外观","",onBack){
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp),verticalArrangement=Arrangement.spacedBy(16.dp)){
-            Text("显示模式",fontSize=16.sp,fontWeight=FontWeight.SemiBold)
-            NativeThemeSurface(shape=Radius.Section){Column(Modifier.selectableGroup()){
-                listOf("system" to "跟随系统","light" to "浅色","dark" to "深色").forEach{(value,label)->
-                    AppearanceChoice(label,appearance==value,!state.busy){onAppearance(value)}
+        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(start=16.dp,end=16.dp,top=22.dp,bottom=34.dp),verticalArrangement=Arrangement.spacedBy(16.dp)){
+            SettingsSectionLabel("显示模式")
+            NativeSettingsGroup(Modifier.selectableGroup()){
+                listOf("system" to "跟随系统","light" to "浅色","dark" to "深色").forEachIndexed{index,(value,label)->
+                    AppearanceChoice(label,appearance==value,!state.busy,index>0){onAppearance(value)}
                 }
-            }}
-            Text("主题",fontSize=16.sp,fontWeight=FontWeight.SemiBold)
+            }
+            SettingsSectionLabel("主题")
             Box(Modifier.testTag("glassMaterialPreview")){NativeGlassPreview(LocalNativeGlassMode.current)}
-            NativeThemeSurface(shape=Radius.Section){Column(Modifier.selectableGroup()){
-                state.themes.forEach{theme->AppearanceChoice(theme.name,state.selectedId==theme.id,!state.busy){onTheme(theme.id)}}
-            }}
+            NativeSettingsGroup(Modifier.selectableGroup()){
+                state.themes.forEachIndexed{index,theme->AppearanceChoice(theme.name,state.selectedId==theme.id,!state.busy,index>0){onTheme(theme.id)}}
+            }
             Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
                 DashboardAction("导入主题",onImport,Modifier.weight(1f).testTag("importTheme"),enabled=!state.busy,icon=R.drawable.ic_lucide_folder_open)
                 DashboardAction("导出当前主题",onExport,Modifier.weight(1f).testTag("exportTheme"),enabled=!state.busy,icon=R.drawable.ic_lucide_share_2)
@@ -45,11 +45,11 @@ import androidx.compose.ui.unit.sp
         }
     }
 }
-@Composable private fun AppearanceChoice(label:String,checked:Boolean,enabled:Boolean,onSelect:()->Unit){
-    Row(Modifier.fillMaxWidth().heightIn(min=52.dp).padding(horizontal=8.dp).semantics{selected=checked;role=Role.RadioButton}){
-        TextButton(onClick=onSelect,enabled=enabled,modifier=Modifier.fillMaxWidth()){
-            Text(label,Modifier.weight(1f),color=if(checked)MaterialTheme.colors.primary else MaterialTheme.colors.onSurface,fontSize=15.sp)
-            if(checked)Icon(androidx.compose.ui.res.painterResource(R.drawable.ic_lucide_check),"已选择",Modifier.size(18.dp))
-        }
+@Composable private fun AppearanceChoice(label:String,checked:Boolean,enabled:Boolean,divider:Boolean=false,onSelect:()->Unit){
+    if(divider)Divider(Modifier.padding(horizontal=16.dp),color=MaterialTheme.colors.onSurface.copy(alpha=.07f),thickness=.5.dp)
+    Row(Modifier.fillMaxWidth().nativeSettingsRowClick(enabled,Role.RadioButton,onSelect).heightIn(min=56.dp).padding(horizontal=18.dp,vertical=14.dp)
+        .semantics{selected=checked;role=Role.RadioButton},verticalAlignment=androidx.compose.ui.Alignment.CenterVertically){
+        Text(label,Modifier.weight(1f),color=MaterialTheme.colors.onSurface.copy(alpha=if(enabled)1f else .4f),fontSize=16.sp)
+        if(checked)Icon(androidx.compose.ui.res.painterResource(R.drawable.ic_lucide_check),"已选择",Modifier.size(19.dp),tint=MaterialTheme.colors.primary)
     }
 }

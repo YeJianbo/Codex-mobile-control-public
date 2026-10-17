@@ -1,6 +1,7 @@
 import type {CodexConnectionState} from '../codex/appServerClient.js';
 import {assertControllableThread} from './cloudSnapshots.js';
 import {threadAgent} from './agentProtocol.js';
+import {consoleResumeOverrides} from './modelCatalog.js';
 
 type Client={
   request(method:string,params:unknown):Promise<unknown>;
@@ -79,7 +80,9 @@ export class LoadedThreadSubscriptions{
             const status=record(result?.thread)?.status;
             const type=typeof status==='string'?status:record(status)?.type;
             if(!['active','idle','systemError'].includes(String(type))||!await this.eligible(id)||!this.current(epoch,generation))continue;
-            await this.codex.request('thread/resume',{threadId:id,excludeTurns:true});
+            const route=await consoleResumeOverrides(this.codex,id);
+            if(!this.current(epoch,generation))return;
+            await this.codex.request('thread/resume',{threadId:id,excludeTurns:true,...route});
             if(this.current(epoch,generation))this.subscribed.add(id);
           }catch(error){if(this.current(epoch,generation))this.options.onError?.(error,id);}
         }

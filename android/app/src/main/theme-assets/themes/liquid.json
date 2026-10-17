@@ -38,8 +38,10 @@
     "menuItem": 16
   },
   "material": {
-    "overlayLight": 0.62,
-    "overlayDark": 0.56,
+    "overlayLight": 0.56,
+    "overlayDark": 0.50,
+    "insetLight": 0.24,
+    "insetDark": 0.18,
     "blurDp": 6,
     "overlayBlurDp": 20,
     "edgeDp": 0.75,

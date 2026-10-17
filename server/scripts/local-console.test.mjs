@@ -8,6 +8,17 @@ const token='a'.repeat(64);
 const state={version:'0.12.0',config:{model:'example',provider:'openai',nativeCatalog:true},catalogRefresh:{automatic:true,intervalHours:6,added:['new-model']},models:[{id:'example',name:'Example',context:128000,official:true,enabled:true}],metrics:{requests:4,errors:1,activeRequests:0},accounts:{access_token:'private-account'},providers:[{key:'private-provider'}],home:'private-home',events:[{message:'private-event'}]};
 const json=data=>new Response(JSON.stringify(data),{headers:{'content-type':'application/json'}});
 
+test('console bridge uses the configured loopback management port for token and API reads',async()=>{
+ const calls=[];
+ const client=new LocalConsoleClient(async url=>{
+  calls.push(url);
+  return url.endsWith('/')?new Response(`<meta name="local-token" content="${token}">`):json(state);
+ },28419);
+ assert.equal((await client.state()).available,true);
+ assert.deepEqual(calls,['http://127.0.0.1:28419/','http://127.0.0.1:28419/api/state']);
+ for(const port of [0,1023,65536,NaN])assert.throws(()=>new LocalConsoleClient(fetch,port),/管理端口无效/);
+});
+
 test('console bridge keeps credentials and administrative state on the computer',async()=>{
  const calls=[];
  const client=new LocalConsoleClient(async(url,init)=>{

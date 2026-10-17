@@ -25,7 +25,8 @@ data class NativeQueued(val id:String,val text:String,val status:String,val erro
 data class NativePdf(val path:String,val name:String,val revision:Long=0)
 data class NativeReadableFile(val name:String,val sourcePath:String,val content:String,val eventId:String="",val threadId:String="",val mime:String="text/markdown",val encoding:NativeTextEncoding=NativeTextEncoding.UTF8,val hasBom:Boolean=false)
 data class NativeProjectThreads(val rows:List<ThreadRecord> = emptyList(),val limit:Int=10,val hasMore:Boolean=false,val loading:Boolean=false,val loaded:Boolean=false,val loadedAtMs:Long=0L)
-data class NativeOpenedImage(val endpoint:String,val bitmap:android.graphics.Bitmap)
+data class NativeOpenedImage(val endpoint:String,val bitmap:android.graphics.Bitmap,
+    val endpoints:List<String> = listOf(endpoint),val thumbnails:Map<String,Pair<android.graphics.Bitmap,String>> = emptyMap())
 data class NativeState(
     val capabilities:List<String> = emptyList(),
     val submissionNotice:String="",
@@ -1057,7 +1058,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         cancelActivityLoads();localRouteProbe?.cancel();foregroundSocketCheck?.cancel();preferLocalReconnect=false
         if(code.isNotBlank())state=state.copy(threads=emptyList(),projects=emptyList(),sidebarProjects=emptyList())
         else if(url!=state.address||certificateSha256!=state.certificateSha256||state.threads.isEmpty())restoreSidebar(url,fingerprint=certificateSha256)
-        clearFileContext()
+        clearFileContext(preserveImage=code.isBlank()&&(!computerChanged||certificateSha256.isNotBlank()&&certificateSha256.equals(state.certificateSha256,ignoreCase=true)))
         if(computerChanged||code.isNotBlank()){
             outputEventIds.clear()
             conversations.clear()
@@ -2487,6 +2488,10 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         withContext(Dispatchers.Main){if(current())state=state.copy(openedImage=NativeOpenedImage(endpoint,image.first))}
     }
     fun closeImage(){state=state.copy(openedImage=null)}
+    fun showImage(endpoint:String,bitmap:android.graphics.Bitmap,endpoints:List<String> = listOf(endpoint),thumbnails:Map<String,Pair<android.graphics.Bitmap,String>> = emptyMap()){
+        if(endpoint !in endpoints)return
+        state=state.copy(openedImage=NativeOpenedImage(endpoint,bitmap,endpoints.toList(),thumbnails.toMap()))
+    }
     private val questionDrafts=mutableStateMapOf<String,Map<String,String>>()
     internal fun questionDraftKey(threadId:String,id:String)=org.json.JSONArray(listOf(state.address.trimEnd('/'),state.certificateSha256.lowercase(),threadId,id)).toString()
     internal fun questionDraft(key:String):Map<String,String> = questionDrafts[key].orEmpty()
@@ -2658,11 +2663,11 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
     private var fileJob:Job?=null
     private var fileRetry:(()->Unit)?=null
     private var fileTicket=0
-    private fun clearFileContext(){
+    private fun clearFileContext(preserveImage:Boolean=false){
         cancelUpload()
         state.pdf?.let{localStorage.release(it.path);viewModelScope.launch(Dispatchers.IO){runCatching{localStorage.trim()}}}
         projectTicket++;fileTicket++;diffTicket++;fileJob?.cancel();fileJob=null;fileRetry=null
-        state=state.copy(diff="",terminal="",terminalSession="",terminalDraft="",terminalError="",terminalBusy=false,fileBusy=false,fileMessage="",fileError="",fileFeedbackVisible=false,files=emptyList(),filePath="",file=null,fileDraft="",fileProjectId="",fileRootPath="",pdf=null,markdown=null,openedImage=null,storagePermissionRequired=false)
+        state=state.copy(diff="",terminal="",terminalSession="",terminalDraft="",terminalError="",terminalBusy=false,fileBusy=false,fileMessage="",fileError="",fileFeedbackVisible=false,files=emptyList(),filePath="",file=null,fileDraft="",fileProjectId="",fileRootPath="",pdf=null,markdown=null,openedImage=state.openedImage.takeIf{preserveImage},storagePermissionRequired=false)
     }
     internal fun storagePermissionResult(granted:Boolean){
         if(!state.storagePermissionRequired)return

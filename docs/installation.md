@@ -1,8 +1,8 @@
 # Codex Control 安装与使用
 
-当前配套发行版：**0.6.444**。Android 为 0.6.444（versionCode 416），Gateway 为 0.6.146，Local Console 为 0.12.3，包内 Node 为 24.14.0。Windows 10 / 11 x64、.NET Framework 4.6.2 或更新版本；手机 Android 8.0 及以上。
+当前配套发行版：**0.6.445**。Android 为 0.6.445（versionCode 417），Gateway 为 0.6.147，Local Console 为 0.12.3，包内 Node 为 24.14.0。Windows 10 / 11 x64、.NET Framework 4.6.2 或更新版本；手机 Android 8.0 及以上。
 
-下载 [GitHub Release 0.6.444](https://github.com/YeJianbo/Codex-mobile-control/releases/tag/v0.6.444)：已有电脑后台只需在手机覆盖安装 APK；新电脑使用 Setup，或下载包含 Setup、APK 和说明的 Windows 整包。私有仓库需要使用有权限的 GitHub 账号下载。
+下载 [GitHub Release 0.6.445](https://github.com/YeJianbo/Codex-mobile-control/releases/tag/v0.6.445)：新电脑使用Setup，或下载包含Setup、APK和说明的Windows整包。手机覆盖安装0.6.445获取设置分组、蓝色选文、图片手势与材质修复；电脑自定义管理端口的修复在配套Gateway中。私有仓库需要使用有权限的GitHub账号下载。
 
 ## 组件与入口
 
@@ -16,15 +16,15 @@ Windows 整包把 Web 管理后台和手机网关一起安装。Web 聊天与管
 | 网关管理页 | 网关地址加 `/manage/` | 通过已配对网关进入同一套管理界面 |
 | Codex 共享后端 | 本机回环端口，自动发现 | 桌面、手机和聊天页复用会话 |
 
-Local Console 与 Gateway 都需要运行，手机上的完整管理功能才可用。25819 只监听本机，Android 通过网关转发管理操作，不直接连接这个端口。当前管理客户端使用默认的25819，配套安装保留该管理端口。关闭网页不停止服务。
+Local Console 与 Gateway 都需要运行，手机上的完整管理功能才可用。管理端口默认25819，仅监听本机；Android通过网关转发管理操作，不直接连接这个端口。安装器通过`-ConsolePort`记录选定端口，启动脚本将它传给两项服务；源码部署时，给两者设置相同的`LOCAL_CONSOLE_PORT`。关闭网页不停止服务。
 
 ## 一、第一次安装
 
 1. 在目标电脑安装 Codex 桌面版，完成账号登录，并打开过一次项目。安装程序会寻找完整的 Windows Codex 执行组件；没有找到时会说明原因，不复制其他人的账号。OpenAI 当前安装和登录说明见 [Windows 桌面版](https://learn.chatgpt.com/docs/windows/windows-app) 与 [登录方式](https://learn.chatgpt.com/docs/auth)。
-2. 双击 `Codex-Control-0.6.444-Setup-x64.exe`，选择安装目录，点击“安装”。默认目录是 `%USERPROFILE%\.codex\tools\local-console`；包内已经包含 Web 管理后台、Gateway、Node 和生产依赖，不需要先安装 Node、npm、Python或编译网关。
+2. 双击 `Codex-Control-0.6.445-Setup-x64.exe`，选择安装目录，点击“安装”。默认目录是 `%USERPROFILE%\.codex\tools\local-console`；包内已经包含 Web 管理后台、Gateway、Node 和生产依赖，不需要先安装 Node、npm、Python或编译网关。
 3. 默认勾选登录 Windows 后后台启动、与 Codex 桌面版共享会话。安装不会替换 Codex 本体，不关闭桌面任务。共享后端会由网关自动拉起，无需先打开桌面。安装时已经运行的旧桌面需正常退出一次，释放旧会话；重新打开后接入共享后端。
 4. 桌面会出现 `Codex Control` 快捷方式，直接打开 Web 管理后台；进入“接入 → 网关与手机”查看绑定二维码、配对码、电脑地址和授权密码设置。日常配置都在 Web 中完成。
-5. 安装发行包中的 `Codex-Control-0.6.444.apk` 到手机，也可从电脑网关的 `/downloads/android.apk` 下载。已有同签名版本可覆盖安装，手机原有数据保留。
+5. 安装发行包中的 `Codex-Control-0.6.445.apk` 到手机，也可从电脑网关的 `/downloads/android.apk` 下载。已有同签名版本可覆盖安装，手机原有数据保留。
 
 Release EXE、APK 和文档在同一个发行 ZIP 中。首次安装生成本机 HTTPS 证书、随机网关 Token 和独立公网密码；分发包没有账号、会话、项目内容、手机设备授权或 Cloudflare 凭据。
 
@@ -191,7 +191,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$program\installer\Unin
 需要企业分发或测试时，Setup 支持静默安装，参数传入内部安装脚本：
 
 ```powershell
-$setup = Start-Process '.\Codex-Control-0.6.444-Setup-x64.exe' -ArgumentList '/silent' -WindowStyle Hidden -PassThru
+$setup = Start-Process '.\Codex-Control-0.6.445-Setup-x64.exe' -ArgumentList '/silent' -WindowStyle Hidden -PassThru
 $setup.WaitForExit()
 if ($setup.ExitCode -ne 0) { throw "安装失败，退出码 $($setup.ExitCode)" }
 ```

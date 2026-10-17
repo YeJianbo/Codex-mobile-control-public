@@ -1,3 +1,7 @@
 <resources>
-    <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar" />
+    <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:colorAccent">#3566EF</item>
+        <item name="android:colorControlActivated">#3566EF</item>
+        <item name="android:textColorHighlight">#3D3566EF</item>
+    </style>
 </resources>

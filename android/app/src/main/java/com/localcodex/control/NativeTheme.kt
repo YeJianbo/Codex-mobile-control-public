@@ -2,6 +2,8 @@ package com.localcodex.control
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.LocalTextSelectionColors
+import androidx.compose.foundation.text.selection.TextSelectionColors
 import androidx.compose.material.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
@@ -27,8 +29,8 @@ import org.json.JSONObject
     val button:Float=12f,val field:Float=12f,val menuItem:Float=12f,
 )
 @Immutable internal data class NativeThemeMaterial(
-    val overlayLight:Float=.62f,val overlayDark:Float=.56f,
-    val insetLight:Float=.30f,val insetDark:Float=.22f,
+    val overlayLight:Float=.56f,val overlayDark:Float=.50f,
+    val insetLight:Float=.24f,val insetDark:Float=.18f,
     val panelLight:Float=.24f,val panelDark:Float=.32f,
     val dockLight:Float=.36f,val dockDark:Float=.44f,
     val blurDp:Float=6f,val overlayBlurDp:Float=20f,val edgeDp:Float=.75f,val shadowDp:Float=8f,val edgeFadeDp:Float=0f,val edgeFadeMinAlpha:Float=.40f,
@@ -66,7 +68,7 @@ internal object NativeBuiltinThemes {
             Color(0xff202020),Color(0xff252525),Color.Black,Color.Black,Color.Black),
         geometry=NativeThemeGeometry(control=18f,card=20f,panel=28f,button=24f,field=16f,menuItem=16f),material=NativeThemeMaterial(edgeFadeDp=28f))
     val lightweight=liquid.copy(id="light",name="液态轻量",mode=NativeGlassMode.LIGHT,
-        material=liquid.material.copy(overlayLight=.96f,overlayDark=.96f,insetLight=.72f,insetDark=.72f,
+        material=liquid.material.copy(overlayLight=.94f,overlayDark=.94f,insetLight=.64f,insetDark=.64f,
             panelLight=.92f,panelDark=.92f,dockLight=.94f,dockDark=.94f,blurDp=0f,overlayBlurDp=0f,shadowDp=0f))
     val all=listOf(standard,lightweight,liquid)
     fun base(id:String)=all.firstOrNull{it.id==if(id=="soft")"light" else id}?:throw IllegalArgumentException("主题基底无效")
@@ -75,8 +77,14 @@ internal val LocalNativeTheme=staticCompositionLocalOf{NativeBuiltinThemes.stand
 
 @Composable internal fun NativeThemeProvider(theme:NativeResolvedTheme,colors:Colors,content:@Composable ()->Unit){
     val geometry=theme.geometry
+    val selection=remember(theme.dark){
+        val blue=if(theme.dark)AppColor.AccentDark else AppColor.AccentLight
+        TextSelectionColors(blue,blue.copy(alpha=if(theme.dark).32f else .24f))
+    }
     CompositionLocalProvider(LocalNativeTheme provides theme){
-        MaterialTheme(colors=colors,shapes=Shapes(RoundedCornerShape(geometry.button.dp),RoundedCornerShape(geometry.panel.dp),RoundedCornerShape(geometry.panel.dp)),content=content)
+        MaterialTheme(colors=colors,shapes=Shapes(RoundedCornerShape(geometry.button.dp),RoundedCornerShape(geometry.panel.dp),RoundedCornerShape(geometry.panel.dp))){
+            CompositionLocalProvider(LocalTextSelectionColors provides selection,content=content)
+        }
     }
 }
 

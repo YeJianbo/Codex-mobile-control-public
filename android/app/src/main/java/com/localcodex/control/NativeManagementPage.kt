@@ -7,8 +7,13 @@ import androidx.compose.material.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
@@ -70,9 +75,25 @@ internal val LocalManagementPageActive=compositionLocalOf{true}
                     actions()
                 }
                 }
-                content()
+                Column(Modifier.weight(1f).fillMaxWidth().nativeSettingsEdgeFade(),content=content)
             }
         }
     }
     }
+}
+
+/** Settings scroll below a fixed toolbar; their reading edges are shorter than chat's. */
+private fun Modifier.nativeSettingsEdgeFade():Modifier=graphicsLayer{
+    compositingStrategy=CompositingStrategy.Offscreen
+}.drawWithCache{
+    val height=size.height.coerceAtLeast(1f)
+    val top=18.dp.toPx().coerceAtMost(height*.25f)
+    val bottom=26.dp.toPx().coerceAtMost(height*.25f)
+    val mask=Brush.verticalGradient(
+        0f to Color.Black.copy(alpha=.18f),
+        top/height to Color.Black,
+        1f-bottom/height to Color.Black,
+        1f to Color.Black.copy(alpha=.12f),endY=height,
+    )
+    onDrawWithContent{drawContent();drawRect(mask,blendMode=BlendMode.DstIn)}
 }

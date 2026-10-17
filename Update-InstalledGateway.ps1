@@ -24,7 +24,7 @@ if ($blockingThreads.Count -gt 0) { throw ('网关承载的任务仍在执行：
 if ($runtime.pendingRequests -gt 0) { throw '网关有尚未完成的请求，请稍后再更新。' }
 $listener = Get-NetTCPConnection -LocalPort $config.port -State Listen | Select-Object -First 1
 $target = Get-CimInstance Win32_Process -Filter "ProcessId = $($listener.OwningProcess)"
-if ($target.CommandLine -notlike "*$installed\dist\index.js*") { throw '端口上的服务不是此安装目录，未做修改。' }
+if ($target.CommandLine.Replace('/', '\') -notlike "*$installed\dist\index.js*") { throw '端口上的服务不是此安装目录，未做修改。' }
 Push-Location $source
 try { if (-not $SkipBuild) { & npm.cmd run build; if ($LASTEXITCODE -ne 0) { throw '构建失败，未更新。' } } } finally { Pop-Location }
 $latest = & node.exe $probe state | ConvertFrom-Json

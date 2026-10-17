@@ -1,49 +1,133 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import assert from 'node:assert/strict';
 import net from 'node:net';
+import https from 'node:https';
+import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
-import {createRequire} from 'node:module';
-import {PNG} from '../server/node_modules/pngjs/lib/png.js';
-import jsQR from '../server/node_modules/jsqr/dist/jsQR.js';
-import {chromium} from '../server/node_modules/playwright/index.mjs';
-const root=path.resolve(import.meta.dirname,'..'),work=path.join(root,'artifacts/portable-0.6.147'),qa=await fs.mkdtemp(path.join(work,'clean-user-'));
-const installed=path.join(qa,'绋嬪簭 with spaces'),codex=path.join(qa,'codex'),data=path.join(qa,'mobile-data');
-const smokeSource=await fs.readFile(path.join(root,'server/scripts/smoke-test.mjs'),'utf8');const start=smokeSource.indexOf('function mockCodexScript() {');const mockFactory=smokeSource.slice(start);const mock=path.join(qa,'codex-mock.mjs');await fs.writeFile(mock,new Function(mockFactory+';return mockCodexScript();')());
-const env={...process.env,LOCALAPPDATA:path.join(qa,'local-app-data'),CODEX_HOME:codex,CODEX_MOBILE_CONTROL_HOME:data,LOCAL_CONSOLE_DISABLE_ANALYTICS:'1',CODEX_MOBILE_CONTROL_CODEX_BIN:process.execPath,CODEX_MOBILE_CONTROL_CODEX_ARG_PREFIX:JSON.stringify([mock])};delete env.CODEX_CLI_PATH;
-function run(exe,args,input){return new Promise((resolve,reject)=>{const p=spawn(exe,args,{env,windowsHide:true});let out='',err='';p.stdout.on('data',c=>out+=c);p.stderr.on('data',c=>err+=c);p.on('error',reject);p.on('exit',code=>code===0?resolve(out):reject(Error(`exit ${code}: ${err+out}`)));if(input)p.stdin.end(input);else p.stdin.end();});}
-const ps=(file,args=[])=>run('powershell.exe',['-NoProfile','-ExecutionPolicy','Bypass','-File',file,...args]);
-async function freePort(){const s=net.createServer();await new Promise(resolve=>s.listen(0,'127.0.0.1',resolve));const port=s.address().port;await new Promise(resolve=>s.close(resolve));return port;}
-const gatewayPort=await freePort(),consolePort=await freePort(),setup=path.join(root,'deliverables/Codex-Control-0.6.147-Setup-x64.exe');
-const options=['/silent','-InstallDirectory',installed,'-CodexHome',codex,'-DataDirectory',data,'-GatewayPort',String(gatewayPort),'-ConsolePort',String(consolePort),'-NoAutostart','-NoStart','-SkipDesktopBridge','-NoShortcuts'];
-const checks=[];const check=(name)=>{checks.push(name);console.log('ok - '+name);};
-let started=false;
+import {parseArgs} from 'node:util';
+
+const {values}=parseArgs({options:{setup:{type:'string'},'work-root':{type:'string'},report:{type:'string'}}});
+assert(values.setup,'Pass --setup with the actual Windows Setup EXE');
+const root=path.resolve(import.meta.dirname,'..');
+const setup=path.resolve(values.setup);
+const work=path.resolve(values['work-root']||path.join(os.tmpdir(),'cmc-release-smoke'));
+await fs.mkdir(work,{recursive:true});
+const qa=await fs.mkdtemp(path.join(work,'isolated-'));
+const installed=path.join(qa,'程序 with spaces'),codex=path.join(qa,'codex'),data=path.join(qa,'mobile-data');
+const reportFile=path.resolve(values.report||path.join(work,'installation-verification.json'));
+const report={setup:path.basename(setup),checks:[],productionChanged:false,modelCallsExecuted:false,physicalOtherMachine:false};
+const children=[];
+const endpoint=path.join(os.homedir(),'.codex-mobile-control','desktop-bridge','endpoint.json');
+const previousEndpoint=await fs.readFile(endpoint,'utf8').catch(()=>null);
+const env={...process.env,USERPROFILE:path.join(qa,'user'),HOME:path.join(qa,'user'),APPDATA:path.join(qa,'app-data'),LOCALAPPDATA:path.join(qa,'local-app-data'),CODEX_HOME:codex,CODEX_MOBILE_CONTROL_HOME:data,LOCAL_CONSOLE_DISABLE_ANALYTICS:'1'};
+delete env.CODEX_CLI_PATH;
+for(const directory of [codex,env.USERPROFILE,env.APPDATA,env.LOCALAPPDATA])await fs.mkdir(directory,{recursive:true});
+const check=name=>{report.checks.push(name);console.log('ok - '+name);};
+function run(exe,args,input){return new Promise((resolve,reject)=>{
+ const child=spawn(exe,args,{env,windowsHide:true});let stdout='',stderr='';
+ child.stdout.on('data',part=>stdout+=part);child.stderr.on('data',part=>stderr+=part);
+ child.on('error',reject);child.on('close',code=>code===0?resolve(stdout):reject(Error(`exit ${code}: ${stderr+stdout}`)));
+ child.stdin.end(input);
+});}
+async function freePort(){const server=net.createServer();await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port;}
+async function start(exe,args,name){
+ const log=await fs.open(path.join(qa,name+'.log'),'w');
+ const child=spawn(exe,args,{env,windowsHide:true,stdio:['ignore',log.fd,log.fd]});
+ children.push(child);await log.close();return child;
+}
+async function ready(url){
+ for(let attempt=0;attempt<40;attempt++){
+  try{const response=await fetch(url,{signal:AbortSignal.timeout(1000)});if(response.ok)return;}catch{}
+  await new Promise(resolve=>setTimeout(resolve,250));
+ }
+ throw Error('Service did not become ready: '+new URL(url).port);
+}
+let request;
 try{
- await run(setup,options);check('Release EXE directly installs offline into a clean Unicode/space path');
- const metadata=JSON.parse(await fs.readFile(path.join(installed,'installation.json'),'utf8'));assert.equal(metadata.gatewayVersion,'0.6.60');assert.equal(metadata.codexHome,codex);
- const config=JSON.parse(await fs.readFile(path.join(data,'server.json'),'utf8'));assert(config.https.enabled);assert.equal(config.port,gatewayPort);check('Fresh machine receives independent HTTPS certificate and configuration');
- const runtime=path.join(installed,'runtime/node.exe'),helper=path.join(installed,'installer/instance.mjs');
- const terminalCode=String.raw`const pty=require(${JSON.stringify(path.join(installed,'gateway/node_modules/node-pty'))});const terminal=pty.spawn('cmd.exe',[],{cols:80,rows:24,env:process.env});let text='';const timeout=setTimeout(()=>{console.error('PTY output timeout: '+text);process.exit(1)},10000);terminal.onData(value=>{text+=value;const clean=text.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g,'');if((clean.match(/portable-pty-ok/g)||[]).length>=2){clearTimeout(timeout);console.log(text);terminal.write('exit\r');setTimeout(()=>process.exit(0),200)}});setTimeout(()=>terminal.write('echo portable-pty-ok\r'),1000);`;
- const terminalScript=path.join(qa,'pty-check.cjs');await fs.writeFile(terminalScript,terminalCode);const terminalText=await run(runtime,[terminalScript]);assert(terminalText.includes('portable-pty-ok'));check('Bundled native Windows PTY loads and executes without compilation');
- started=true;await ps(path.join(installed,'installer/Start-Services.ps1'));const health=JSON.parse(await run(runtime,[helper,'health']));assert.equal(health.version,'0.6.60');check('Installed guard starts isolated Gateway and 25819 console services');
- const dashboard=JSON.parse(await run(runtime,[helper,'dashboard']));const png=PNG.sync.read(Buffer.from(dashboard.qr,'base64'));const decoded=jsQR(new Uint8ClampedArray(png.data),png.width,png.height);assert(decoded);const link=new URL(decoded.data);assert.equal(link.protocol,'codex-control:');assert.equal(link.searchParams.get('code'),dashboard.code);assert.equal(new URL(link.searchParams.get('baseUrl')).port,String(gatewayPort));assert.equal(link.searchParams.get('certSha256').length,64);check('Native binding PNG is scannable and includes single-use code/address/certificate');
- await assert.rejects(run(runtime,[helper,'password'],JSON.stringify({password:'short',publicUrl:''})));await run(runtime,[helper,'password'],JSON.stringify({password:'fixture-password-2026',publicUrl:'https://phone.example.com'}));const publicConfig=JSON.parse(await fs.readFile(path.join(data,'public-access.json'),'utf8'));assert.equal(publicConfig.publicUrl,'https://phone.example.com');check('Password settings validate input and update this machine only');
- const browser=JSON.parse(await run(runtime,[helper,'browser']));assert(browser.url.includes('#desktopPair='));assert(browser.spki);assert.equal(browser.profile,path.join(data,'browser-profile'));const browserCode=new URLSearchParams(new URL(browser.url).hash.slice(1)).get('desktopPair');
- const https=await import('node:https');const ca=await fs.readFile(config.https.certPath);const request=(route,body,token)=>new Promise((resolve,reject)=>{const req=https.request({hostname:'127.0.0.1',port:gatewayPort,path:route,ca,method:body?'POST':'GET',headers:{...(token?{Authorization:'Bearer '+token}:{}),'Content-Type':'application/json'}},r=>{let text='';r.on('data',c=>text+=c);r.on('end',()=>resolve({status:r.statusCode,body:JSON.parse(text)}));});req.on('error',reject);req.end(body?JSON.stringify(body):undefined);});
- const claim=await request('/api/pair/claim',{code:browserCode,name:'isolated browser'});assert.equal(claim.status,200);assert.equal((await request('/api/pair/claim',{code:browserCode,name:'duplicate'})).status,400);check('Local browser authorization uses a one-time code and rejects replay');
- const qrPairing=await request('/api/pair/start',undefined,claim.body.token);assert.equal(qrPairing.status,200);assert(qrPairing.body.qrSvg.includes('<svg'));check('Authorized browser can immediately display a fresh phone-binding QR');
- const chromePaths=[path.join(process.env.ProgramFiles,'Google/Chrome/Application/chrome.exe'),path.join(process.env['ProgramFiles(x86)'],'Google/Chrome/Application/chrome.exe'),path.join(process.env.LOCALAPPDATA,'Google/Chrome/Application/chrome.exe')];let chrome;for(const candidate of chromePaths){if(await fs.access(candidate).then(()=>true,()=>false)){chrome=candidate;break;}}assert(chrome,'Chrome is required for this browser validation');
- const browserLaunch=JSON.parse(await run(runtime,[helper,'browser']));const context=await chromium.launchPersistentContext(browserLaunch.profile,{executablePath:chrome,headless:true,args:['--ignore-certificate-errors-spki-list='+browserLaunch.spki],ignoreHTTPSErrors:false});
- try{const page=await context.newPage();await page.goto(browserLaunch.url);await page.locator('#pairDialog[open]').waitFor({timeout:30000});assert.equal(new URL(page.url()).hash,'');assert.equal(await page.locator('#pairQr svg').count(),1);await page.screenshot({path:path.join(work,'browser-authorized-pairing.png')});check('Actual Chrome accepts only the pinned certificate and opens an authorized phone-pairing page');}finally{await context.close();}
- const exeCheck=path.join(qa,'native-check.json');await run(path.join(installed,'CodexControl.exe'),['/check',exeCheck]);assert(JSON.parse(await fs.readFile(exeCheck,'utf8')).qr);check('Compiled native management EXE reads the installed pairing dashboard');
- await run(path.join(installed,'CodexControl.exe'),['/render',path.join(work,'native-management.png')]);check('Native management window renders its binding QR and password controls');
- const screen=PNG.sync.read(await fs.readFile(path.join(work,'native-management.png')));assert(jsQR(new Uint8ClampedArray(screen.data),screen.width,screen.height));check('Binding QR remains scannable in the actual native window rendering');
- const before={config:await fs.readFile(path.join(data,'server.json'),'utf8'),certificate:await fs.readFile(config.https.certPath,'utf8'),public:await fs.readFile(path.join(data,'public-access.json'),'utf8')};
- await ps(path.join(installed,'installer/Stop-Services.ps1'));started=false;await run(setup,options);assert.equal(await fs.readFile(path.join(data,'server.json'),'utf8'),before.config);assert.equal(await fs.readFile(config.https.certPath,'utf8'),before.certificate);assert.equal(await fs.readFile(path.join(data,'public-access.json'),'utf8'),before.public);check('Reinstall preserves token, certificate, password and public configuration');
- const files=await fs.readdir(path.join(data,'installer-logs'));assert(files.includes('guard.log'));check('Installation and background logs are available');
- await fs.writeFile(path.join(work,'installation-verification.json'),JSON.stringify({verifiedAt:new Date().toISOString(),checks:checks.length,passed:checks,qaDirectory:qa,gatewayVersion:'0.6.60',productionChanged:false,accountCredentialsCopied:false,modelCallsExecuted:false,physicalOtherMachine:false},null,2));
- console.log(`Release installation smoke passed: ${checks.length} checks`);
+ const gatewayPort=await freePort(),consolePort=await freePort();
+ assert.notEqual(consolePort,25819);assert.notEqual(gatewayPort,38457);
+ const mock=path.join(qa,'codex-mock.mjs');
+ const source=await fs.readFile(path.join(root,'server/scripts/smoke-test.mjs'),'utf8');
+ const startAt=source.indexOf('function mockCodexScript() {');assert(startAt>=0);
+ await fs.writeFile(mock,new Function(source.slice(startAt)+';return mockCodexScript();')());
+ env.CODEX_MOBILE_CONTROL_CODEX_BIN=process.execPath;
+ env.CODEX_MOBILE_CONTROL_CODEX_ARG_PREFIX=JSON.stringify([mock]);
+ await fs.writeFile(path.join(codex,'config.toml'),'model = "release-smoke-model"\n');
+ await run(setup,['/silent','-InstallDirectory',installed,'-CodexHome',codex,'-DataDirectory',data,'-GatewayPort',String(gatewayPort),'-ConsolePort',String(consolePort),'-NoAutostart','-NoStart','-SkipDesktopBridge','-NoShortcuts']);
+ check('Actual Setup installs offline into an isolated Unicode/space directory');
+ const metadata=JSON.parse(await fs.readFile(path.join(installed,'installation.json'),'utf8'));
+ const release=JSON.parse(await fs.readFile(path.join(installed,'release.json'),'utf8'));
+ assert.equal(metadata.gatewayVersion,release.gatewayVersion);assert.equal(metadata.consolePort,consolePort);assert.equal(metadata.dataDirectory,data);
+ report.version=release.version;report.gatewayVersion=release.gatewayVersion;
+ const config=JSON.parse(await fs.readFile(path.join(data,'server.json'),'utf8'));
+ assert.equal(config.port,gatewayPort);assert(config.https.enabled);assert(config.https.certPath.startsWith(data));
+ check('Fresh installation creates its own HTTPS identity and configured ports');
+ config.host='127.0.0.1';await fs.writeFile(path.join(data,'server.json'),JSON.stringify(config,null,2));
+ env.LOCAL_CONSOLE_PORT=String(consolePort);
+ const runtime=path.join(installed,'runtime/node.exe');
+ const serverModule=path.join(qa,'console-entry.mjs');
+ const moduleUrl=new URL('file:///'+path.join(installed,'src/server.mjs').replaceAll('\\','/')).href;
+ await fs.writeFile(serverModule,`import {createServer} from ${JSON.stringify(moduleUrl)};\nconst updater={start(){},stop(){},status(){return {};}};\nconst {server}=createServer({home:process.env.CODEX_HOME,port:Number(process.env.LOCAL_CONSOLE_PORT),officialUpdater:updater});server.listen(Number(process.env.LOCAL_CONSOLE_PORT),'127.0.0.1');`);
+ await start(runtime,[serverModule],'console');
+ await ready(`http://127.0.0.1:${consolePort}/health`);
+ check('Bundled Web management service starts on the selected isolated port');
+ await start(runtime,[path.join(installed,'gateway/dist/index.js')],'gateway');
+ const ca=await fs.readFile(config.https.certPath);
+ request=(route,body)=>new Promise((resolve,reject)=>{
+  const req=https.request({hostname:'127.0.0.1',port:gatewayPort,path:route,ca,method:body?'POST':'GET',headers:{Authorization:'Bearer '+config.token,'Content-Type':'application/json'},timeout:5000},response=>{
+   const chunks=[];response.on('data',part=>chunks.push(part));response.on('end',()=>resolve({status:response.statusCode,text:Buffer.concat(chunks).toString()}));
+  });req.on('error',reject);req.on('timeout',()=>req.destroy(Error('Gateway request timeout')));req.end(body?JSON.stringify(body):undefined);
+ });
+ let health;
+ for(let attempt=0;attempt<40;attempt++){
+  try{health=await request('/health');if(health.status===200)break;}catch{}
+  await new Promise(resolve=>setTimeout(resolve,250));
+ }
+ assert.equal(health?.status,200);assert.equal(JSON.parse(health.text).version,release.gatewayVersion);
+ check('Bundled Gateway starts with its own HTTPS configuration');
+ for(const route of ['/console','/manage/']){
+  const response=await request(route);assert.equal(response.status,200,route);assert(response.text.length>100,route);
+  if(route==='/manage/'){assert(response.text.includes('/api/console-management/'));assert(!response.text.includes('__LOCAL_TOKEN__'));}
+  const assets=[...response.text.matchAll(/<(?:script|link)\b[^>]*\b(?:src|href)=["']([^"']+)["']/gi)].map(match=>new URL(match[1],`https://127.0.0.1:${gatewayPort}${route}`));
+  assert(assets.length>0,route+' entry assets');
+  for(const asset of assets){
+   // Embedded favicons have no origin and require no server-side asset route.
+   if(asset.protocol==='data:'&&asset.href.startsWith('data:image/'))continue;
+   assert.equal(asset.origin,`https://127.0.0.1:${gatewayPort}`);
+   const result=await request(asset.pathname+asset.search);assert.equal(result.status,200,asset.pathname);assert(result.text.length>0,asset.pathname);
+  }
+ }
+ check('Packaged chat and management pages include all referenced entry assets');
+ const state=await request('/api/local-console/state');assert.equal(state.status,200);
+ assert.equal(JSON.parse(state.text).config.model,'release-smoke-model');
+ const management=await request('/api/console-management/state');assert.equal(management.status,200);
+ assert.equal(JSON.parse(management.text).config.model,'release-smoke-model');
+ check('Both phone management and Web management use the configured companion service');
+ const pairing=await request('/api/pair/start');assert.equal(pairing.status,200);
+ const info=JSON.parse(pairing.text),link=new URL(info.setupUrl);
+ assert.equal(link.protocol,'codex-control:');assert.equal(new URL(link.searchParams.get('baseUrl')).port,String(gatewayPort));
+ assert.equal(link.searchParams.get('certSha256').length,64);assert(info.qrSvg.includes('<svg'));
+ check('Phone pairing advertises this installation address and certificate');
+ report.passed=true;
+}catch(error){
+ report.passed=false;report.error=error.message;process.exitCode=1;
+ console.error(error.message);
 }finally{
- if(started)await ps(path.join(installed,'installer/Stop-Services.ps1')).catch(e=>console.log('cleanup: '+e.message));
+ for(const child of children.reverse())if(child.exitCode===null){
+  await run('taskkill.exe',['/PID',String(child.pid),'/T','/F']).catch(()=>{});
+  await new Promise(resolve=>child.exitCode!==null?resolve():child.once('close',resolve));
+ }
+ report.sharedCodexEndpointUnchanged=previousEndpoint===await fs.readFile(endpoint,'utf8').catch(()=>null);
+ report.checkedAt=new Date().toISOString();
+ await fs.mkdir(path.dirname(reportFile),{recursive:true});
+ for(const name of ['console','gateway']){
+  const log=await fs.readFile(path.join(qa,name+'.log')).catch(()=>null);
+  if(log)await fs.writeFile(path.join(path.dirname(reportFile),name+'-smoke.log'),log);
+ }
+ await fs.writeFile(reportFile,JSON.stringify(report,null,2));
+ // Only the unique temporary tree created by this invocation is disposable.
+ assert(path.dirname(qa)===work&&path.basename(qa).startsWith('isolated-'));
+ await fs.rm(qa,{recursive:true,force:true,maxRetries:5,retryDelay:500});
+ console.log(JSON.stringify({passed:report.passed,checks:report.checks.length,version:report.version,report:reportFile,sharedCodexEndpointUnchanged:report.sharedCodexEndpointUnchanged}));
 }

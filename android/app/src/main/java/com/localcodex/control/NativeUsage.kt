@@ -1,5 +1,4 @@
 package com.localcodex.control
-import com.localcodex.control.NativeThemeSurface as Surface
 
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
@@ -118,7 +117,9 @@ private fun nearestQuotaPoint(points:List<QuotaPoint>,start:Long,end:Long,size:I
     }
 
 @Composable internal fun ChartCallout(xFraction:Float,yFraction:Float,content:@Composable ()->Unit){
-    Layout(content={Surface(shape=Radius.Inset,color=MaterialTheme.colors.surface,elevation=3.dp,modifier=Modifier.testTag("chartCallout")){content()}},modifier=Modifier.fillMaxSize()) {measurables,constraints->
+    // Plot labels must cover the curves even when surrounding cards use glass.
+    Layout(content={androidx.compose.material.Surface(shape=Radius.Inset,color=MaterialTheme.colors.surface.copy(alpha=1f),
+        border=BorderStroke(.75.dp,MaterialTheme.colors.onSurface.copy(alpha=.10f)),elevation=3.dp,modifier=Modifier.testTag("chartCallout")){content()}},modifier=Modifier.fillMaxSize()) {measurables,constraints->
         val inset=4.dp.roundToPx();val gap=8.dp.roundToPx()
         val bubble=measurables.single().measure(Constraints(maxWidth=minOf(200.dp.roundToPx(),(constraints.maxWidth-inset*2).coerceAtLeast(0)),maxHeight=constraints.maxHeight))
         val anchorX=xFraction.coerceIn(0f,1f)*constraints.maxWidth

@@ -7,7 +7,8 @@ import {resolveFiles,codexFilePrompt,type FileAttachment} from './fileUploads.js
 import type { CodexAppServerClient } from "../codex/appServerClient.js";
 import type { EventHub } from "./eventHub.js";
 import type { StateStore } from "./stateStore.js";
-import {readModelCatalog} from './modelCatalog.js';
+import {readModelCatalog,consoleModelOverrides} from './modelCatalog.js';
+import {desktopThreadSettings} from './desktopSidebar.js';
 import {readUserSettings,readCustomPermissions} from './codexSettings.js';
 import {isWriterOccupied} from './userFacingError.js';
 import {AgentSessions} from './agentSessions.js';
@@ -109,6 +110,7 @@ export class SessionManager {
 
   private readonly publicActiveTurns = new Set<string>();
   private readonly activeThreads = new Set<string>();
+  private readonly relayThreads = new Map<string,boolean>();
   private readonly activeTurns = new Map<string, string>();
   private readonly statusReads = new Map<string,Promise<unknown>>();
   private readonly startingTurns = new Set<string>();
@@ -224,6 +226,7 @@ export class SessionManager {
     this.codex.on("exit", (_code:unknown,context?:{shared?:boolean}) => {
       this.compactionOutputs.clear();
       this.activeThreads.clear();
+      this.relayThreads.clear();
       this.activeTurns.clear();
       this.approvalPermissions.clear();
       const pending = this.store.approvals.filter(approval => approval.status === "pending");
@@ -377,7 +380,9 @@ export class SessionManager {
 
     if (command.type === "thread.start") {
       const access=command.permission?await permissionOverrides(command.permission):undefined;
+      const route=await consoleModelOverrides(this.codex,command.model);
       const result = (await this.codex.request("thread/start", {
+        ...route,
         ...(command.fast!==undefined?{serviceTier:command.fast?'fast':'default'}:{}),
         cwd: command.projectPath || undefined,
         model: command.model || undefined,
@@ -387,6 +392,7 @@ export class SessionManager {
 
       await this.receipts.noteThread(command.requestId,threadId);
       this.activeThreads.add(threadId);
+      this.relayThreads.set(threadId,Boolean(route.modelProvider));
       const thread = await this.store.upsertThread({
         id: threadId,
         source: "localCodex",
@@ -444,16 +450,21 @@ export class SessionManager {
   async resumeThread(threadId: string, options: { projectPath?: string; model?: string } = {}): Promise<void> {
     assertControllableThread(threadId);
     if(threadAgent(threadId)!=='codex'){await this.agents.resume(threadId);return;}
+    const savedModel=desktopThreadSettings(threadId)?.model;
+    const wasRelay=this.relayThreads.get(threadId)??(savedModel? savedModel.includes('::'):undefined);
+    if(options.model&&wasRelay!==undefined&&wasRelay!==options.model.includes('::'))throw new Error('请新建会话选择另一类模型；现有会话保留原来的官方或中转接口');
     if (this.activeThreads.has(threadId)) {
       const thread = this.store.threads.find((item) => item.id === threadId);
       this.hub.publish({ type: "thread.started", threadId, thread });
       return;
     }
 
+    const route=await consoleModelOverrides(this.codex,options.model||savedModel);
     const resumed=readRecord(await this.codex.request("thread/resume", {
+      ...route,
       threadId,
       cwd: options.projectPath || undefined,
-      model: options.model || undefined,
+      model: options.model || (route.modelProvider?savedModel:undefined),
       excludeTurns:true,
       initialTurnsPage:{limit:1,sortDirection:'desc',itemsView:'notLoaded'},
     }));
@@ -466,6 +477,7 @@ export class SessionManager {
     if(activeId)this.activeTurns.set(threadId,activeId);
     const isActive=activeId||readRecord(resumedThread?.status)?.type==='active';
     this.activeThreads.add(threadId);
+    this.relayThreads.set(threadId,Boolean(route.modelProvider));
     const thread = await this.store.upsertThread({
       id: threadId,
       projectPath: options.projectPath,
@@ -491,6 +503,7 @@ export class SessionManager {
   }
 
   private async startTurn(threadId: string, text: string, options: { replaceTurnId?:string;continueGoal?:boolean;projectPath?: string; model?: string; effort?:string; mode?:"plan"|"default"; fast?:boolean; requestId?:string; permission?:"ask"|"auto"|"full"|"custom"; images?:ImageAttachment[]; files?:FileAttachment[] } = {}): Promise<void> {
+    if(options.model&&this.relayThreads.has(threadId)&&this.relayThreads.get(threadId)!==options.model.includes('::'))throw new Error('请新建会话选择另一类模型；现有会话保留原来的官方或中转接口');
     const previous=this.store.threads.find((thread) => thread.id === threadId);
     if(options.continueGoal&&this.activeTurns.has(threadId)&&!this.startingTurns.has(threadId)){
       // A lost terminal notification can leave the gateway tracking a dead turn.

@@ -1,5 +1,6 @@
 import type {FastifyInstance} from 'fastify';
 import {z} from 'zod';
+import {consoleResumeOverrides} from './modelCatalog.js';
 type Rpc={
   request(method:string,params:unknown):Promise<unknown>;
   on?(event:string,listener:(message:any)=>void):unknown;
@@ -13,8 +14,8 @@ export function registerThreadFast(app:FastifyInstance,rpc:Rpc,validate:(id:stri
   });
   app.get('/api/threads/:threadId/fast',async request=>{
     const {threadId}=z.object({threadId:z.string().min(1)}).parse(request.params);await validate(threadId);
-    // Rejoin without configuration overrides; resume exposes the effective service tier.
-    const result=await rpc.request('thread/resume',{threadId,excludeTurns:true}) as {serviceTier?:string|null};
+    // Reading speed must preserve the thread's saved official/relay interface.
+    const result=await rpc.request('thread/resume',{threadId,excludeTurns:true,...await consoleResumeOverrides(rpc,threadId)}) as {serviceTier?:string|null};
     return {fast:Object.hasOwn(result,'serviceTier')?fastForTier(result.serviceTier):null,serviceTier:result.serviceTier??null};
   });
   app.put('/api/threads/:threadId/fast',async(request,reply)=>{
@@ -35,7 +36,7 @@ export function registerThreadFast(app:FastifyInstance,rpc:Rpc,validate:(id:stri
     try{
       await rpc.request('thread/settings/update',{threadId,serviceTier:fast?'fast':'default'});
       if(observes)await applied;
-      result=await rpc.request('thread/resume',{threadId,excludeTurns:true}) as {serviceTier?:string|null};
+      result=await rpc.request('thread/resume',{threadId,excludeTurns:true,...await consoleResumeOverrides(rpc,threadId)}) as {serviceTier?:string|null};
     }finally{
       if(timer)clearTimeout(timer);
       if(observes)rpc.off!('notification',listener);

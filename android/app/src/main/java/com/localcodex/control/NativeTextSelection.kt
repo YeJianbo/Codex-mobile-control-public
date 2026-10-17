@@ -3,11 +3,13 @@ package com.localcodex.control
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.selection.TextSelectionColors
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.focus.FocusRequester
@@ -43,7 +45,19 @@ internal fun nativeSelectablePlainText(source:String):String{
 /** Keep Android's selectable-text movement; open links only on short taps. */
 internal class NativeSelectableTextView(context:android.content.Context):android.widget.TextView(context){
     private var downX=0f;private var downY=0f;private var downAt=0L;private var selecting=false
+    private var selectionPalette:TextSelectionColors?=null
     init{setTextIsSelectable(true);linksClickable=false}
+    fun applySelectionColors(colors:TextSelectionColors){
+        if(selectionPalette==colors)return
+        selectionPalette=colors
+        highlightColor=colors.backgroundColor.toArgb()
+        if(android.os.Build.VERSION.SDK_INT>=29){
+            textSelectHandleLeft?.mutate()?.let{it.setTint(colors.handleColor.toArgb());setTextSelectHandleLeft(it)}
+            textSelectHandleRight?.mutate()?.let{it.setTint(colors.handleColor.toArgb());setTextSelectHandleRight(it)}
+            textSelectHandle?.mutate()?.let{it.setTint(colors.handleColor.toArgb());setTextSelectHandle(it)}
+            textCursorDrawable?.mutate()?.let{it.setTint(colors.handleColor.toArgb());setTextCursorDrawable(it)}
+        }
+    }
     override fun onTouchEvent(event:android.view.MotionEvent):Boolean{
         if(event.actionMasked==android.view.MotionEvent.ACTION_DOWN){downX=event.x;downY=event.y;downAt=event.eventTime;selecting=hasSelection()}
         val slop=android.view.ViewConfiguration.get(context).scaledTouchSlop

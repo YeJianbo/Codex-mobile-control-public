@@ -1,7 +1,6 @@
 import type {FastifyInstance} from 'fastify';
 import {z} from 'zod';
 
-const ORIGIN='http://127.0.0.1:25819';
 const sources=['codex','agy','claude','zcode','grok','hermes','deepseek','opencode'] as const;
 type Source=typeof sources[number];
 type Data=Record<string,any>;
@@ -20,16 +19,20 @@ class ConsoleError extends Error {
 export class LocalConsoleClient {
   private token:string|null=null;
   private tokenAt=0;
-  constructor(private readonly fetchImpl:typeof fetch=fetch){}
+  private readonly origin:string;
+  constructor(private readonly fetchImpl:typeof fetch=fetch,port=Number(process.env.LOCAL_CONSOLE_PORT||25819)){
+    if(!Number.isInteger(port)||port<1024||port>65535)throw new Error('Web 管理端口无效');
+    this.origin=`http://127.0.0.1:${port}`;
+  }
   private async fetchLocal(route:string,init:RequestInit,timeout:number){
     try{
-      const response=await this.fetchImpl(ORIGIN+route,{...init,redirect:'error',signal:AbortSignal.timeout(timeout)});
+      const response=await this.fetchImpl(this.origin+route,{...init,redirect:'error',signal:AbortSignal.timeout(timeout)});
       const body=await response.text();
       if(body.length>8*1024*1024)throw new ConsoleError(502,'电脑控制台响应过大，请缩小统计范围');
       return {response,body};
     }catch(error){
       if(error instanceof ConsoleError)throw error;
-      throw new ConsoleError(503,'电脑控制台暂不可用，请检查电脑上的 25819 服务后重试');
+      throw new ConsoleError(503,'Web 管理后台暂不可用，请检查电脑上的后台服务');
     }
   }
   private async processToken(){

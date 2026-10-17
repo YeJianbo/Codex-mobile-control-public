@@ -6,14 +6,23 @@ Windows发行包包含本仓库Gateway、Android APK和配套Local Console。打
 
 ```powershell
 conda run -n base python installer/build-release.py `
-  --version 0.6.444 `
+  --version 0.6.445 `
   --android-build-dir D:\codex\build\Codex-mobile-control\android\app `
-  --android-apk D:\codex\deliverables\Codex-mobile-control\Codex-Control-0.6.444.apk `
-  --android-build-log D:\codex\build\Codex-mobile-control\automation444-build-delivery.log `
+  --android-apk D:\codex\deliverables\Codex-mobile-control\Codex-Control-0.6.445.apk `
+  --android-build-log D:\codex\build\Codex-mobile-control\image445-build.log `
   --output-dir D:\codex\deliverables\Codex-mobile-control
 ```
 
 按实际位置调整路径和环境名。`--android-build-log`指定与APK对应的构建记录，避免为打包额外复制一份日志到项目盘。省略参数时沿用仓库内默认路径。打包会生成Setup、Windows发行ZIP及组件清单，检查生产依赖版本、Node身份和压缩包CRC；暂存文件及内嵌payload使用系统临时目录，完成后清理，不运行安装或修改本机账号。
+
+验证实际Windows安装包时，可运行以下隔离检查。它使用单独的程序、用户和数据目录及随机端口，禁用自启动、快捷方式和桌面共享安装，不调用模型或修改正式后台；结束后清理临时安装，只保留检查报告及日志。这里验证的是本机隔离安装，不等同于另一台电脑或手机实测。
+
+```powershell
+node installer/release-smoke.mjs `
+  --setup D:\codex\deliverables\Codex-mobile-control\Codex-Control-0.6.445-Setup-x64.exe `
+  --work-root D:\codex\build\Codex-mobile-control\release-smoke `
+  --report D:\codex\build\Codex-mobile-control\release-smoke\installation-verification.json
+```
 
 ## 生成产物清理
 
