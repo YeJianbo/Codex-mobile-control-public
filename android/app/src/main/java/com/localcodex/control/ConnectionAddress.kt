@@ -7,6 +7,42 @@ data class ConnectionDraft(
     val port: String = "",
 )
 
+enum class ConnectionRoute { AUTO, LOCAL, PUBLIC }
+
+// Only the existing gateway APK route belongs to the in-app downloader. Resolve
+// it through the active client so its TLS, device identity and route stay intact.
+internal fun nativeGatewayDownloadEndpoint(href:String,addresses:List<String>):String? {
+    val target=runCatching{URI(href)}.getOrNull()?:return null
+    if(target.rawPath!="/downloads/android.apk"||target.rawUserInfo!=null)return null
+    if(target.scheme==null)return if(target.rawAuthority==null)target.rawPath else null
+    fun origin(uri:URI):Triple<String,String,Int>? {
+        val scheme=uri.scheme?.lowercase()?:return null
+        if(scheme!="https"&&scheme!="http"||uri.rawUserInfo!=null)return null
+        val host=uri.host?.lowercase()?:return null
+        return Triple(scheme,host,if(uri.port>=0)uri.port else if(scheme=="https")443 else 80)
+    }
+    val requested=origin(target)?:return null
+    return target.rawPath.takeIf{addresses.any{address->runCatching{origin(URI(address))}.getOrNull()==requested}}
+}
+
+internal fun connectionRouteCandidates(local:String,remote:String,password:String,route:ConnectionRoute=ConnectionRoute.AUTO):List<String> = when(route){
+    ConnectionRoute.LOCAL->listOf(local)
+    ConnectionRoute.PUBLIC->listOfNotNull(remote.takeIf{it.isNotBlank()&&password.isNotBlank()})
+    ConnectionRoute.AUTO->listOf(local)+listOfNotNull(remote.takeIf{it.isNotBlank()&&it!=local&&password.isNotBlank()})
+}
+
+internal fun shouldConnectTestedPublic(connected:Boolean,active:String,local:String,remote:String):Boolean =
+    !connected || (active!=local && active!=remote)
+
+fun connectionAttemptError(detail:String,publicConnection:Boolean,publicUrl:String,password:String):String {
+    if(publicConnection)return "公网连接失败：$detail"
+    return when {
+        publicUrl.isBlank()->"内网连接失败：$detail；尚未填写公网地址"
+        password.isBlank()->"内网连接失败：$detail；请填写公网独立密码后重试"
+        else->"内网连接失败：$detail；正在尝试公网"
+    }
+}
+
 fun parseConnectionDraft(baseUrl: String): ConnectionDraft {
     if (baseUrl.isBlank()) {
         return ConnectionDraft()

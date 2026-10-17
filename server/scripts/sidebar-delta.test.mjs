@@ -1,0 +1,45 @@
+import assert from 'node:assert/strict';
+import {SidebarDeltaCache} from '../dist/services/sidebarDelta.js';
+import {sidebarPage} from '../dist/services/sidebarPage.js';
+import {SidebarStatusCache} from '../dist/services/sidebarStatus.js';
+
+const cache=new SidebarDeltaCache();
+const projects=Array.from({length:7},(_,i)=>({id:`p${i+1}`,path:`P:/${i+1}`,name:`Project ${i+1}`}));
+const body=rows=>({projects:rows,hasMore:true});
+const first=cache.reply('five',body(projects.slice(0,5)),['projects']);
+const unchanged=cache.reply('five',body(projects.slice(0,5)),['projects'],first.sidebarRevision);
+assert(unchanged.sidebarDelta);assert.deepEqual(unchanged.changed,{});assert.deepEqual(unchanged.removed,{});assert.equal(unchanged.projects,undefined);
+const incoming={id:'new',path:'P:/new',name:'New project'};
+const updated=[incoming,...projects.slice(0,4)];
+const delta=cache.reply('five',body(updated),['projects'],first.sidebarRevision);
+assert.deepEqual(delta.changed.projects,[incoming]);assert.deepEqual(delta.removed.projects,[JSON.stringify(['p5','P:/5'])]);
+assert.deepEqual(delta.order.projects,updated.map(p=>JSON.stringify([p.id,p.path])));
+const retained=sidebarPage([incoming,...projects],5,p=>p.id==='p5');
+assert.equal(retained.rows.length,6);assert(retained.rows.some(p=>p.id==='p5'));assert(retained.hasMore);
+const deleted=sidebarPage([incoming,...projects.filter(p=>p.id!=='p5')],5,p=>p.id==='p5');
+assert(!deleted.rows.some(p=>p.id==='p5'));
+const otherPage=cache.reply('ten',body(projects),['projects'],first.sidebarRevision);
+assert.equal(otherPage.sidebarDelta,undefined);assert.deepEqual(otherPage.projects,projects);
+console.log('Sidebar delta checks passed: unchanged response, page boundary/order, retained expanded project, authoritative removal, query isolation');
+const statuses=new SidebarStatusCache();
+let releaseStatus;
+const statusWait=new Promise(resolve=>{releaseStatus=resolve;});
+const thread={id:'t',status:'running',updatedAt:'one'};
+assert.equal(statuses.read(thread,()=>statusWait),'running');
+releaseStatus('completed');await new Promise(resolve=>setImmediate(resolve));
+assert.equal(statuses.read(thread,()=>{throw Error('Fresh status should be reused');}),'completed');
+assert.equal(statuses.read({...thread,updatedAt:'two'},async()=> 'running'),'running');
+console.log('Sidebar status checks passed: nonblocking refresh and newer-source invalidation');
+
+// A confirmed unchanged revision needs the whole-body comparison, not another row serialization.
+const unchangedCache=new SidebarDeltaCache();
+const steady=Array.from({length:20},(_,index)=>({id:String(index),title:'Thread '+index,status:'idle'}));
+const steadyPage=unchangedCache.reply('steady',{threads:steady,hasMore:false},['threads']);
+let titleReads=0;
+const watched=steady.map(row=>({...row,get title(){titleReads++;return row.title;}}));
+const steadyReply=unchangedCache.reply('steady',{threads:watched,hasMore:false},['threads'],steadyPage.sidebarRevision);
+assert.equal(titleReads,20,'Unchanged rows should only be serialized for the whole-body comparison');
+assert.equal(steadyReply.sidebarRevision,steadyPage.sidebarRevision);
+assert.equal(steadyReply.hasMore,false);
+assert.deepEqual(steadyReply.changed,{});assert.deepEqual(steadyReply.removed,{});assert.deepEqual(steadyReply.order,{});
+console.log('Unchanged sidebar revision avoids repeated per-row serialization');

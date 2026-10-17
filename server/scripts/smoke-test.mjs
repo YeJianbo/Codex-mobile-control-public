@@ -22,6 +22,23 @@ const tsxBin = path.join(root, "node_modules", "tsx", "dist", "cli.mjs");
 let stdout = "";
 let stderr = "";
 const mockCodex = await setupMockCodex();
+const desktopStopId='55555555-5555-5555-5555-555555555555';
+const desktopStopDirectory=path.join(appHome,'codex','sessions');
+await fs.mkdir(desktopStopDirectory,{recursive:true});
+await fs.writeFile(path.join(desktopStopDirectory,`rollout-${desktopStopId}.jsonl`),JSON.stringify({timestamp:new Date().toISOString(),type:'event_msg',payload:{type:'task_started',turn_id:'desktop-stop-turn'}})+'\n');
+const staleDesktopId='66666666-6666-6666-6666-666666666666';
+await fs.writeFile(path.join(desktopStopDirectory,`rollout-${staleDesktopId}.jsonl`),[
+ {type:'session_meta',payload:{id:staleDesktopId,cwd:appHome}},
+ {type:'event_msg',payload:{type:'task_started',turn_id:'before-crash'}},
+ {type:'response_item',payload:{type:'message',role:'assistant',content:[{type:'output_text',text:'preserved before desktop crash'}]}}
+].map(row=>JSON.stringify({...row,timestamp:'2026-10-02T05:00:00Z'})).join('\n')+'\n');
+const outputThreadId='77777777-7777-7777-7777-777777777777';
+const outputFile=path.join(appHome,'九宫格预览.jpg');
+await fs.writeFile(outputFile,'visible output fixture');
+await fs.writeFile(path.join(desktopStopDirectory,`rollout-${outputThreadId}.jsonl`),[
+  {type:'session_meta',payload:{id:outputThreadId,cwd:appHome}},
+  {type:'response_item',payload:{type:'message',role:'assistant',content:[{type:'output_text',text:`![九宫格预览](<${outputFile}>)`}]}}
+].map(row=>JSON.stringify({...row,timestamp:new Date().toISOString()})).join('\n')+'\n');
 let child = startServer();
 
 try {
@@ -47,6 +64,20 @@ try {
     const html = await response.text();
     assert(response.ok, "console should load");
     assert(html.includes("Codex 控制台"), "console title missing");
+  });
+
+  await check('LAN conversation output needs no persistent project registration',async()=>{
+    const history=await json(`/api/threads/${outputThreadId}/events?count=20`,{headers:admin});
+    const event=history.events.find(event=>event.type==='message.delta');
+    assert(event,'visible assistant output missing');
+    const endpoint=`/api/threads/${outputThreadId}/output-file/preview.jpg?eventId=${encodeURIComponent(event.eventId)}&path=${encodeURIComponent(outputFile)}`;
+    const response=await fetch(baseUrl+endpoint,{headers:admin});
+    const body=await response.text();
+    assert(response.ok,`LAN output did not resolve: HTTP ${response.status}: ${body}`);
+    assert(body==='visible output fixture','wrong output bytes');
+    const unreferenced=await fetch(baseUrl+endpoint.replace(encodeURIComponent(outputFile),encodeURIComponent(serverConfigPath)),{headers:admin});
+    assert(!unreferenced.ok,'unreferenced file must be rejected');
+    assert(JSON.parse(await fs.readFile(serverConfigPath,'utf8')).projectRoots.length===0,'file preview registered a project');
   });
 
   await check("android apk opens from a phone browser", async () => {
@@ -411,6 +442,8 @@ try {
     assert(pinned.pinned===true,'pin should be forwarded to Codex');
     const goal=await json(`/api/threads/${started.threadId}/goal`,{method:'PATCH',headers:{...admin,'Content-Type':'application/json'},body:JSON.stringify({objective:'检查手机界面',status:'paused'})});
     assert(goal.goal?.objective==='检查手机界面'&&goal.goal?.status==='paused','goal controls should be forwarded to Codex');
+    const endedGoal=await json(`/api/threads/${started.threadId}/goal`,{method:'PATCH',headers:{...admin,'Content-Type':'application/json'},body:JSON.stringify({status:'complete'})});
+    assert(endedGoal.goal?.status==='complete','goal completion should be forwarded to Codex');
     const listed = await json("/api/threads", { headers: admin });
     assert(listed.threads.some((item) => item.id === started.threadId && item.title === "手机端重命名会话"), "renamed thread should be listed");
     await json(`/api/threads/${started.threadId}`, {
@@ -517,6 +550,24 @@ try {
     socket.close();
   });
 
+  await check('desktop crash history reconciles, survives gateway restart and can continue',async()=>{
+    const response=await json(`/api/threads/${staleDesktopId}/events`,{headers:admin});
+    assert(response.status==='interrupted','stale desktop turn should be interrupted');
+    assert(response.events.some(e=>e.type==='message.delta'&&e.text==='preserved before desktop crash'),'answer must be retained');
+    assert(response.events.some(e=>e.type==='turn.completed'&&e.status==='interrupted'),'recovery event must reach history');
+    const queue=await json(`/api/threads/${staleDesktopId}/queue`,{headers:admin});
+    assert(queue.canSteer===false,'interrupted history must not enable steering');
+    await restartServer();
+    const restored=await json(`/api/threads/${staleDesktopId}/events`,{headers:admin});
+    assert(restored.status==='interrupted','recovery must survive gateway restart');
+    const socket=await openSocket(adminToken);await socket.next(e=>e.type==='connected');
+    socket.send({type:'turn.interrupt',threadId:staleDesktopId,requestId:'stale-stop'});
+    await socket.next(e=>e.type==='turn.completed'&&e.requestId==='stale-stop'&&e.status==='interrupted');
+    socket.send({type:'turn.start',threadId:staleDesktopId,text:'continue-recovered',projectPath:project.path});
+    await socket.next(e=>e.type==='message.delta'&&e.threadId===staleDesktopId&&e.text.includes('mock:continue-recovered'));
+    socket.close();
+  });
+
   await check("thread start can include the first user message", async () => {
     const socket = await openSocket(adminToken);
     await socket.next((event) => event.type === "connected");
@@ -541,6 +592,29 @@ try {
     socket.close();
   });
 
+  await check("thread search finds message text", async () => {
+    const result = await json("/api/threads/search?q=" + encodeURIComponent("直接发送第一条") + "&limit=5", { headers: admin });
+    const match = result.matches.find((item) => item.threadId.startsWith("mock-thread-"));
+    assert(match, "search should find the thread by message text");
+    assert(match.title === "从手机直接发送第一条消息", "search should return the thread title");
+    assert(match.snippet.includes("直接发送第一条"), "search should return a matching snippet");
+    const empty = await json("/api/threads/search?q=" + encodeURIComponent("SMOKE_NO_SUCH_TEXT_ZZZ"), { headers: admin });
+    assert(!empty.matches.some((item) => item.snippet.includes("SMOKE_NO_SUCH_TEXT_ZZZ")), "search should not fabricate matches");
+  });
+
+  await check("paused goal resumes without a user message and keeps a durable request receipt",async()=>{
+    const id='goal-continue-smoke';
+    const db=new DatabaseSync(path.join(appHome,'codex','goals_1.sqlite'));
+    db.exec('CREATE TABLE IF NOT EXISTS thread_goals(thread_id TEXT PRIMARY KEY,objective TEXT,status TEXT,token_budget INTEGER,tokens_used INTEGER)');
+    db.prepare('INSERT OR REPLACE INTO thread_goals VALUES(?,?,?,?,?)').run(id,'继续烟测目标','paused',null,42);db.close();
+    const options={method:'POST',headers:{...admin,'Content-Type':'application/json'},body:JSON.stringify({requestId:'goal-continue-smoke-once',projectPath:project.path,model:'gpt-6-sol',effort:'high',permission:'full',mode:'default'})};
+    const first=await json(`/api/threads/${id}/goal/continue`,options);assert(first.request?.state==='accepted','continue receipt should be accepted');
+    assert(first.goal?.status==='active'&&first.goal?.objective==='继续烟测目标','persisted goal should resume');
+    await json(`/api/threads/${id}/goal/continue`,options);
+    const history=await json(`/api/threads/${id}/events`,{headers:admin});
+    assert(!history.events.some(e=>e.type==='user.message'),'goal resume must not create a user message');
+  });
+
   await check("desktop writer conflict queues once and retries after release", async () => {
     const socket=await openSocket(adminToken);
     await socket.next(event=>event.type==='connected');
@@ -550,12 +624,48 @@ try {
     socket.send({type:'turn.start',threadId:thread.threadId,projectPath:project.path,text:'WRITER_QUEUE',requestId:'writer-queue-smoke'});
     const queued=await socket.next(event=>event.type==='message.queued'&&event.requestId==='writer-queue-smoke').catch(error=>{throw new Error(`queue acknowledgement missing: ${JSON.stringify(socket.snapshot())}: ${error.message}`)});
     assert(queued.threadId===thread.threadId,'queued message should retain its task');
+    const goalsDb=new DatabaseSync(path.join(appHome,'codex','goals_1.sqlite'));
+    goalsDb.exec('CREATE TABLE IF NOT EXISTS thread_goals(thread_id TEXT PRIMARY KEY,objective TEXT,status TEXT,token_budget INTEGER,tokens_used INTEGER)');
+    goalsDb.prepare('INSERT OR REPLACE INTO thread_goals(thread_id,objective,status,token_budget,tokens_used) VALUES(?,?,?,?,?)').run(thread.threadId,'paused goal','paused',null,0);
+    goalsDb.close();
     const pending=await json(`/api/threads/${thread.threadId}/queue`,{headers:admin});
     assert(pending.messages.some(item=>item.id==='writer-queue-smoke'&&item.text==='WRITER_QUEUE'),'message should persist in the queue');
     await socket.next(event=>event.type==='message.delta'&&event.threadId===thread.threadId&&event.text==='mock:WRITER_QUEUE',20000).catch(async error=>{const q=await json(`/api/threads/${thread.threadId}/queue`,{headers:admin});const t=await json(`/api/threads/${thread.threadId}/events`,{headers:admin});throw new Error(`queue did not resume: ${JSON.stringify(q.messages)} status=${t.status} events=${JSON.stringify(t.events.slice(-4))}: ${error.message}`)});
     const history=await json(`/api/threads/${thread.threadId}/events`,{headers:admin});
     assert(history.events.filter(event=>event.type==='user.message'&&event.text==='WRITER_QUEUE').length===1,'retry must not duplicate the user message');
     socket.close();
+  });
+
+  await check("stop an untracked desktop turn over websocket", async () => {
+    const id='55555555-5555-5555-5555-555555555555';
+    const directory=path.join(appHome,'codex','sessions');
+    await fs.mkdir(directory,{recursive:true});
+    await fs.writeFile(path.join(directory,`rollout-${id}.jsonl`),JSON.stringify({timestamp:new Date().toISOString(),type:'event_msg',payload:{type:'task_started',turn_id:'desktop-stop-turn'}})+'\n');
+    const socket=await openSocket(adminToken);
+    try{
+      await socket.next(event=>event.type==='connected');
+      socket.send({type:'turn.interrupt',threadId:id,requestId:'desktop-stop-smoke'});
+      const completed=await socket.next(event=>event.type==='turn.completed'&&event.requestId==='desktop-stop-smoke').catch(error=>{throw new Error(`desktop stop acknowledgement missing: ${JSON.stringify(socket.snapshot())}: ${error.message}`)});
+      assert(completed.status==='interrupted','desktop interruption should be confirmed');
+      const history=await json(`/api/threads/${id}/events`,{headers:admin});
+      assert(history.status!=='running','history must not re-enable Stop after interruption');
+      socket.send({type:'turn.interrupt',threadId:id,requestId:'desktop-already-stopped'});
+      const repeated=await socket.next(event=>event.type==='turn.completed'&&event.requestId==='desktop-already-stopped');
+      assert(repeated.status==='interrupted','an already completed stop should confirm the current state');
+      await fs.appendFile(path.join(directory,`rollout-${id}.jsonl`),JSON.stringify({timestamp:new Date().toISOString(),type:'event_msg',payload:{type:'task_started',turn_id:'desktop-next-turn'}})+'\n');
+      const next=await json(`/api/threads/${id}/events`,{headers:admin});
+      assert(next.status==='running','a newer desktop turn must still become running');
+      socket.send({type:'turn.interrupt',threadId:id,requestId:'desktop-next-stop'});
+      await socket.next(event=>event.type==='turn.completed'&&event.requestId==='desktop-next-stop');
+      await new Promise(resolve=>setTimeout(resolve,5));
+      await fs.appendFile(path.join(directory,`rollout-${id}.jsonl`),JSON.stringify({timestamp:new Date().toISOString(),type:'event_msg',payload:{type:'task_started',turn_id:'desktop-goal-turn'}})+'\n');
+      assert((await json(`/api/threads/${id}/events`,{headers:admin})).status==='running','fixture must start a new turn before pausing the goal');
+      const paused=await json(`/api/threads/${id}/goal`,{method:'PATCH',headers:{...admin,'Content-Type':'application/json'},body:JSON.stringify({status:'paused'})});
+      assert(paused.goal?.status==='paused','goal state should be paused');
+      const afterPause=await json(`/api/threads/${id}/events`,{headers:admin});
+      assert(afterPause.status==='running','pausing a goal must preserve the current desktop turn');
+      await socket.expectNo(event=>event.type==='turn.completed'&&event.threadId===id,200);
+    }finally{socket.close();}
   });
 
   await check("local terminal command", async () => {
@@ -1030,6 +1140,9 @@ function expectNoEvent(queue, waiters, predicate, timeoutMs = 500) {
 function mockCodexScript() {
   return String.raw`
 import readline from "node:readline";
+import {DatabaseSync} from 'node:sqlite';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const args = process.argv.slice(2);
 if (args.includes("--version")) {
@@ -1049,7 +1162,7 @@ const rl = readline.createInterface({ input: process.stdin });
 rl.on("line", (line) => {
   const message = JSON.parse(line);
   const params = message.params ?? {};
-  if (message.method === "model/list") { respond(message.id, {data:[{model:"cmc-smoke-model",displayName:"Smoke model",supportedReasoningEfforts:[]}],nextCursor:null});return; }
+  if (message.method === "model/list") { respond(message.id, {data:[{model:"cmc-smoke-model",displayName:"Smoke model",supportedReasoningEfforts:[]},{model:"gpt-6-sol",displayName:"Sol",supportedReasoningEfforts:[{reasoningEffort:"high"}]}],nextCursor:null});return; }
   if (message.method === "initialize") {
     respond(message.id, { serverInfo: { name: "mock-codex-app-server" } });
     return;
@@ -1066,9 +1179,20 @@ rl.on("line", (line) => {
     notify("thread/started", { thread });
     return;
   }
+  if(message.method==='thread/read'){
+    respond(message.id,{thread:{id:params.threadId,status:{type:params.threadId==='55555555-5555-5555-5555-555555555555'?'active':'notLoaded'}}});return;
+  }
   if (message.method === "thread/name/set") {respond(message.id,{});return;}
   if (message.method === "thread/section/move") {respond(message.id,{});return;}
-  if (message.method === "thread/goal/set") {respond(message.id,{goal:{threadId:params.threadId,objective:params.objective,status:params.status,tokensUsed:0,tokenBudget:null}});return;}
+  if (message.method === "thread/settings/update") {respond(message.id,{});return;}
+  if (message.method === "thread/goal/set") {
+    const file=path.join(process.env.CODEX_HOME,'goals_1.sqlite');let saved;
+    if(fs.existsSync(file)){
+      const db=new DatabaseSync(file);saved=db.prepare('SELECT * FROM thread_goals WHERE thread_id=?').get(params.threadId);
+      if(saved){db.prepare('UPDATE thread_goals SET status=?,objective=? WHERE thread_id=?').run(params.status||saved.status,params.objective||saved.objective,params.threadId);saved=db.prepare('SELECT * FROM thread_goals WHERE thread_id=?').get(params.threadId);}db.close();
+    }
+    respond(message.id,{goal:{threadId:params.threadId,objective:saved?.objective||params.objective,status:saved?.status||params.status,tokensUsed:saved?.tokens_used||0,tokenBudget:null}});return;
+  }
 
   if (message.method === "turn/start") {
     if (!Array.isArray(params.input) || params.input.some((item) => !Array.isArray(item.text_elements))) {
@@ -1094,6 +1218,9 @@ rl.on("line", (line) => {
     return;
   }
   if (message.method === "turn/interrupt") {
+    if(params.threadId==='55555555-5555-5555-5555-555555555555'&&!['desktop-stop-turn','desktop-next-turn'].includes(params.turnId)){
+      process.stdout.write(JSON.stringify({id:message.id,error:{code:-32600,message:'wrong desktop turn'}})+'\n');return;
+    }
     respond(message.id, { ok: true });
     return;
   }

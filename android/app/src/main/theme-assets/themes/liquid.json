@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "id": "liquid",
+  "name": "液态玻璃",
+  "base": "liquid",
+  "colors": {
+    "light": {
+      "primary": "#3566EF",
+      "background": "#F7F7F7",
+      "surface": "#FFFFFF",
+      "ink": "#0D0D0D",
+      "onPrimary": "#FFFFFF",
+      "wash": "#FFFFFF",
+      "bubble": "#ECF2FE",
+      "chat": "#FCFCFC",
+      "gradientStart": "#FAFAFA",
+      "gradientEnd": "#F5F5F5"
+    },
+    "dark": {
+      "primary": "#93B7F5",
+      "background": "#000000",
+      "surface": "#151515",
+      "ink": "#F1F1F1",
+      "onPrimary": "#000000",
+      "wash": "#202020",
+      "bubble": "#252525",
+      "chat": "#000000",
+      "gradientStart": "#000000",
+      "gradientEnd": "#000000"
+    }
+  },
+  "geometry": {
+    "control": 18,
+    "card": 20,
+    "panel": 28,
+    "button": 24,
+    "field": 16,
+    "menuItem": 16
+  },
+  "material": {
+    "overlayLight": 0.62,
+    "overlayDark": 0.56,
+    "blurDp": 6,
+    "overlayBlurDp": 20,
+    "edgeDp": 0.75,
+    "shadowDp": 8,
+    "edgeFadeDp": 28,
+    "edgeFadeMinAlpha": 0.4,
+    "sidebarFadeDp": 64
+  }
+}

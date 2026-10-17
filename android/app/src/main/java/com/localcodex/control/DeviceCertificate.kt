@@ -13,9 +13,11 @@ import javax.security.auth.x500.X500Principal
 
 object DeviceCertificate {
     private const val alias="codex-control-device"
+    @Volatile private var identity:Pair<String,java.security.PrivateKey>?=null
 
     private fun keyStore():KeyStore=KeyStore.getInstance("AndroidKeyStore").apply{load(null)}
-    fun certificateBase64():String {
+    @Synchronized private fun identity():Pair<String,java.security.PrivateKey> {
+        identity?.let{return it}
         var store=keyStore()
         if(!store.containsAlias(alias)){
             val generator=KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC,"AndroidKeyStore")
@@ -27,16 +29,16 @@ object DeviceCertificate {
             generator.generateKeyPair()
             store=keyStore()
         }
-        return Base64.encodeToString(store.getCertificate(alias).encoded,Base64.NO_WRAP)
+        return (Base64.encodeToString(store.getCertificate(alias).encoded,Base64.NO_WRAP) to (store.getKey(alias,null) as java.security.PrivateKey)).also{identity=it}
     }
+    fun certificateBase64():String=identity().first
 
     fun sign(request:Request):Request {
-        certificateBase64()
         val time=System.currentTimeMillis().toString()
         val nonce=UUID.randomUUID().toString()
         val target=request.url.encodedPath+request.url.encodedQuery?.let{"?$it"}.orEmpty()
         val message="${request.method.uppercase()}\n$target\n$time\n$nonce"
-        val privateKey=keyStore().getKey(alias,null) as java.security.PrivateKey
+        val privateKey=identity().second
         val signature=Signature.getInstance("SHA256withECDSA").apply{initSign(privateKey);update(message.toByteArray(Charsets.UTF_8))}.sign()
         return request.newBuilder().header("X-Device-Time",time).header("X-Device-Nonce",nonce)
             .header("X-Device-Signature",Base64.encodeToString(signature,Base64.NO_WRAP)).build()

@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-const home=path.join(os.homedir(),'.codex-mobile-control');
+const home=process.env.CODEX_MOBILE_CONTROL_HOME||path.join(os.homedir(),'.codex-mobile-control');
 const configPath=path.join(home,'public-access.json');
 const passwordPath=path.join(home,'public-password.txt');
 const port=Number(process.argv[2]||48763);

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {agentUpdates,modelAgent,threadAgent} from '../src/services/agentProtocol.ts';
+import {agentUpdates,modelAgent,threadAgent,publicAgentAllowed} from '../src/services/agentProtocol.ts';
 test('agent routing never changes an existing Codex thread',()=>{
   assert.equal(modelAgent('antigravity::claude-sonnet-4-6'),'antigravity');
   assert.equal(threadAgent('01a07e7c-abc'),'codex');
@@ -17,4 +17,16 @@ test('Claude and Grok messages preserve tool ids and failures without exposing t
     assert.equal(events.length,2);assert.equal(events[1].id,'t');
     assert.equal(agentUpdates(agent,{type:'result',is_error:true,result:'denied'})[0].error,true);
   }
+});
+
+test('AGY structured output, failed tools and malformed final records remain readable',()=>{
+  const updates=agentUpdates('antigravity',{step_update:{step_type:'tool',step_index:1,state:'FAILED',tool_name:'view_file',tool_info:{output:{message:'denied'}}}});
+  assert.equal(updates[1].text,'{"message":"denied"}');assert.equal(updates[2].error,true);
+  assert.equal(agentUpdates('antigravity',{event:'result'})[1].error,true);
+  assert.equal(agentUpdates('antigravity',{event:'result',result:{status:'FAILED',error:{message:'provider'}}})[1].text,'{"message":"provider"}');
+});
+
+test('public execution allows only Codex and AGY',()=>{
+  for(const agent of ['codex','antigravity'])assert(publicAgentAllowed(agent));
+  for(const agent of ['claude','grok'])assert.equal(publicAgentAllowed(agent),false);
 });

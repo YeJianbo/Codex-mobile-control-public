@@ -12,6 +12,7 @@ $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 if ($LASTEXITCODE -ne 0) { throw '无法保护共享连接凭据目录。' }
 Copy-Item -LiteralPath "$PSScriptRoot\server\scripts\desktop-bridge.mjs" -Destination $directory -Force
 Copy-Item -LiteralPath "$PSScriptRoot\server\scripts\desktop-cli-resolver.mjs" -Destination $directory -Force
+Copy-Item -LiteralPath "$PSScriptRoot\server\scripts\shared-backend.mjs" -Destination $directory -Force
 $shim = Join-Path $directory 'codex-bridge.exe'
 $shimSource = "$PSScriptRoot\server\scripts\DesktopCliShim.cs"
 $installedSource = Join-Path $directory 'DesktopCliShim.cs'
@@ -22,6 +23,7 @@ if (-not (Test-Path $shim) -or -not (Test-Path $installedSource) -or [IO.File]::
 }
 $settings = @{ realCli=$realCli.FullName; node=(Get-Command node.exe).Source; bridgeScript=(Join-Path $directory 'desktop-bridge.mjs'); gatewayRoot=$gateway }
 [IO.File]::WriteAllText((Join-Path $directory 'config.json'),($settings | ConvertTo-Json),[Text.UTF8Encoding]::new($false))
+[IO.File]::WriteAllText((Join-Path $directory 'enabled.json'),'{}',[Text.UTF8Encoding]::new($false))
 if ($PrepareOnly) { Write-Host '共享组件已准备好。'; exit 0 }
 $backup = Join-Path $directory 'previous-cli-override.json'
 if (-not (Test-Path -LiteralPath $backup)) {
@@ -40,4 +42,4 @@ public static class CodexEnvironmentBroadcast {
 $result = [UIntPtr]::Zero
 [void][CodexEnvironmentBroadcast]::SendMessageTimeout([IntPtr]0xffff,0x001A,[UIntPtr]::Zero,'Environment',2,5000,[ref]$result)
 if ([Environment]::GetEnvironmentVariable('CODEX_CLI_PATH','User') -ne $shim) { throw '默认共享连接设置未保存。' }
-Write-Host '已设为默认共享。以后照常打开 Codex；当前已运行的桌面软件重开一次后生效。'
+Write-Host '共享后台已配置；当前已运行的桌面 Codex 重开后接入同一后端。'

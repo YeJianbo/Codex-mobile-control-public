@@ -4,8 +4,23 @@ import TOML from '@iarna/toml';
 import {userCodexConfigPath} from './paths.js';
 import type {CodexAppServerClient} from '../codex/appServerClient.js';
 
-export type PickerModel = {model:string; displayName:string; supportedReasoningEfforts:{reasoningEffort:string}[]; defaultReasoningEffort?:string};
-export async function readModelCatalog(codex: CodexAppServerClient): Promise<{models:PickerModel[];source:string}> {
+export type PickerModel = {model:string; displayName:string; providerId?:string; providerName?:string; shortName?:string; supportedReasoningEfforts:{reasoningEffort:string}[]; defaultReasoningEffort?:string};
+type ModelCatalog={models:PickerModel[];source:string};
+const catalogs=new WeakMap<CodexAppServerClient,{value?:ModelCatalog;expiresAt:number;pending?:Promise<ModelCatalog>}>();
+export async function readModelCatalog(codex: CodexAppServerClient,refresh=false): Promise<ModelCatalog> {
+  let entry=catalogs.get(codex);
+  if(!entry){entry={expiresAt:0};catalogs.set(codex,entry);}
+  // Model validation and multiple connected clients share the same catalog read.
+  if(entry.pending)return entry.pending;
+  if(!refresh&&entry.value&&entry.expiresAt>Date.now())return entry.value;
+  const current=entry;
+  current.pending=loadModelCatalog(codex).then(value=>{
+    current.value=value;current.expiresAt=Date.now()+5000;return value;
+  }).finally(()=>{current.pending=undefined;});
+  return current.pending;
+}
+
+async function loadModelCatalog(codex: CodexAppServerClient): Promise<ModelCatalog> {
   let config:Record<string,unknown> = {};
   try { config=TOML.parse(await fs.readFile(userCodexConfigPath(),'utf8')); }
   catch(error) { if((error as NodeJS.ErrnoException).code!=='ENOENT') throw error; }

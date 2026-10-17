@@ -13,6 +13,10 @@ const wait=async(fn)=>{const end=Date.now()+6000;while(!fn()){assert.ok(Date.now
 const send=async e=>{sent.push(e.text);status='running'};
 let queue=new FollowupQueue(store,sessions,async()=>status,send);
 try{
+ queue.add({id:'sort-a',threadId:'sort',text:'first',images:[]});queue.add({id:'sort-b',threadId:'sort',text:'second',images:[]});
+ queue.move('sort-b','sort','up');assert.deepEqual(queue.list('sort').map(e=>e.id),['sort-b','sort-a']);
+ queue.close();store.close();store=new StateStore();await store.load();queue=new FollowupQueue(store,sessions,async()=>status,send);
+ assert.deepEqual(queue.list('sort').map(e=>e.id),['sort-b','sort-a']);queue.cancel('sort-a','sort');queue.cancel('sort-b','sort');
  queue.add({id:'a',threadId:'t',text:'old',images:[]});queue.add({id:'b',threadId:'t',text:'cancel',images:[]});queue.edit('a','t','edited');queue.cancel('b','t');
  await new Promise(r=>setTimeout(r,1650));assert.equal(sent.length,0);
  queue.close();store.close();store=new StateStore();await store.load();queue=new FollowupQueue(store,sessions,async()=>status,send);

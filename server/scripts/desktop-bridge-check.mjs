@@ -14,10 +14,16 @@ const root=fileURLToPath(new URL('../',import.meta.url));
 const home=await fs.mkdtemp(path.join(os.tmpdir(),'cmc-shared-'));
 const directory=path.join(home,'desktop-bridge');
 await fs.mkdir(directory);
+for(const name of ['desktop-bridge.mjs','shared-backend.mjs','desktop-cli-resolver.mjs'])await fs.copyFile(path.join(root,'scripts',name),path.join(directory,name));
 process.env.CODEX_MOBILE_CONTROL_HOME=home;
+const sourceHome=process.env.CODEX_HOME||path.join(os.homedir(),'.codex');
+process.env.CODEX_HOME=path.join(home,'codex');
+await fs.mkdir(process.env.CODEX_HOME);
+// Real model checks may reuse login credentials, but never the user's thread store.
+await fs.copyFile(path.join(sourceHome,'auth.json'),path.join(process.env.CODEX_HOME,'auth.json'));
 const shim=path.join(directory,'codex-bridge.exe');
 execFileSync('C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe',['/nologo','/r:System.Web.Extensions.dll',`/out:${shim}`,path.join(root,'scripts','DesktopCliShim.cs')],{windowsHide:true});
-await fs.writeFile(path.join(directory,'config.json'),JSON.stringify({realCli,node:process.execPath,bridgeScript:path.join(root,'scripts','desktop-bridge.mjs'),gatewayRoot:root}));
+await fs.writeFile(path.join(directory,'config.json'),JSON.stringify({realCli,node:process.execPath,bridgeScript:path.join(directory,'desktop-bridge.mjs'),gatewayRoot:root}));
 const desktop=spawn(shim,['app-server'],{stdio:['pipe','pipe','pipe'],windowsHide:true});
 let stderr='';desktop.stderr.on('data',data=>{stderr=(stderr+data.toString()).slice(-1800);});
 const pending=new Map();const notifications=[];let sequence=1;
@@ -90,5 +96,6 @@ try{
   for(const item of pending.values())clearTimeout(item.timer);
   await new Promise(resolve=>{desktop.once('exit',resolve);setTimeout(resolve,3000).unref();});
   if(desktop.exitCode===null)desktop.kill();
+  try{const endpoint=JSON.parse(await fs.readFile(path.join(directory,'endpoint.json'),'utf8'));for(const pid of [endpoint.bridgePid,endpoint.serverPid])try{process.kill(pid);}catch{}}catch{}
   if(path.dirname(home)===os.tmpdir())await fs.rm(home,{recursive:true,force:true,maxRetries:5,retryDelay:200});
 }

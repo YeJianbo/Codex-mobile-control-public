@@ -1,5 +1,7 @@
 # v0.6.26 冻结快照
 
+此页记录历史版本；当前版本及下载入口见 [README](README.md)。
+
 冻结日期：2026-09-27。Android 版本号 `0.6.26`（versionCode `49`），Gateway 版本号 `0.4.0`。
 
 此快照包含 Android 原生客户端、网页控制台、Gateway 源码、文档、构建脚本，以及同一份最终 APK 的版本化副本 `artifacts/Codex-Control-0.6.26.apk` 和网关下载副本 `server/public/downloads/android.apk`。两份 APK 的 SHA-256 均为：

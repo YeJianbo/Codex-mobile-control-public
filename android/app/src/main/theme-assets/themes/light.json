@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "id": "light",
+  "name": "液态轻量",
+  "base": "light",
+  "material": {
+    "overlayLight": 0.96,
+    "overlayDark": 0.96,
+    "insetLight": 0.72,
+    "insetDark": 0.72,
+    "panelLight": 0.92,
+    "panelDark": 0.92,
+    "dockLight": 0.94,
+    "dockDark": 0.94,
+    "blurDp": 0,
+    "overlayBlurDp": 0,
+    "shadowDp": 0,
+    "edgeFadeDp": 28,
+    "edgeFadeMinAlpha": 0.4,
+    "sidebarFadeDp": 64
+  }
+}

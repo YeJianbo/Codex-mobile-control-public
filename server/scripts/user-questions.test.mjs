@@ -47,7 +47,7 @@ test('desktop approval keeps the original request ID and optional auto handling 
   const {codex,responses,store,sessions}=setup();
   await writeRemoteAutoApproval(false);
   codex.emit('serverRequest',{id:'desktop:1:7',method:'item/commandExecution/requestApproval',params:{threadId:'t',itemId:'item-7',command:'Get-Date'}});
-  await new Promise(r=>setTimeout(r,30));
+  for(let n=0;n<200&&!store.approvals.some(a=>a.id==='desktop:1:7-item-7');n++)await new Promise(r=>setTimeout(r,10));
   assert.equal(responses.length,0);
   await sessions.resolveApproval('desktop:1:7-item-7','accept');
   assert.deepEqual(responses[0],{id:'desktop:1:7',result:{decision:'accept'}});
@@ -55,7 +55,7 @@ test('desktop approval keeps the original request ID and optional auto handling 
   await writeRemoteAutoApproval(true);
   codex.emit('serverRequest',{id:'desktop:1:8',method:'item/commandExecution/requestApproval',params:{threadId:'t',itemId:'item-8',command:'Get-Date'}});
   codex.emit('serverRequest',{id:'desktop:1:9',method:'item/tool/requestUserInput',params:{threadId:'t',questions:[{id:'q',question:'Continue?'}]}});
-  await new Promise(r=>setTimeout(r,50));
+  for(let n=0;n<200&&(responses.length<2||!store.approvals.some(a=>a.approvalType==='question'));n++)await new Promise(r=>setTimeout(r,10));
   assert.deepEqual(responses[1],{id:'desktop:1:8',result:{decision:'accept'}});
   assert.equal(store.approvals.find(a=>a.id==='desktop:1:8-item-8').status,'accepted');
   assert.equal(store.approvals.find(a=>a.id==='question-desktop:1:9').status,'pending');

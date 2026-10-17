@@ -4,9 +4,10 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
-import {permittedPublicRequest} from './public-routes.mjs';
+import {permittedPublicRequest,isPublicAndroidDownload} from './public-routes.mjs';
+import {startTunnelRelays} from './tunnel-relay.mjs';
 
-const home=path.join(os.homedir(),'.codex-mobile-control');
+const home=process.env.CODEX_MOBILE_CONTROL_HOME||path.join(os.homedir(),'.codex-mobile-control');
 const settings=JSON.parse(fs.readFileSync(path.join(home,'public-access.json'),'utf8'));
 const gateway=JSON.parse(fs.readFileSync(path.join(home,'server.json'),'utf8'));
 if(!gateway.https?.enabled)throw new Error('Gateway HTTPS must be enabled before public access');
@@ -16,6 +17,19 @@ if(passwordHash.length!==32)throw new Error('Invalid public password hash');
 if(typeof settings.proxySecret!=='string'||settings.proxySecret.length<40)throw new Error('Invalid public proxy secret');
 const port=Number(settings.port);
 if(!Number.isInteger(port)||port<1024||port>65535||port===gateway.port)throw new Error('Invalid public entry port');
+
+function connectionLog(req,status) {
+  // Record connection failures without addresses, query strings or credentials.
+  const pathname=new URL(req.url||'/', 'http://localhost').pathname;
+  if(status<400&&pathname!=='/health'&&pathname!=='/ws')return;
+  const route=['/health','/ws'].includes(pathname)?pathname:'/api/*';
+  const client=(req.headers['user-agent']||'').startsWith('okhttp/')?'android':'other';
+  try{
+    const file=path.join(home,'public-connection.log');
+    if(fs.existsSync(file)&&fs.statSync(file).size>262144)fs.writeFileSync(file,'');
+    fs.appendFileSync(file,JSON.stringify({time:new Date().toISOString(),route,status,client})+'\n');
+  }catch{}
+}
 
 function authorized(req){
   const supplied=req.headers['x-remote-password'];
@@ -41,8 +55,9 @@ function upstreamHeaders(req){
   return headers;
 }
 const server=http.createServer((req,res)=>{
+  res.once('finish',()=>connectionLog(req,res.statusCode));
   if(!permitted(req)){res.writeHead(404,{'Cache-Control':'no-store'}).end();return;}
-  if(!authorized(req)){res.writeHead(401,{'Cache-Control':'no-store'}).end();return;}
+  if(!isPublicAndroidDownload(req.method,req.url)&&!authorized(req)){res.writeHead(401,{'Cache-Control':'no-store'}).end();return;}
   const upstream=https.request({hostname:'localhost',port:gateway.port,path:req.url,method:req.method,headers:upstreamHeaders(req),ca,servername:'localhost'},response=>{
     res.writeHead(response.statusCode||502,response.headers);
     response.pipe(res);
@@ -51,10 +66,11 @@ const server=http.createServer((req,res)=>{
   req.pipe(upstream);
 });
 server.on('upgrade',(req,socket,head)=>{
-  if(!permitted(req)){reject(socket,'404 Not Found','not_found');return;}
-  if(!authorized(req)){reject(socket,'401 Unauthorized','unauthorized');return;}
+  if(!permitted(req)){connectionLog(req,404);reject(socket,'404 Not Found','not_found');return;}
+  if(!authorized(req)){connectionLog(req,401);reject(socket,'401 Unauthorized','unauthorized');return;}
   const upstream=https.request({hostname:'localhost',port:gateway.port,path:req.url,method:'GET',headers:upstreamHeaders(req),ca,servername:'localhost'});
   upstream.on('upgrade',(response,remote,remoteHead)=>{
+    connectionLog(req,response.statusCode||101);
     socket.write(`HTTP/1.1 ${response.statusCode||101} Switching Protocols\r\n`);
     for(const [name,value] of Object.entries(response.headers))if(value)socket.write(`${name}: ${value}\r\n`);
     socket.write('\r\n');
@@ -62,8 +78,9 @@ server.on('upgrade',(req,socket,head)=>{
     if(head.length)remote.write(head);
     socket.pipe(remote).pipe(socket);
   });
-  upstream.on('response',response=>{reject(socket,`${response.statusCode||502} Rejected`,'upstream_rejected');});
-  upstream.on('error',()=>socket.destroy());
+  upstream.on('response',response=>{connectionLog(req,response.statusCode||502);reject(socket,`${response.statusCode||502} Rejected`,'upstream_rejected');});
+  upstream.on('error',()=>{connectionLog(req,502);socket.destroy();});
   upstream.end();
 });
+await startTunnelRelays(settings.tunnelRelay);
 server.listen(port,'127.0.0.1',()=>console.log(`Public API entry listening on 127.0.0.1:${port}`));

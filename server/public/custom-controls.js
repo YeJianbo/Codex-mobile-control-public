@@ -1,4 +1,37 @@
 // Selects remain the form/state source; all visible pickers are shared across clients.
+let retiringPicker;
+function finishRetiringPicker(dialog) {
+  if(!retiringPicker)return;
+  if(retiringPicker.classList.contains('model-settings-dialog')===dialog.classList.contains('model-settings-dialog')){
+    const style=getComputedStyle(retiringPicker);
+    dialog.style.setProperty('--surface-start-opacity',style.opacity);
+    dialog.style.setProperty('--surface-start-transform',style.transform);
+  }
+  retiringPicker.remove();retiringPicker=null;
+}
+function retirePicker(dialog) {
+  dialog.inert=true;
+  dialog.setAttribute('aria-hidden','true');
+  dialog.classList.add('surface-closing');
+  const immediate=matchMedia('(prefers-reduced-motion: reduce)').matches||document.documentElement.dataset.input==='keyboard';
+  if(immediate)dialog.remove();
+  else {retiringPicker=dialog;setTimeout(()=>{dialog.remove();if(retiringPicker===dialog)retiringPicker=null;},180);}
+}
+const visibleSelectOptions=select=>[...select.options].filter(option=>!option.hidden&&!option.closest('optgroup')?.hidden);
+const enabledOption=option=>!option.disabled&&!option.closest('optgroup')?.disabled;
+function fieldLabelText(element){
+  const text=[];
+  const visit=node=>{
+    if(node.nodeType===Node.TEXT_NODE)text.push(node.textContent);
+    else if(node.nodeType===Node.ELEMENT_NODE&&!node.matches('select,button,input,textarea,[aria-hidden="true"]'))node.childNodes.forEach(visit);
+  };
+  visit(element);return text.join('').replace(/\s+/g,' ').trim();
+}
+function selectFieldName(select,labels){
+  const namedBy=(select.getAttribute('aria-labelledby')||'').trim().split(/\s+/)
+    .map(id=>document.getElementById(id)).filter(Boolean).map(fieldLabelText).filter(Boolean).join(' ');
+  return namedBy||select.getAttribute('aria-label')?.trim()||labels.map(fieldLabelText).filter(Boolean).join(' ')||'请选择';
+}
 function observeSelect(select, sync) {
   new MutationObserver(sync).observe(select, {childList:true, subtree:true, attributes:true});
   select.addEventListener('change', sync);
@@ -6,21 +39,26 @@ function observeSelect(select, sync) {
   Object.defineProperty(select, 'value', {get() {return descriptor.get.call(this)}, set(value) {descriptor.set.call(this,value);sync()}});
 }
 document.querySelectorAll('select:not(#chatModel):not(#chatEffort)').forEach((select, index) => {
-  let activeDialog;
+  let activeDialog,refreshOptions;
+  const labels=[...select.labels];
   const trigger = document.createElement('button');
   trigger.type = 'button';
+  trigger.id=`custom-select-trigger-${select.id||index}`;
   trigger.className = `custom-select ${select.className}`;
   trigger.setAttribute('aria-haspopup', 'dialog');
   trigger.setAttribute('aria-expanded', 'false');
   select.after(trigger);
   select.hidden = true;
+  // The visible button owns label activation; the hidden select keeps form state.
+  labels.forEach(label=>{label.htmlFor=trigger.id;});
   const sync = () => {
     const selected=select.selectedOptions[0];
     trigger.textContent = selected?.dataset.compactLabel || selected?.textContent || '请选择';
     trigger.disabled = select.disabled;
-    trigger.setAttribute('aria-label', `${select.getAttribute('aria-label') || ''} ${selected?.textContent || trigger.textContent}`);
+    trigger.setAttribute('aria-label', `${selectFieldName(select,labels)}：${selected?.textContent || trigger.textContent}`);
     trigger.title=trigger.getAttribute('aria-label');
     if(select.disabled && activeDialog?.open)activeDialog.close();
+    else if(activeDialog?.open)refreshOptions?.();
   };
   observeSelect(select, sync);
   trigger.onclick = () => {
@@ -30,41 +68,54 @@ document.querySelectorAll('select:not(#chatModel):not(#chatEffort)').forEach((se
     dialog.className = 'choice-dialog';
     const header=document.createElement('div');header.className='choice-header';
     const title = document.createElement('h3');
-    title.textContent = select.getAttribute('aria-label') || select.parentElement.firstChild?.textContent?.trim() || '请选择';
+    title.textContent = selectFieldName(select,labels);
     title.id=`choice-title-${index}`;dialog.setAttribute('aria-labelledby',title.id);
     const close = document.createElement('button');
     close.type='button';close.setAttribute('aria-label','关闭');close.title='关闭';
     close.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6"/></svg>';
     close.className='icon-button';close.onclick=()=>dialog.close();header.append(title,close);dialog.append(header);
     const list=document.createElement('div');list.className='choice-options';
-    const options=[...select.options].filter(option=>!option.hidden);
-    const searchable=options.length>6;
     const search=document.createElement('input');search.type='search';search.className='choice-search';
     search.placeholder='输入名称搜索';search.setAttribute('aria-label',`搜索${title.textContent}`);
     search.autocomplete='off';search.spellcheck=false;
-    if(searchable)dialog.append(search);
+    dialog.append(search);
     const empty=document.createElement('p');empty.className='choice-empty';empty.textContent='没有匹配项';empty.hidden=true;
-    for(const option of options) {
-      const item = document.createElement('button');
-      item.type='button';item.className = 'choice-option';
-      const label=document.createElement('span');label.className='choice-label';label.textContent=option.textContent;
-      const check=document.createElement('span');check.className='choice-check';check.setAttribute('aria-hidden','true');
-      check.innerHTML=option.selected?'<svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg>':'';
-      item.append(label,check);item.dataset.search=`${option.textContent} ${option.value}`.toLowerCase();
-      item.disabled=option.disabled; item.setAttribute('aria-pressed',String(option.selected));
-      item.onclick=()=>{
-        if(select.disabled || ![...select.options].some(o=>o.value===option.value&&!o.disabled))return;
-        select.value=option.value;select.dispatchEvent(new Event('input',{bubbles:true}));select.dispatchEvent(new Event('change',{bubbles:true}));dialog.close();
-      };
-      list.append(item);
-    }
-    list.append(empty);dialog.append(list);
-    search.oninput=()=>{
+    dialog.append(list);let signature='',composing=false;
+    const filterOptions=(resetScroll=false)=>{
       const query=search.value.trim().toLowerCase();let count=0;
       list.querySelectorAll('.choice-option').forEach(item=>{item.hidden=!item.dataset.search.includes(query);if(!item.hidden)count++});
-      empty.hidden=count>0;list.scrollTop=0;
+      empty.hidden=count>0;if(resetScroll)list.scrollTop=0;
     };
+    refreshOptions=()=>{
+      const options=visibleSelectOptions(select),next=JSON.stringify(options.map(option=>[option.value,option.textContent,enabledOption(option)]));
+      search.hidden=options.length<=6&&!search.value;
+      if(next!==signature){
+        signature=next;const active=document.activeElement,inList=list.contains(active),value=inList?active.dataset.value:null,scrollTop=list.scrollTop;
+        list.replaceChildren(...options.map(option=>{
+          const item=document.createElement('button');item.type='button';item.className='choice-option';item.dataset.value=option.value;
+          const label=document.createElement('span');label.className='choice-label';label.textContent=option.textContent;
+          const check=document.createElement('span');check.className='choice-check';check.setAttribute('aria-hidden','true');
+          check.innerHTML='<svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg>';
+          item.append(label,check);item.dataset.search=`${option.textContent} ${option.value}`.toLowerCase();item.disabled=!enabledOption(option);
+          item.onclick=()=>{
+            if(select.disabled||!visibleSelectOptions(select).some(current=>current.value===option.value&&enabledOption(current)))return;
+            select.value=option.value;select.dispatchEvent(new Event('input',{bubbles:true}));select.dispatchEvent(new Event('change',{bubbles:true}));dialog.close();
+          };
+          return item;
+        }),empty);
+        filterOptions();list.scrollTop=scrollTop;
+        if(inList){const rows=[...list.querySelectorAll('.choice-option')].filter(item=>!item.hidden&&!item.disabled);(rows.find(item=>item.dataset.value===value)||rows.find(item=>item.dataset.value===select.value)||(!search.hidden?search:rows[0])||close).focus({preventScroll:true});}
+      }
+      list.querySelectorAll('.choice-option').forEach(item=>item.setAttribute('aria-pressed',String(item.dataset.value===select.value)));
+      if(dialog.open&&search.hidden&&document.activeElement===search){const rows=[...list.querySelectorAll('.choice-option')].filter(item=>!item.hidden&&!item.disabled);(rows.find(item=>item.dataset.value===select.value)||rows[0]||close).focus({preventScroll:true});}
+      if(dialog.open)position();
+    };
+    refreshOptions();
+    search.addEventListener('compositionstart',()=>{composing=true;});search.addEventListener('compositionend',()=>{composing=false;filterOptions(true);});
+    search.oninput=event=>{if(!composing&&!event.isComposing)filterOptions(true);};
     dialog.addEventListener('keydown',event=>{
+      if(composing||event.isComposing||event.keyCode===229)return;
+      if(event.key==='Enter'&&event.target===search&&!event.isComposing){const items=[...list.querySelectorAll('.choice-option')].filter(item=>!item.hidden&&!item.disabled);if(items.length===1){event.preventDefault();items[0].click();}return;}
       if(!['ArrowDown','ArrowUp','Home','End'].includes(event.key) || event.isComposing)return;
       if(event.target===search && ['Home','End'].includes(event.key))return;
       const items=[...list.querySelectorAll('.choice-option')].filter(item=>!item.hidden&&!item.disabled);
@@ -80,6 +131,8 @@ document.querySelectorAll('select:not(#chatModel):not(#chatEffort)').forEach((se
       if(mobile){dialog.style.left='';dialog.style.top='';dialog.style.maxHeight=`${Math.max(180,height-32)}px`;return;}
       const anchor=trigger.getBoundingClientRect(),above=anchor.top-12,below=innerHeight-anchor.bottom-12;
       const openBelow=below>=300 || below>=above;
+      dialog.style.setProperty('--surface-origin',openBelow?'left top':'left bottom');
+      dialog.style.setProperty('--surface-offset',openBelow?'6px':'-6px');
       dialog.style.maxHeight=`${Math.max(120,Math.min(500,openBelow?below:above))}px`;
       const bounds={width:dialog.offsetWidth,height:dialog.offsetHeight};
       dialog.style.left=`${Math.max(12,Math.min(innerWidth-bounds.width-12,anchor.left))}px`;
@@ -88,10 +141,10 @@ document.querySelectorAll('select:not(#chatModel):not(#chatEffort)').forEach((se
     window.addEventListener('resize',position);window.visualViewport?.addEventListener('resize',position);
     dialog.addEventListener('close',()=>{
       window.removeEventListener('resize',position);window.visualViewport?.removeEventListener('resize',position);
-      activeDialog=null;trigger.setAttribute('aria-expanded','false');dialog.remove();if(trigger.isConnected)trigger.focus({preventScroll:true});
+      if(activeDialog===dialog){activeDialog=null;refreshOptions=undefined;trigger.setAttribute('aria-expanded','false');}retirePicker(dialog);if(!activeDialog?.open&&trigger.isConnected)trigger.focus({preventScroll:true});
     },{once:true});
     dialog.addEventListener('click',event=>{if(event.target===dialog){const r=dialog.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)dialog.close()}});
-    document.body.append(dialog);dialog.showModal();trigger.setAttribute('aria-expanded','true');position();
+    finishRetiringPicker(dialog);document.body.append(dialog);dialog.showModal();trigger.setAttribute('aria-expanded','true');position();
     const selected=list.querySelector('[aria-pressed=true]:not(:disabled)');
     if(selected){selected.focus({preventScroll:true});list.scrollTop=selected.offsetTop-list.offsetTop-(list.clientHeight-selected.clientHeight)/2;}
     else dialog.focus({preventScroll:true});
@@ -106,8 +159,8 @@ function mountModelSettings() {
   const trigger = document.getElementById('modelSettingsBtn');
   const order = ['none','minimal','low','medium','high','xhigh','max','ultra'];
   const compact = option => (option?.dataset.compactLabel || option?.textContent || '').replace(/^(Claude Code|Antigravity|Grok Build) · /,'');
-  const modelOptions = () => [...model.options].filter(option => !option.hidden && option.value);
-  const levels = () => [...effort.options].filter(option => !option.hidden && !option.disabled)
+  const modelOptions = () => visibleSelectOptions(model).filter(option => option.value);
+  const levels = () => visibleSelectOptions(effort).filter(enabledOption)
     .sort((a,b) => (order.indexOf(a.value) < 0 ? 99 : order.indexOf(a.value)) - (order.indexOf(b.value) < 0 ? 99 : order.indexOf(b.value)));
   let popup;
   function sync() {
@@ -157,12 +210,24 @@ function mountModelSettings() {
 
     const permissionOptions=find('.permission-options');
     let permission='full';try{permission=localStorage.getItem('cmc.permission')||'full';}catch{}
-    for(const [value,label] of [['ask','询问'],['auto','自动审批'],['full','完全访问'],...(localStorage.getItem('cmc.harness')==='codex'||!localStorage.getItem('cmc.harness')?[['custom','自定义 (config.toml)']]:[])]){
+    const permissionHarness=localStorage.getItem('cmc.harness')||'codex';
+    if(permissionHarness==='antigravity'&&permission==='ask'){
+      // AGY 无头模式不支持逐条审批；把遗留的"询问"迁移为"自动审批"，避免每轮触发服务端警告。
+      try{localStorage.setItem('cmc.permission','auto');localStorage.setItem('cmc.permission.antigravity','auto');}catch{}
+      permission='auto';
+    }
+    for(const [value,label] of [['auto','自动审批'],['full','完全访问'],...(permissionHarness==='antigravity'?[]:[['ask','询问']]),...(permissionHarness==='codex'||!localStorage.getItem('cmc.harness')?[['custom','自定义 (config.toml)']]:[])]){
       const choice=document.createElement('button');choice.type='button';choice.textContent=label;choice.dataset.permission=value;choice.setAttribute('aria-pressed',String(permission===value));
       choice.onclick=()=>{try{localStorage.setItem('cmc.permission',value);localStorage.setItem('cmc.permission.'+(localStorage.getItem('cmc.harness')||'codex'),value);}catch{};permissionOptions.querySelectorAll('button').forEach(button=>button.setAttribute('aria-pressed',String(button===choice)));};
       permissionOptions.append(choice);
     }
-    let choosingModel = false, modelSignature = '', levelSignature = '', dragging = false;
+    if(permissionHarness==='antigravity'){
+      const hint=document.createElement('p');
+      hint.className='form-help';hint.style.margin='4px 0 0';
+      hint.textContent='Antigravity CLI 无逐条审批能力，工具操作将自动执行。';
+      permissionOptions.after(hint);
+    }
+    let choosingModel = false, modelSignature = '', levelSignature = '', dragging = false, composing = false;
     const selectValue = (select,value) => {
       select.value = value;
       select.dispatchEvent(new Event('input',{bubbles:true}));
@@ -182,6 +247,8 @@ function mountModelSettings() {
       const anchor = trigger.getBoundingClientRect();
       const above=anchor.top-12,below=innerHeight-anchor.bottom-12;
       const openBelow=below>=300 || below>=above;
+      dialog.style.setProperty('--surface-origin',openBelow?'right top':'right bottom');
+      dialog.style.setProperty('--surface-offset',openBelow?'6px':'-6px');
       dialog.style.maxHeight=`${Math.max(140,Math.min(500,openBelow?below:above))}px`;
       const bounds={width:dialog.offsetWidth,height:dialog.offsetHeight};
       dialog.style.left=`${Math.max(12,Math.min(innerWidth-bounds.width-12,anchor.right-bounds.width))}px`;
@@ -190,7 +257,14 @@ function mountModelSettings() {
     const filterModels = () => {
       const query=search.value.trim().toLowerCase();let count=0;
       list.querySelectorAll('.choice-option').forEach(item=>{item.hidden=!item.dataset.search.includes(query);if(!item.hidden)count++;});
-      list.querySelectorAll('.agent-section-heading').forEach(item=>item.hidden=true);
+      list.querySelectorAll('.agent-section-heading').forEach(heading=>{
+        let row=heading.nextElementSibling,visible=false;
+        while(row&&!row.classList.contains('agent-section-heading')){
+          if(row.classList.contains('choice-option')&&!row.hidden)visible=true;
+          row=row.nextElementSibling;
+        }
+        heading.hidden=!visible;
+      });
       list.querySelector('.choice-empty').hidden=count>0;
     };
     const syncPopup = () => {
@@ -220,25 +294,26 @@ function mountModelSettings() {
         }));
       }
       const options=modelOptions();
-      const nextSignature=options.map(option=>`${option.value}:${option.textContent}:${option.disabled}`).join('|');
+      const nextSignature=JSON.stringify(options.map(option=>[option.value,option.textContent,enabledOption(option),option.dataset.group,option.dataset.groupLabel]));
       if(nextSignature!==modelSignature) {
         modelSignature=nextSignature;
-        let lastAgent='';
+        let lastGroup='';
         list.replaceChildren(...options.flatMap(option=>{
           const agent=option.dataset.agent||'codex';
           const heading=document.createElement('p');heading.className='agent-section-heading';
-          heading.textContent=({codex:'Codex',claude:'Claude Code',antigravity:'Antigravity',grok:'Grok Build'})[agent]||agent;
-          const section=agent!==lastAgent?[heading]:[];lastAgent=agent;
+          const group=option.dataset.group?`${agent}:${option.dataset.group}`:agent;
+          heading.textContent=option.dataset.groupLabel||({codex:'Codex',claude:'Claude Code',antigravity:'Antigravity',grok:'Grok Build',deepseek:'DeepSeek Harness',hermes:'Hermes',opencode:'OpenCode'})[agent]||agent;
+          const section=group!==lastGroup?[heading]:[];lastGroup=group;
           const item=document.createElement('button');item.type='button';item.className='choice-option';
-          item.dataset.value=option.value;item.dataset.search=`${option.textContent} ${option.value}`.toLowerCase();item.disabled=option.disabled;
+          item.dataset.value=option.value;item.dataset.search=`${option.textContent} ${option.value} ${option.dataset.groupLabel||''}`.toLowerCase();item.disabled=!enabledOption(option);
           item.dataset.agent=agent;
           const label=document.createElement('span');label.className='choice-label';label.textContent=option.textContent.replace(/^(Claude Code|Antigravity|Grok Build) · /,'');
-          if(option.disabled)item.title='请在新会话中切换助手';
+          if(option.disabled)item.title=option.dataset.unavailableReason||'请在新会话中切换助手';
           const check=document.createElement('span');check.className='choice-check';check.setAttribute('aria-hidden','true');
           check.innerHTML='<svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg>';
           item.append(label,check);
           item.onclick=()=>{
-            if(model.disabled || !modelOptions().some(choice=>choice.value===option.value&&!choice.disabled))return;
+            if(model.disabled || !modelOptions().some(choice=>choice.value===option.value&&enabledOption(choice)))return;
             selectValue(model,option.value);showModelList(false);
           };
           return [...section,item];
@@ -276,6 +351,9 @@ function mountModelSettings() {
       if(next!==undefined){event.preventDefault();setLevel(next);}
     };
     dialog.addEventListener('keydown',event=>{
+      if(composing||event.isComposing||event.keyCode===229)return;
+      if(choosingModel&&event.key==='Escape'){event.preventDefault();event.stopPropagation();showModelList(false);return;}
+      if(choosingModel&&event.key==='Enter'&&event.target===search){const items=[...list.querySelectorAll('.choice-option')].filter(item=>!item.hidden&&!item.disabled);if(items.length===1){event.preventDefault();items[0].click();}return;}
       if(!choosingModel || !['ArrowDown','ArrowUp','Home','End'].includes(event.key) || event.isComposing)return;
       if(event.target===search&&['Home','End'].includes(event.key))return;
       const items=[...list.querySelectorAll('.choice-option')].filter(item=>!item.hidden&&!item.disabled);
@@ -287,18 +365,19 @@ function mountModelSettings() {
     modelButton.onclick=()=>showModelList(true);
     back.onclick=()=>showModelList(false);
     find('.model-settings-close').onclick=()=>dialog.close();
-    search.oninput=()=>{filterModels();list.scrollTop=0;};
+    search.addEventListener('compositionstart',()=>{composing=true;});search.addEventListener('compositionend',()=>{composing=false;filterModels();list.scrollTop=0;});
+    search.oninput=event=>{if(!composing&&!event.isComposing){filterModels();list.scrollTop=0;}};
     dialog.addEventListener('click',event=>{
       if(event.target!==dialog)return;const rect=dialog.getBoundingClientRect();
       if(event.clientX<rect.left||event.clientX>rect.right||event.clientY<rect.top||event.clientY>rect.bottom)dialog.close();
     });
     dialog.addEventListener('close',()=>{
       window.removeEventListener('resize',position);window.visualViewport?.removeEventListener('resize',position);
-      popup=null;trigger.setAttribute('aria-expanded','false');dialog.remove();trigger.focus({preventScroll:true});
+      popup=null;trigger.setAttribute('aria-expanded','false');retirePicker(dialog);trigger.focus({preventScroll:true});
     },{once:true});
     popup={dialog,sync:syncPopup};
     window.addEventListener('resize',position);window.visualViewport?.addEventListener('resize',position);
-    document.body.append(dialog);syncPopup();dialog.showModal();trigger.setAttribute('aria-expanded','true');position();
+    finishRetiringPicker(dialog);document.body.append(dialog);syncPopup();dialog.showModal();trigger.setAttribute('aria-expanded','true');position();
     (slider.tabIndex===0?slider:modelButton).focus({preventScroll:true});
   };
 }

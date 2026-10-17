@@ -2,6 +2,23 @@
 
 以下命令从仓库根目录执行。
 
+Windows发行包包含本仓库Gateway、Android APK和配套Local Console。打包前，使用conda环境中的Python，先完成Android Release与`server`的`npm run build`；并确认`%USERPROFILE%\.codex\tools\local-console`具有当前可用的`src`、`dist`、`package.json`、`package-lock.json`、生产依赖及`runtime/node.exe`。这里的`dist`是已经构建的Web管理前端，Gateway的`server/dist`是另一组产物。仓库不包含该配套组件的独立开发工程，打包器从已安装组件取材。
+
+```powershell
+conda run -n base python installer/build-release.py `
+  --version 0.6.444 `
+  --android-build-dir D:\codex\build\Codex-mobile-control\android\app `
+  --android-apk D:\codex\deliverables\Codex-mobile-control\Codex-Control-0.6.444.apk `
+  --android-build-log D:\codex\build\Codex-mobile-control\automation444-build-delivery.log `
+  --output-dir D:\codex\deliverables\Codex-mobile-control
+```
+
+按实际位置调整路径和环境名。`--android-build-log`指定与APK对应的构建记录，避免为打包额外复制一份日志到项目盘。省略参数时沿用仓库内默认路径。打包会生成Setup、Windows发行ZIP及组件清单，检查生产依赖版本、Node身份和压缩包CRC；暂存文件及内嵌payload使用系统临时目录，完成后清理，不运行安装或修改本机账号。
+
+## 生成产物清理
+
+每次编译完成并确认结果可用、当前安装包交付成功后，清理较早的生成产物；不使用定时任务。`scripts/cleanup-workspace.ps1 -KeepVersion 0.6.322,0.6.307` 显式保留当前验证通过的 Android 与 Windows 版本，只删除更早的版本 APK/EXE/ZIP、发行清单和 `artifacts/portable-*` 展开目录；版本号随实际交付更新。`-Preview` 只列出目标，构建或发行验证运行中跳过清理。清理时保留当前构建输出、源码、Git、非发行参考文件和下载入口。D 盘的版本交付也在每次确认成功后清理旧版本，保留当前可用发行包。Windows 打包的编译临时文件、展开运行时和 payload 使用系统临时目录，打包后自动释放。
+
 ## 电脑端 Gateway
 
 ```powershell
@@ -117,6 +134,16 @@ cd android
 .\gradlew.bat :app:assembleDebug
 ```
 
+项目盘空间不足时可指定中间文件与 Gradle 项目缓存目录，源码仍使用当前仓库：
+
+```powershell
+.\gradlew.bat :app:assembleRelease --project-cache-dir D:\codex\build\Codex-mobile-control\gradle-cache -PcmcBuildRoot=D:\codex\build\Codex-mobile-control\android '-Pkotlin.incremental=false'
+```
+
+Release 输出位于指定根目录下的 `app\outputs\apk\release`。Windows 打包时通过 `--android-build-dir D:\codex\build\Codex-mobile-control\android\app` 读取对应构建元数据，`--android-apk` 可指定已复制到其他盘的最终 APK；省略时按原规则读取仓库 artifacts 中的版本文件。省略 `cmcBuildRoot` 时沿用默认构建目录。
+
+Windows 上源码和中间产物跨盘时，Kotlin 增量编译不能计算两者的相对路径，需在该命令中关闭增量编译。默认同盘构建沿用现有设置。
+
 本机必须安装 Android SDK，并满足以下任一条件：
 
 - 设置 `ANDROID_SDK_ROOT`
@@ -231,4 +258,4 @@ Android smoke test 可直接用项目脚本执行：
 
 - 前端终端模拟器和全屏 TUI 渲染。
 - Telegram adapter。
-- 微信 adapter。
+- QQ / 微信真实账号联调及附件、审批接入（文字驱动已实现）。

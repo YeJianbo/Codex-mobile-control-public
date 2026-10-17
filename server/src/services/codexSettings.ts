@@ -1,11 +1,20 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import TOML from "@iarna/toml";
 import type { ApprovalPolicySummary, ControlSettings } from "../types.js";
 import { userCodexConfigPath } from "./paths.js";
 
 type TomlValue = string | number | boolean | Date | TomlValue[] | { [key: string]: TomlValue };
 type TomlRecord = { [key: string]: TomlValue };
+
+export async function readProjectlessWorkspaceRoot(): Promise<string> {
+  const config = await readToml(userCodexConfigPath());
+  const desktop = asRecord(config.desktop);
+  const configured = readString(desktop.projectlessWorkspaceRoot)?.trim();
+  if (configured && !path.isAbsolute(configured)) throw new Error("Codex 默认工作区必须是绝对路径");
+  return configured || path.join(os.homedir(), "Documents", "Codex");
+}
 
 export async function readUserSettings(): Promise<ControlSettings> {
   const config = await readToml(userCodexConfigPath());

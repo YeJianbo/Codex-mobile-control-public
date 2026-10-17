@@ -16,6 +16,7 @@ export async function loadServerConfig(): Promise<ServerConfig> {
       port: parsed.port ?? 38457,
       token: parsed.token ?? nanoid(32),
       projectRoots: parsed.projectRoots ?? [],
+      capacityAutoRetry: parsed.capacityAutoRetry === true,
       https: parsed.https ?? { enabled: false },
     };
   } catch {

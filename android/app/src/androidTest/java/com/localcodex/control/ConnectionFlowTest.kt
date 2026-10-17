@@ -10,6 +10,10 @@ import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.assertIsNotEnabled
+import androidx.compose.ui.test.hasSetTextAction
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import okhttp3.Response
@@ -55,227 +59,83 @@ class ConnectionFlowTest {
     @After
     fun tearDown() {
         clearConnectionPrefs()
+        composeRule.runOnUiThread { model?.disconnect() }
         server.shutdown()
     }
 
-    @Test
-    fun savedConnectionLoadsHomeAndThreadFlow() {
+    private var model: NativeViewModel? = null
+    private fun openSavedThread(): NativeViewModel {
         ConnectionStore(application).save(server.url("/").toString().trimEnd('/'), "token")
-        val viewModel = MainViewModel(application)
-
-        composeRule.setContent {
-            MaterialTheme {
-                ControlApp(viewModel = viewModel)
-            }
-        }
-
-        composeRule.waitUntil(timeoutMillis = 15_000) {
-            composeRule.onAllNodesWithText("LanProject").fetchSemanticsNodes().isNotEmpty()
-        }
-
-        composeRule.onNodeWithText("项目与会话").assertIsDisplayed()
-        composeRule.onNodeWithText("LanProject").assertIsDisplayed()
-        composeRule.onNodeWithText("1 个会话").assertIsDisplayed()
-        composeRule.onNodeWithText("修复局域网连接").assertIsDisplayed()
-
-        composeRule.onNodeWithText("打开").performClick()
-
-        composeRule.waitUntil(timeoutMillis = 10_000) {
-            composeRule.onAllNodesWithText("已打开的历史会话").fetchSemanticsNodes().isNotEmpty()
-        }
-
-        composeRule.onNodeWithText("修复局域网连接").assertIsDisplayed()
+        val vm = NativeViewModel(application)
+        model = vm
+        composeRule.setContent { NativeApp(vm) }
+        composeRule.runOnUiThread { vm.autoConnect() }
+        composeRule.waitUntil(15000) { vm.state.connected && vm.state.threads.isNotEmpty() }
+        composeRule.runOnUiThread { vm.openThread(vm.state.threads.first()) }
+        composeRule.waitUntil(10000) { !vm.state.loadingHistory && vm.state.events.isNotEmpty() }
+        return vm
+    }
+    @Test fun savedConnectionLoadsHomeAndThreadFlow() {
+        val vm = openSavedThread()
         composeRule.onNodeWithText("已打开的历史会话").assertIsDisplayed()
-        composeRule.onNodeWithText("这是历史回复。").assertIsDisplayed()
-
-        composeRule.activity.onBackPressedDispatcher.onBackPressed()
-
-        composeRule.waitUntil(timeoutMillis = 5_000) {
-            composeRule.onAllNodesWithText("项目与会话").fetchSemanticsNodes().isNotEmpty()
-        }
-        composeRule.onNodeWithText("项目与会话").assertIsDisplayed()
+        assertTrue(vm.state.events.any { it.text == "这是历史回复。" })
+        org.junit.Assert.assertEquals("project-1", vm.state.projectId)
     }
-
-    @Test
-    fun websocketStreamingKeepsCurrentConversationFocused() {
-        ConnectionStore(application).save(server.url("/").toString().trimEnd('/'), "token")
-        val viewModel = MainViewModel(application)
-
-        composeRule.setContent {
-            MaterialTheme {
-                ControlApp(viewModel = viewModel)
-            }
-        }
-
-        composeRule.waitUntil(timeoutMillis = 15_000) {
-            composeRule.onAllNodesWithText("LanProject").fetchSemanticsNodes().isNotEmpty()
-        }
-        composeRule.onNodeWithText("打开").performClick()
-        composeRule.waitUntil(timeoutMillis = 10_000) {
-            composeRule.onAllNodesWithText("已打开的历史会话").fetchSemanticsNodes().isNotEmpty()
-        }
-
+    @Test fun pairedDeviceCanSavePasswordWithoutPairingCode() {
+        val store=ConnectionStore(application)
+        store.save(server.url("/").toString().trimEnd('/'), "existing-device-token")
+        store.saveRemote("https://example.com", "", "")
+        val vm=NativeViewModel(application); model=vm
+        var closed=false
+        composeRule.setContent { MaterialTheme { NativePairingSheet(vm) { closed=true } } }
+        composeRule.onAllNodes(hasSetTextAction())[2].performScrollTo().performTextInput("246810")
+        composeRule.onNodeWithText("保存并连接").performScrollTo().performClick()
+        composeRule.waitUntil(10000) { vm.state.connected }
+        assertTrue(closed)
+        org.junit.Assert.assertEquals("246810", ConnectionStore(application).remotePassword())
+        org.junit.Assert.assertEquals("existing-device-token", ConnectionStore(application).token())
+        org.junit.Assert.assertEquals("246810", NativeViewModel(application).state.remotePassword)
+        val requests=mutableListOf<RecordedRequest>()
+        while(true) { requests.add(server.takeRequest(100,TimeUnit.MILLISECONDS)?:break) }
+        assertTrue(requests.none { it.path.orEmpty().contains("pair") })
+    }
+    @Test fun unpairedDeviceStillRequiresPairingCode() {
+        ConnectionStore(application).save(server.url("/").toString().trimEnd('/'), "")
+        val vm=NativeViewModel(application); model=vm
+        composeRule.setContent { MaterialTheme { NativePairingSheet(vm) {} } }
+        composeRule.onNodeWithText("连接").performScrollTo().assertIsNotEnabled()
+    }
+    @Test fun websocketStreamingKeepsCurrentConversationFocused() {
+        val vm = openSavedThread()
         assertTrue(socketOpened.await(10, TimeUnit.SECONDS))
-        socketRef.get()?.send(JSONObject().put("type", "message.delta").put("threadId", "thread-2").put("text", "后台线程消息").toString())
-        socketRef.get()?.send(JSONObject().put("type", "message.delta").put("threadId", "thread-1").put("text", "实时增量已到达").toString())
-
-        composeRule.waitUntil(timeoutMillis = 10_000) {
-            composeRule.onAllNodesWithText("这是历史回复。实时增量已到达").fetchSemanticsNodes().isNotEmpty()
-        }
-
-        composeRule.onNodeWithText("修复局域网连接").assertIsDisplayed()
-        composeRule.onNodeWithText("这是历史回复。实时增量已到达").assertIsDisplayed()
-        assertTrue(composeRule.onAllNodesWithText("后台线程消息").fetchSemanticsNodes().isEmpty())
+        socketRef.get()!!.send(JSONObject().put("type","message.delta").put("threadId","thread-2").put("text","后台线程消息").toString())
+        socketRef.get()!!.send(JSONObject().put("type","message.delta").put("threadId","thread-1").put("text","实时增量已到达").toString())
+        composeRule.waitUntil(10000) { vm.state.events.any { it.text.contains("实时增量已到达") } }
+        org.junit.Assert.assertEquals("thread-1", vm.state.threadId)
+        assertTrue(vm.state.events.none { it.text.contains("后台线程消息") })
     }
-
-    @Test
-    fun fileChangeEventCanOpenFilesPanel() {
+    @Test fun fileChangeEventCanOpenFilesPanel() {
+        val vm = openSavedThread()
+        socketRef.get()!!.send(JSONObject().put("type","file.changed").put("threadId","thread-1").put("summary","1 个文件变更").put("files",JSONArray().put("README.md")).toString())
+        composeRule.waitUntil(10000) { vm.state.events.any { it.type == "file.changed" } }
+        composeRule.runOnUiThread { vm.files() }
+        composeRule.waitUntil(10000) { vm.state.files.any { it.name == "README.md" } }
+    }
+    @Test fun diffUpdateEventCanOpenDiffPanel() {
+        val vm = openSavedThread()
+        socketRef.get()!!.send(JSONObject().put("type","diff.updated").put("threadId","thread-1").put("diff","-old\n+new").toString())
+        composeRule.waitUntil(10000) { vm.state.events.any { it.type == "diff.updated" } }
+        composeRule.runOnUiThread { vm.diff() }
+        composeRule.waitUntil(10000) { vm.state.diff.contains("+new") }
+    }
+    @Test fun notificationOpensThreadAfterColdConnection() {
         ConnectionStore(application).save(server.url("/").toString().trimEnd('/'), "token")
-        val viewModel = MainViewModel(application)
-
-        composeRule.setContent {
-            MaterialTheme {
-                ControlApp(viewModel = viewModel)
-            }
-        }
-
-        composeRule.waitUntil(timeoutMillis = 15_000) {
-            composeRule.onAllNodesWithText("LanProject").fetchSemanticsNodes().isNotEmpty()
-        }
-        composeRule.onNodeWithText("打开").performClick()
-        composeRule.waitUntil(timeoutMillis = 10_000) {
-            composeRule.onAllNodesWithText("已打开的历史会话").fetchSemanticsNodes().isNotEmpty()
-        }
-
-        assertTrue(socketOpened.await(10, TimeUnit.SECONDS))
-        socketRef.get()?.send(
-            JSONObject()
-                .put("type", "file.changed")
-                .put("threadId", "thread-1")
-                .put("summary", "1 个文件变更")
-                .put("files", JSONArray().put("README.md"))
-                .toString()
-        )
-
-        composeRule.waitUntil(timeoutMillis = 10_000) {
-            composeRule.onAllNodesWithText("文件变更").fetchSemanticsNodes().isNotEmpty()
-        }
-        composeRule.onNodeWithText("打开文件").performClick()
-
-        composeRule.waitUntil(timeoutMillis = 10_000) {
-            composeRule.onAllNodesWithText("README.md").fetchSemanticsNodes().isNotEmpty()
-        }
-
-        composeRule.onNodeWithText("项目根目录").assertIsDisplayed()
-        assertTrue(composeRule.onAllNodesWithText("README.md").fetchSemanticsNodes().isNotEmpty())
+        val vm = NativeViewModel(application); model = vm
+        composeRule.setContent { NativeApp(vm) }
+        composeRule.runOnUiThread { vm.openNotificationThread("thread-1"); vm.autoConnect() }
+        composeRule.waitUntil(15000) { vm.state.threadId == "thread-1" && !vm.state.loadingHistory }
+        composeRule.onNodeWithText("已打开的历史会话").assertIsDisplayed()
     }
-
-    @Test
-    fun diffUpdateEventCanOpenDiffPanel() {
-        ConnectionStore(application).save(server.url("/").toString().trimEnd('/'), "token")
-        val viewModel = MainViewModel(application)
-
-        composeRule.setContent {
-            MaterialTheme {
-                ControlApp(viewModel = viewModel)
-            }
-        }
-
-        composeRule.waitUntil(timeoutMillis = 15_000) {
-            composeRule.onAllNodesWithText("LanProject").fetchSemanticsNodes().isNotEmpty()
-        }
-        composeRule.onNodeWithText("打开").performClick()
-        composeRule.waitUntil(timeoutMillis = 10_000) {
-            composeRule.onAllNodesWithText("已打开的历史会话").fetchSemanticsNodes().isNotEmpty()
-        }
-
-        assertTrue(socketOpened.await(10, TimeUnit.SECONDS))
-        socketRef.get()?.send(
-            JSONObject()
-                .put("type", "diff.updated")
-                .put("threadId", "thread-1")
-                .put("diff", "diff --git a/README.md b/README.md")
-                .toString()
-        )
-
-        composeRule.waitUntil(timeoutMillis = 10_000) {
-            composeRule.onAllNodesWithText("Diff 已更新").fetchSemanticsNodes().isNotEmpty()
-        }
-        composeRule.onNodeWithText("查看改动").performClick()
-
-        composeRule.waitUntil(timeoutMillis = 10_000) {
-            composeRule.onAllNodesWithText("Git 改动").fetchSemanticsNodes().isNotEmpty()
-        }
-
-        assertTrue(composeRule.onAllNodesWithText("Git 改动").fetchSemanticsNodes().isNotEmpty())
-        assertTrue(composeRule.onAllNodesWithText("1/1 个改动文件").fetchSemanticsNodes().isNotEmpty())
-        assertTrue(composeRule.onAllNodesWithText("README.md").fetchSemanticsNodes().isNotEmpty())
-        assertTrue(composeRule.onAllNodesWithText("Diff").fetchSemanticsNodes().isNotEmpty())
-    }
-
-    @Test
-    fun terminalOutputUpdatesTerminalPanelStatus() {
-        ConnectionStore(application).save(server.url("/").toString().trimEnd('/'), "token")
-        val viewModel = MainViewModel(application)
-
-        composeRule.setContent {
-            MaterialTheme {
-                ControlApp(viewModel = viewModel)
-            }
-        }
-
-        composeRule.waitUntil(timeoutMillis = 15_000) {
-            composeRule.onAllNodesWithText("LanProject").fetchSemanticsNodes().isNotEmpty()
-        }
-
-        assertTrue(socketOpened.await(10, TimeUnit.SECONDS))
-        socketRef.get()?.send(
-            JSONObject()
-                .put("type", "terminal.output")
-                .put("threadId", "terminal:cmd-1")
-                .put("commandId", "cmd-1")
-                .put("cwd", "F:/Code/LanProject")
-                .put("command", "npm test")
-                .put("status", "running")
-                .put("stream", "stdout")
-                .put("text", "line one")
-                .toString()
-        )
-
-        composeRule.onNodeWithContentDescription("更多").performClick()
-        composeRule.onNodeWithText("终端").performClick()
-
-        composeRule.waitUntil(timeoutMillis = 10_000) {
-            composeRule.onAllNodesWithText("npm test").fetchSemanticsNodes().isNotEmpty()
-        }
-        composeRule.waitUntil(timeoutMillis = 10_000) {
-            composeRule.onAllNodesWithText("运行中", substring = true).fetchSemanticsNodes().isNotEmpty()
-        }
-
-        assertTrue(composeRule.onAllNodesWithText("全部 · 运行 1 · 1/1").fetchSemanticsNodes().isNotEmpty())
-        assertTrue(composeRule.onAllNodesWithText("npm test").fetchSemanticsNodes().isNotEmpty())
-        assertTrue(composeRule.onAllNodesWithText("运行中", substring = true).fetchSemanticsNodes().isNotEmpty())
-        assertTrue(composeRule.onAllNodesWithText("line one").fetchSemanticsNodes().isNotEmpty())
-
-        socketRef.get()?.send(
-            JSONObject()
-                .put("type", "terminal.output")
-                .put("threadId", "terminal:cmd-1")
-                .put("commandId", "cmd-1")
-                .put("cwd", "F:/Code/LanProject")
-                .put("command", "npm test")
-                .put("status", "completed")
-                .put("stream", "stdout")
-                .put("text", "\n[exit 0]")
-                .toString()
-        )
-
-        composeRule.waitUntil(timeoutMillis = 10_000) {
-            composeRule.onAllNodesWithText("已完成", substring = true).fetchSemanticsNodes().isNotEmpty()
-        }
-        assertTrue(composeRule.onAllNodesWithText("已完成", substring = true).fetchSemanticsNodes().isNotEmpty())
-    }
-
     private fun clearConnectionPrefs() {
         application.getSharedPreferences("connection", Context.MODE_PRIVATE)
             .edit()
@@ -288,6 +148,33 @@ class ConnectionFlowTest {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 val path = request.requestUrl?.encodedPath.orEmpty()
                 return when {
+                    path == "/api/models" -> jsonResponse(JSONObject("""{"models":[{"model":"gpt-test","displayName":"Test","supportedReasoningEfforts":[]}]}"""))
+                    path == "/api/sidebar" -> jsonResponse(
+                        JSONObject()
+                            .put(
+                                "projects",
+                                JSONArray().put(
+                                    JSONObject()
+                                        .put("id", "project-1")
+                                        .put("name", "LanProject")
+                                        .put("path", "F:/Code/LanProject")
+                                        .put("trusted", true)
+                                )
+                            )
+                            .put(
+                                "allowedProjects",
+                                JSONArray().put(
+                                    JSONObject()
+                                        .put("id", "project-1")
+                                        .put("name", "LanProject")
+                                        .put("path", "F:/Code/LanProject")
+                                        .put("trusted", true)
+                                )
+                            )
+                            .put("hasMore", false)
+                    )
+                    path == "/api/approvals" -> jsonResponse(JSONObject().put("approvals",JSONArray()))
+                    path.endsWith("/queue") -> jsonResponse(JSONObject().put("messages",JSONArray()))
                     path == "/health" -> jsonResponse(
                         JSONObject()
                             .put("ok", true)
@@ -447,6 +334,9 @@ class ConnectionFlowTest {
 
                     path == "/ws" -> MockResponse()
                         .withWebSocketUpgrade(object : WebSocketListener() {
+                            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                                webSocket.close(code, reason)
+                            }
                             override fun onOpen(webSocket: WebSocket, response: Response) {
                                 socketRef.set(webSocket)
                                 socketOpened.countDown()

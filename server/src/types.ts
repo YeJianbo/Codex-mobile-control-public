@@ -38,6 +38,7 @@ export type ServerConfig = {
   port: number;
   token: string;
   projectRoots: string[];
+  capacityAutoRetry?: boolean;
   https?: {
     enabled: boolean;
     certPath?: string;
@@ -63,6 +64,16 @@ export type PairingSession = {
 };
 
 export type ThreadRecord = {
+  closureKind?:'gatewayClosed';
+  unread?:boolean;
+  completedAt?:number;
+  subagent?: {parentThreadId?:string;nickname?:string;role?:string;task?:string};
+  source?: "localCodex" | "cloudSnapshot" | "cloudCodex";
+  readOnly?: boolean;
+  snapshotUpdatedAt?: string;
+  snapshotStatus?: string;
+  snapshotContentKind?: 'summary'|'messages';
+  snapshotStale?: boolean;
   pinnedIndex?:number;
   goal?:import('./services/codexGoals.js').CodexGoal;
   id: string;
@@ -147,29 +158,36 @@ export type TerminalCommandOutputPage = {
 };
 
 export type GatewayEvent = (
+  | { type:'thread.history.changed';threadId:string;turnId?:string }
+  | { type:'thread.read-state.changed';threadId?:string }
+  | { type: "thread.read"; threadId:string; readThrough:number }
+  | { type: "command.accepted"; threadId: string }
   | { type: "connected"; serverVersion: string; protocolVersion?: number; minAndroidProtocolVersion?: number; capabilities?: string[] }
   | { type: "project.changed"; project: Project }
   | { type: "projects.changed" }
   | { type: "thread.started"; threadId: string; thread?: ThreadRecord }
-  | { type: "user.message"; threadId: string; text: string; images?:{id:string;name:string}[]; files?:{id:string;name:string;mime:string;size:number}[]; attachments?:{name:string;path:string;url?:string}[]; userVisible?:true; questionReplyId?:string }
+  | { type: "thread.settings.updated"; threadId: string; serviceTier:string|null }
+  | { type: "user.message"; threadId: string; text: string; turnId?:string; itemId?:string; status?:string; images?:{id:string;name:string}[]; files?:{id:string;name:string;mime:string;size:number}[]; attachments?:{name:string;path:string;url?:string}[]; userVisible?:true; questionReplyId?:string; questionReplies?:{question:string;answer:string}[] }
   | { type: "reasoning.summary"; threadId:string; turnId?:string; itemId?:string; text:string }
-  | { type: "context.compaction"; threadId:string; itemId?:string; title:string; status:"running"|"ok"|"error"|"cancelled" }
+  | { type: "context.compaction"; threadId:string; itemId?:string; title:string; text?:string; status:"running"|"ok"|"error"|"cancelled" }
+  | { type: "usage.updated"; threadId:string }
   | { type: "plan.updated"; threadId:string; turnId?:string; title:string; text:string }
-  | { type: "message.delta"; threadId: string; text: string; itemId?: string; turnId?: string }
+  | { type: "message.delta"; threadId: string; text: string; itemId?: string; turnId?: string; textComplete?: boolean }
   | { type: "terminal.output"; threadId: string; stream: "stdout" | "stderr"; text: string; commandId?: string; cwd?: string; command?: string; status?: TerminalCommandHistory["status"]; createdAt?: string }
   | { type: "tool.started"; threadId: string; itemId?: string; title: string; detail?: string }
   | { type: "tool.output"; threadId: string; itemId?: string; text: string }
   | { type: "tool.completed"; threadId: string; itemId?: string; status: "ok" | "error" | "cancelled"; detail?: string }
   | { type: "approval.requested"; threadId: string; turnId?: string; itemId?: string; approvalId?: string; approvalType: "command" | "file" | "permission" | "question" | "desktop"; title: string; detail?: string }
-  | { type: "approval.resolved"; threadId: string; approvalId: string; decision: "accept" | "decline" }
-  | { type: "file.changed"; threadId: string; turnId?: string; itemId?: string; files: string[]; summary?: string }
+  | { type: "approval.resolved"; threadId: string; approvalId: string; decision: "accept" | "decline" | "resolved" }
+  | { type: "file.changed"; threadId: string; turnId?: string; itemId?: string; files: string[]; summary?: string; diff?: string }
   | { type: "diff.updated"; threadId: string; turnId?: string; diff: string }
   | { type: "warning"; threadId?: string; title: string; detail?: string }
   | { type: "codex.status"; status: "running" | "stopped" | "error"; detail?: string }
-  | { type: "turn.completed"; threadId: string; status: string }
+  | { type: "turn.completed"; threadId: string; turnId?:string; status: string }
+  | { type: "goal.completed"; threadId:string; title:string; text:string; status:'complete'; timeUsedSeconds?:number }
   | { type: "turn.started"; threadId: string; turnId?:string }
-  | { type: "error"; threadId?: string; message: string }
-) & { eventId?: string; createdAt?: string; requestId?: string; replayed?: boolean };
+  | { type: "error"; threadId?: string;turnId?:string; message: string;title?:string;detail?:string;willRetry?:boolean }
+) & { eventId?: string; createdAt?: string; requestId?: string; replayed?: boolean; subagent?:boolean; detailsDeferred?:boolean; activityGroupId?:string; activitySummary?:string; activityCount?:number; messageSource?:{kind:'thread'|'schedule'|'user';threadId?:string;automationId?:string;name:string;avatar?:string} };
 
 export type PersistentState = {
   devices: Device[];

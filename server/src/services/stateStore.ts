@@ -1,10 +1,12 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { nanoid } from "nanoid";
 import type { Device, GatewayEvent, PairingSession, PendingApproval, PersistentState, TerminalCommandHistory, TerminalCommandOutputPage, ThreadRecord } from "../types.js";
 import { appHome } from "./paths.js";
+import {CodexLiveHistory} from './codexLiveHistory.js';
+import {ParsedEventHistory} from './parsedEventHistory.js';
 
 const sqlitePath = path.join(appHome(), "state.sqlite");
 const legacyJsonPath = path.join(appHome(), "state.json");
@@ -57,24 +59,52 @@ export class StateStore {
   private state: PersistentState = emptyState();
   private db: DatabaseSync | null = null;
   private hiddenThreads = new Set<string>();
+  private codexLiveHistory:CodexLiveHistory|null=null;
+  private parsedHistory:ParsedEventHistory|null=null;
+  private eventSql:{insert:StatementSync;trim:StatementSync;archiveAgent:StatementSync}|null=null;
+  private threadSql:{upsert:StatementSync;source:StatementSync}|null=null;
+  private deviceTouchSql:StatementSync|null=null;
+  private approvalSql:StatementSync|null=null;
 
   async load(): Promise<void> {
     await fs.mkdir(appHome(), { recursive: true });
     this.db = new DatabaseSync(sqlitePath);
+    this.eventSql=null;
+    this.threadSql=null;
+    this.deviceTouchSql=null;this.approvalSql=null;
     this.initSchema();
+    this.parsedHistory=new ParsedEventHistory(this.db);
+    this.codexLiveHistory=new CodexLiveHistory(this.db,this.parsedHistory);
+    this.db.exec("CREATE TABLE IF NOT EXISTS thread_sources (thread_id TEXT PRIMARY KEY, source TEXT NOT NULL)");
+    this.db.exec("CREATE TABLE IF NOT EXISTS thread_read_receipts (thread_id TEXT PRIMARY KEY, completed_at_ms INTEGER NOT NULL)");
+    this.db.exec("CREATE TABLE IF NOT EXISTS archived_threads (id TEXT PRIMARY KEY,payload TEXT NOT NULL); CREATE TABLE IF NOT EXISTS unread_threads (id TEXT PRIMARY KEY,completed_at_ms INTEGER NOT NULL)");
     this.hiddenThreads = new Set((this.db.prepare("SELECT id FROM hidden_threads").all() as { id: string }[]).map(row => row.id));
     const sqliteState = this.loadSqliteState();
     if (hasState(sqliteState)) {
       this.state = sqliteState;
+      for (const event of this.state.events) this.archiveAgentEvent(event);
+      this.codexLiveHistory.seed(this.state.events.filter(event=>isThreadConversationEvent(event)||event.type==='turn.started'));
       return;
     }
     const legacyState = await this.loadLegacyJsonState();
     this.state = legacyState ?? emptyState();
-    await this.save();
+    for (const event of this.state.events) this.archiveAgentEvent(event);
+    this.codexLiveHistory.seed(this.state.events.filter(event=>isThreadConversationEvent(event)||event.type==='turn.started'));
+    await this.save(true);
   }
 
   get devices(): Device[] {
     return this.state.devices.map(({ tokenHash, ...device }) => ({ ...device }));
+  }
+
+  threadReadThrough(threadId:string):number {
+    const row=this.db!.prepare('SELECT completed_at_ms FROM thread_read_receipts WHERE thread_id=?').get(threadId) as {completed_at_ms:number}|undefined;
+    return row?.completed_at_ms??0;
+  }
+  markThreadRead(threadId:string,completedAt:number):number {
+    this.db!.prepare('DELETE FROM unread_threads WHERE id=?').run(threadId);
+    this.db!.prepare('INSERT INTO thread_read_receipts(thread_id,completed_at_ms) VALUES (?,?) ON CONFLICT(thread_id) DO UPDATE SET completed_at_ms=MAX(completed_at_ms,excluded.completed_at_ms)').run(threadId,completedAt);
+    return this.threadReadThrough(threadId);
   }
 
   get threads(): ThreadRecord[] {
@@ -83,6 +113,19 @@ export class StateStore {
 
   readFollowups(): Record<string, unknown>[] {
     return (this.db!.prepare('SELECT payload FROM followups ORDER BY rowid').all() as {payload:string}[]).map(row=>JSON.parse(row.payload));
+  }
+  private uploadDraftTable(){this.db!.exec('CREATE TABLE IF NOT EXISTS upload_drafts (owner TEXT PRIMARY KEY, payload TEXT NOT NULL)');}
+  uploadDrafts():{kind:'image'|'file';id:string}[]{
+    this.uploadDraftTable();return (this.db!.prepare('SELECT payload FROM upload_drafts').all() as {payload:string}[]).flatMap(row=>JSON.parse(row.payload));
+  }
+  setUploadDrafts(owner:string,items:{kind:'image'|'file';id:string}[]){
+    this.uploadDraftTable();
+    if(!items.length)this.db!.prepare('DELETE FROM upload_drafts WHERE owner=?').run(owner);
+    else this.db!.prepare('INSERT INTO upload_drafts(owner,payload) VALUES (?,?) ON CONFLICT(owner) DO UPDATE SET payload=excluded.payload').run(owner,JSON.stringify(items));
+  }
+  addUploadDraft(owner:string,item:{kind:'image'|'file';id:string}){
+    this.uploadDraftTable();const row=this.db!.prepare('SELECT payload FROM upload_drafts WHERE owner=?').get(owner) as {payload:string}|undefined;
+    const items=row?JSON.parse(row.payload):[];if(!items.some((ref:any)=>ref.kind===item.kind&&ref.id===item.id))items.push(item);this.setUploadDrafts(owner,items);
   }
   readAgentMeta(id:string):any {
     this.db!.exec('CREATE TABLE IF NOT EXISTS agent_sessions (id TEXT PRIMARY KEY, payload TEXT NOT NULL)');
@@ -95,6 +138,11 @@ export class StateStore {
   }
   writeFollowup(id:string,value:unknown):void {
     this.db!.prepare('INSERT INTO followups(id,payload) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload').run(id,JSON.stringify(value));
+  }
+  writeFollowupOrder(entries:{id:string}[]):void {
+    this.db!.exec('BEGIN');
+    try{for(const entry of entries)this.writeFollowup(entry.id,entry);this.db!.exec('COMMIT');}
+    catch(error){this.db!.exec('ROLLBACK');throw error;}
   }
   removeFollowup(id:string):void { this.db!.prepare('DELETE FROM followups WHERE id=?').run(id); }
 
@@ -173,10 +221,10 @@ export class StateStore {
     if (!device) {
       return null;
     }
-    device.lastSeenAt = new Date().toISOString();
-    device.name = input.name?.trim() || device.name;
-    device.userAgent = input.userAgent ?? device.userAgent;
-    await this.save();
+    const next={...device,lastSeenAt:new Date().toISOString(),name:input.name?.trim()||device.name,userAgent:input.userAgent??device.userAgent};
+    const sql=this.deviceTouchSql??=this.requireDb().prepare('UPDATE devices SET name=?,user_agent=?,last_seen_at=? WHERE id=? AND token_hash=? AND revoked_at IS NULL');
+    if(!sql.run(next.name,next.userAgent??null,next.lastSeenAt,device.id,tokenHash).changes)return null;
+    Object.assign(device,next);
     return publicDevice(device);
   }
 
@@ -222,27 +270,28 @@ export class StateStore {
     this.requireDb().prepare('INSERT INTO device_certificates(device_id,certificate) VALUES (?,?) ON CONFLICT(device_id) DO UPDATE SET certificate=excluded.certificate').run(deviceId,certificate);
   }
 
-  async upsertThread(input: { id: string; projectPath?: string; title?: string; status?: ThreadRecord["status"] }): Promise<ThreadRecord> {
+  async upsertThread(input: { id: string; projectPath?: string; title?: string; status?: ThreadRecord["status"]; source?: ThreadRecord["source"] }): Promise<ThreadRecord> {
     const now = new Date().toISOString();
-    let thread = this.state.threads.find((item) => item.id === input.id);
-    if (!thread) {
-      thread = {
+    const previous = this.state.threads.find((item) => item.id === input.id);
+    const thread:ThreadRecord = previous ? {
+      ...previous,
+      source:input.source??previous.source,
+      projectPath:input.projectPath??previous.projectPath,
+      title:input.title??previous.title,
+      status:input.status??previous.status,
+      updatedAt:now,
+    } : {
         id: input.id,
+        source: input.source,
         projectPath: input.projectPath,
         title: input.title ?? "新对话",
         status: input.status ?? "idle",
         createdAt: now,
         updatedAt: now,
       };
-      this.state.threads.push(thread);
-    } else {
-      thread.projectPath = input.projectPath ?? thread.projectPath;
-      thread.title = input.title ?? thread.title;
-      thread.status = input.status ?? thread.status;
-      thread.updatedAt = now;
-    }
-    await this.save();
-    return thread;
+    this.saveThread(thread);
+    if(previous)Object.assign(previous,thread);else this.state.threads.push(thread);
+    return previous??thread;
   }
 
   async updateThread(id: string, input: { title?: string }): Promise<ThreadRecord> {
@@ -251,12 +300,61 @@ export class StateStore {
       throw new Error("会话不存在");
     }
     const title = input.title?.trim();
-    if (title) {
-      thread.title = title.slice(0, 160);
-    }
-    thread.updatedAt = new Date().toISOString();
-    await this.save();
+    const next={...thread,title:title?title.slice(0,160):thread.title,updatedAt:new Date().toISOString()};
+    this.saveThread(next);
+    Object.assign(thread,next);
     return thread;
+  }
+
+  private saveThread(thread:ThreadRecord):void {
+    const db=this.requireDb();
+    const sql=this.threadSql??={
+      upsert:db.prepare(`INSERT INTO threads(id,project_path,title,status,created_at,updated_at) VALUES (?,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET project_path=excluded.project_path,title=excluded.title,status=excluded.status,created_at=excluded.created_at,updated_at=excluded.updated_at`),
+      source:db.prepare('INSERT OR REPLACE INTO thread_sources(thread_id,source) VALUES (?,?)'),
+    };
+    db.exec('BEGIN IMMEDIATE');
+    try{
+      sql.upsert.run(thread.id,thread.projectPath??null,thread.title,thread.status,thread.createdAt,thread.updatedAt);
+      if(thread.source)sql.source.run(thread.id,thread.source);
+      db.exec('COMMIT');
+    }catch(error){db.exec('ROLLBACK');throw error;}
+  }
+
+  manualUnread(threadId:string):number|undefined {
+    return (this.db!.prepare('SELECT completed_at_ms FROM unread_threads WHERE id=?').get(threadId) as {completed_at_ms:number}|undefined)?.completed_at_ms;
+  }
+  markThreadUnread(threadId:string,completedAt:number):void {
+    this.db!.prepare('INSERT OR REPLACE INTO unread_threads(id,completed_at_ms) VALUES (?,?)').run(threadId,completedAt);
+  }
+  archivedThreads():ThreadRecord[]{
+    return (this.db!.prepare('SELECT payload FROM archived_threads').all() as {payload:string}[]).map(row=>JSON.parse(row.payload));
+  }
+  restoreThread(id:string):void {
+    this.hiddenThreads.delete(id);
+    this.db!.prepare('DELETE FROM hidden_threads WHERE id=?').run(id);
+    this.db!.prepare('DELETE FROM archived_threads WHERE id=?').run(id);
+  }
+  archiveThread(id:string,thread?:ThreadRecord):void {
+    // Preserve local replay/history while excluding this ID from every sidebar
+    // refresh, including a still-cached desktop family snapshot.
+    this.hiddenThreads.add(id);
+    this.requireDb().prepare("INSERT OR IGNORE INTO hidden_threads (id) VALUES (?)").run(id);
+    if(thread)this.db!.prepare('INSERT OR REPLACE INTO archived_threads(id,payload) VALUES (?,?)').run(id,JSON.stringify(thread));
+  }
+
+  closeSubagents(threads:ThreadRecord[]):void {
+    // This records a reversible gateway dismissal, never a Desktop archive.
+    const db=this.requireDb();
+    db.exec('BEGIN');
+    try{
+      for(const thread of threads){
+        db.prepare('INSERT OR IGNORE INTO hidden_threads(id) VALUES (?)').run(thread.id);
+        db.prepare('INSERT OR REPLACE INTO archived_threads(id,payload) VALUES (?,?)').run(thread.id,JSON.stringify({...thread,closureKind:'gatewayClosed'}));
+      }
+      db.exec('COMMIT');
+    }catch(error){db.exec('ROLLBACK');throw error;}
+    for(const thread of threads)this.hiddenThreads.add(thread.id);
   }
 
   async deleteThread(id: string): Promise<void> {
@@ -264,8 +362,25 @@ export class StateStore {
     this.requireDb().prepare("INSERT OR IGNORE INTO hidden_threads (id) VALUES (?)").run(id);
     this.state.threads = this.state.threads.filter((item) => item.id !== id);
     this.state.events = this.state.events.filter((event) => !("threadId" in event) || event.threadId !== id);
+    this.codexLiveHistory?.remove(id);
     this.state.approvals = this.state.approvals.filter((approval) => approval.threadId !== id);
-    await this.save();
+    await this.save(true);
+  }
+
+  async removeTurnEvents(threadId:string,turnId:string):Promise<void>{
+    const live=this.codexLiveHistory?.read(threadId)||[];
+    const events=[...this.state.events,...live].filter(event=>'threadId' in event&&event.threadId===threadId);
+    const owned=events.filter(event=>'turnId' in event&&event.turnId===turnId);
+    const fallback=events.filter(event=>event.type==='user.message').at(-1);
+    const cutoff=owned.map(event=>event.createdAt).filter((at):at is string=>Boolean(at)).sort()[0]||fallback?.createdAt;
+    const removed=(event:GatewayEvent)=>'threadId' in event&&event.threadId===threadId&&
+      ('turnId' in event&&event.turnId===turnId||Boolean(cutoff&&event.createdAt&&event.createdAt>=cutoff));
+    this.state.events=this.state.events.filter(event=>!removed(event));
+    this.codexLiveHistory?.remove(threadId);
+    for(const event of live.filter(event=>!removed(event)))this.codexLiveHistory?.append(event);
+    this.requireDb().prepare("DELETE FROM events WHERE thread_id=? AND (json_extract(payload,'$.turnId')=? OR json_extract(payload,'$.createdAt')>=?)")
+      .run(threadId,turnId,cutoff??null);
+    await this.save(true);
   }
 
   async addApproval(input: Omit<PendingApproval, "status" | "createdAt">): Promise<PendingApproval> {
@@ -274,9 +389,9 @@ export class StateStore {
       status: "pending",
       createdAt: new Date().toISOString(),
     };
+    this.saveApprovals([approval]);
     this.state.approvals = this.state.approvals.filter((item) => item.id !== approval.id);
     this.state.approvals.push(approval);
-    await this.save();
     return approval;
   }
 
@@ -286,40 +401,133 @@ export class StateStore {
       throw new Error("审批不存在");
     }
     if (approval.status !== "pending") throw new Error("审批已经处理，请刷新状态");
-    approval.status = decision === "accept" ? "accepted" : "declined";
-    approval.resolvedAt = new Date().toISOString();
-    await this.save();
+    const next:PendingApproval={...approval,status:decision==="accept"?"accepted":"declined",resolvedAt:new Date().toISOString()};
+    this.saveApprovals([next]);
+    Object.assign(approval,next);
     return approval;
   }
 
   async expirePendingApprovals(): Promise<void> {
     const pending = this.state.approvals.filter(approval => approval.status === "pending");
     if (!pending.length) return;
-    for (const approval of pending) { approval.status = "expired"; approval.resolvedAt = new Date().toISOString(); }
-    await this.save();
+    const next=pending.map(approval=>({...approval,status:"expired" as const,resolvedAt:new Date().toISOString()}));
+    this.saveApprovals(next);
+    pending.forEach((approval,index)=>Object.assign(approval,next[index]));
   }
 
   async expireApproval(id:string):Promise<void> {
     const approval=this.state.approvals.find(a=>a.id===id&&a.status==='pending');
-    if(approval){approval.status='expired';approval.resolvedAt=new Date().toISOString();await this.save();}
+    if(approval){
+      const next:PendingApproval={...approval,status:'expired',resolvedAt:new Date().toISOString()};
+      this.saveApprovals([next]);Object.assign(approval,next);
+    }
+  }
+
+  private saveApprovals(approvals:readonly PendingApproval[]):void {
+    const db=this.requireDb();
+    const sql=this.approvalSql??=db.prepare(`INSERT INTO approvals(id,rpc_id,method,thread_id,turn_id,item_id,approval_id,approval_type,title,detail,status,created_at,resolved_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET rpc_id=excluded.rpc_id,method=excluded.method,thread_id=excluded.thread_id,turn_id=excluded.turn_id,item_id=excluded.item_id,
+      approval_id=excluded.approval_id,approval_type=excluded.approval_type,title=excluded.title,detail=excluded.detail,status=excluded.status,created_at=excluded.created_at,resolved_at=excluded.resolved_at`);
+    db.exec('BEGIN IMMEDIATE');
+    try{
+      for(const approval of approvals)sql.run(approval.id,JSON.stringify(approval.rpcId),approval.method,approval.threadId,approval.turnId??null,approval.itemId??null,approval.approvalId??null,
+        approval.approvalType,approval.title,approval.detail??null,approval.status,approval.createdAt,approval.resolvedAt??null);
+      db.exec('COMMIT');
+    }catch(error){db.exec('ROLLBACK');throw error;}
   }
 
   async appendEvent(event: GatewayEvent): Promise<void> {
+    const payload=JSON.stringify(event);
+    const db=this.requireDb(),sql=this.eventWrites();
+    // Commit history and replay together before exposing the event in memory.
+    db.exec('BEGIN IMMEDIATE');
+    try{
+      this.archiveAgentEvent(event,payload);
+      this.archiveCodexEvent(event,payload);
+      sql.insert.run(event.type, "threadId" in event ? event.threadId ?? null : null, payload);
+      // Delete the expired prefix by primary key without scanning retained payloads.
+      sql.trim.run(maxEvents);
+      db.exec('COMMIT');
+    }catch(error){db.exec('ROLLBACK');throw error;}
     this.state.events.push(event);
     if (this.state.events.length > maxEvents) {
       this.state.events.splice(0, this.state.events.length - maxEvents);
     }
-    const db = this.requireDb();
-    db.prepare("INSERT INTO events (type, thread_id, payload) VALUES (?, ?, ?)")
-      .run(event.type, "threadId" in event ? event.threadId ?? null : null, JSON.stringify(event));
-    db.prepare("DELETE FROM events WHERE seq NOT IN (SELECT seq FROM events ORDER BY seq DESC LIMIT ?)").run(maxEvents);
+  }
+
+  private eventWrites(){
+    const db=this.requireDb();
+    return this.eventSql??={
+      insert:db.prepare("INSERT INTO events (type, thread_id, payload) VALUES (?, ?, ?)"),
+      trim:db.prepare("DELETE FROM events WHERE seq <= (SELECT seq FROM events ORDER BY seq DESC LIMIT 1 OFFSET ?)"),
+      archiveAgent:db.prepare("INSERT OR IGNORE INTO agent_history (event_key, thread_id, payload) VALUES (?, ?, ?)"),
+    };
   }
 
   eventsForThread(threadId: string, limit = 200): GatewayEvent[] {
-    return this.state.events
+    if (/^(antigravity|claude|grok|deepseek|hermes|opencode)-/.test(threadId)) {
+      // External CLIs have no Codex rollout reader. Their transcript must outlive
+      // both the reconnect ring and unrelated threads producing streaming events.
+      this.requireDb();
+      return this.parsedHistory!.read('agent_history',threadId);
+    }
+    const recent=this.state.events
       .filter((event) => "threadId" in event && event.threadId === threadId)
       .filter(isThreadConversationEvent)
       .slice(-limit);
+    const complete=this.codexLiveHistory?.read(threadId);
+    if(!complete?.length)return recent;
+    // The disk window protects whole replies, while the existing ring may still
+    // contain earlier upload IDs or live operation IDs needed by cached pages.
+    const ids=new Set(complete.map(event=>event.eventId).filter(Boolean));
+      const times=new Map<string,number>();
+      const at=(event:GatewayEvent)=>{
+        const value=event.createdAt||'',known=times.get(value);
+        if(known!==undefined)return known;
+        const parsed=Date.parse(value)||0;times.set(value,parsed);return parsed;
+      };
+    return [...recent.filter(event=>!event.eventId||!ids.has(event.eventId)),...complete]
+        .sort((a,b)=>at(a)-at(b));
+  }
+
+  eventsForIds(threadId:string,ids:readonly string[]):GatewayEvent[] {
+    const wanted=new Set(ids),found=new Map(this.state.events.filter(event=>'threadId' in event&&event.threadId===threadId&&event.eventId&&wanted.has(event.eventId)).map(event=>[event.eventId!,event]));
+    const table=/^(antigravity|claude|grok|deepseek|hermes|opencode)-/.test(threadId)?'agent_history':'codex_live_events';
+    const read=this.requireDb().prepare(`SELECT payload FROM ${table} WHERE event_key=? AND thread_id=?`);
+    for(const id of wanted)if(!found.has(id)){
+      const row=read.get(id,threadId) as EventRow|undefined;if(row)found.set(id,JSON.parse(row.payload) as GatewayEvent);
+    }
+    return ids.flatMap(id=>found.has(id)?[found.get(id)!]:[]);
+  }
+
+  private archiveCodexEvent(event:GatewayEvent,payload?:string):void {
+    if('threadId' in event&&event.threadId&&this.hiddenThreads.has(event.threadId))return;
+    if(isThreadConversationEvent(event)||event.type==='turn.started')this.codexLiveHistory?.append(event,payload);
+  }
+
+  private archiveAgentEvent(event: GatewayEvent,encoded?:string): void {
+    if (!("threadId" in event) || !event.threadId || !/^(antigravity|claude|grok|deepseek|hermes|opencode)-/.test(event.threadId) ||
+        !(isThreadConversationEvent(event) || event.type === 'turn.started')) return;
+    const payload = encoded??JSON.stringify(event);
+    const inserted=this.eventWrites().archiveAgent.run(event.eventId || payload, event.threadId, payload);
+    if(inserted.changes)this.parsedHistory?.markDirty('agent_history',event.threadId);
+  }
+
+  searchMessageEvents(query: string, limit = 200): GatewayEvent[] {
+    const db = this.requireDb();
+    const escaped = query.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+    const rows = db
+      .prepare(
+        "SELECT payload FROM events WHERE thread_id IS NOT NULL AND type IN ('user.message','message.delta') AND json_extract(payload, '$.text') LIKE ? ESCAPE '\\' ORDER BY seq DESC LIMIT ?",
+      )
+      .all(`%${escaped}%`, limit) as { payload: string }[];
+    return rows.flatMap((row) => {
+      try {
+        return [JSON.parse(row.payload) as GatewayEvent];
+      } catch {
+        return [];
+      }
+    });
   }
 
   terminalEvents(limit = 500): GatewayEvent[] {
@@ -396,7 +604,7 @@ export class StateStore {
       this.state.events.splice(0, this.state.events.length - maxEvents);
     }
     if (dangling.length > 0) {
-      await this.save();
+      await this.save(true);
     }
     return dangling.length;
   }
@@ -404,6 +612,10 @@ export class StateStore {
   close(): void {
     this.db?.close();
     this.db = null;
+    this.parsedHistory=null;this.codexLiveHistory=null;
+    this.eventSql=null;
+    this.threadSql=null;
+    this.deviceTouchSql=null;this.approvalSql=null;
   }
 
   private initSchema(): void {
@@ -462,6 +674,13 @@ export class StateStore {
         payload TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_events_thread_id ON events(thread_id);
+      CREATE TABLE IF NOT EXISTS agent_history (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_key TEXT NOT NULL UNIQUE,
+        thread_id TEXT NOT NULL,
+        payload TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_agent_history_thread_seq ON agent_history(thread_id, seq);
     `);
   }
 
@@ -475,7 +694,7 @@ export class StateStore {
     return {
       devices: devices.map(rowToDevice),
       pairings: pairings.map(rowToPairing),
-      threads: threads.map(rowToThread),
+      threads: threads.map(row=>{const thread=rowToThread(row);const metadata=db.prepare("SELECT source FROM thread_sources WHERE thread_id=?").get(row.id) as {source:ThreadRecord["source"]}|undefined;return metadata?{...thread,source:metadata.source}:thread;}),
       approvals: approvals.map(rowToApproval),
       events: events.map((row) => JSON.parse(row.payload) as GatewayEvent),
     };
@@ -494,9 +713,11 @@ export class StateStore {
     }
   }
 
-  private async save(): Promise<void> {
+  private async save(replaceEvents=false): Promise<void> {
     const db = this.requireDb();
     const state = this.state;
+    const rememberSource=db.prepare("INSERT OR REPLACE INTO thread_sources (thread_id,source) VALUES (?,?)");
+    for(const thread of state.threads)if(thread.source)rememberSource.run(thread.id,thread.source);
     const insertDevice = db.prepare(`
       INSERT INTO devices (id, name, first_seen_at, last_seen_at, token_hash, revoked_at, user_agent)
       VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -513,11 +734,14 @@ export class StateStore {
       INSERT INTO approvals (id, rpc_id, method, thread_id, turn_id, item_id, approval_id, approval_type, title, detail, status, created_at, resolved_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    const insertEvent = db.prepare("INSERT INTO events (type, thread_id, payload) VALUES (?, ?, ?)");
+    // Streaming events are already committed by appendEvent. Replace replay
+    // only when importing or explicitly changing the in-memory history.
+    const insertEvent = replaceEvents?this.eventWrites().insert:null;
 
     db.exec("BEGIN IMMEDIATE");
     try {
-      db.exec("DELETE FROM devices; DELETE FROM pairings; DELETE FROM threads; DELETE FROM approvals; DELETE FROM events;");
+      db.exec("DELETE FROM devices; DELETE FROM pairings; DELETE FROM threads; DELETE FROM approvals;");
+      if(insertEvent)db.exec("DELETE FROM events;");
       for (const device of state.devices) {
         insertDevice.run(
           device.id,
@@ -552,7 +776,7 @@ export class StateStore {
           approval.resolvedAt ?? null,
         );
       }
-      for (const event of state.events) {
+      if(insertEvent)for (const event of state.events) {
         insertEvent.run(event.type, "threadId" in event ? event.threadId ?? null : null, JSON.stringify(event));
       }
       db.exec("COMMIT");
@@ -661,7 +885,7 @@ function isThreadConversationEvent(event: GatewayEvent): boolean {
     event.type === "diff.updated" ||
     event.type === "warning" ||
     event.type === "error" ||
-    event.type === "turn.completed";
+    event.type === "turn.started" || event.type === "turn.completed";
 }
 
 function statusFromEvent(event: Extract<GatewayEvent, { type: "terminal.output" }>, current: TerminalCommandHistory["status"]): TerminalCommandHistory["status"] {
@@ -754,4 +978,3 @@ function createPairingCode(): string {
   }
   return code;
 }
-

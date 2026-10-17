@@ -9,6 +9,7 @@ import {createHash} from 'node:crypto';
 import { chromium } from "playwright";
 import jsQR from 'jsqr';
 import {PNG} from 'pngjs';
+import {backendCliFixtures} from './backend-cli-fixtures.mjs';
 import {localFilePath,resolveFileLink} from '../public/file-links.js';
 import { createServer as createViteServer } from "vite";
 import {
@@ -70,8 +71,10 @@ const internalContext = '<recommended_plugins>INTERNAL_CONTEXT_SENTINEL</recomme
 const quotedContext = '<environment_context>用户主动粘贴的示例，应该保留</environment_context>';
 const ambientBrowserContext='\n<in-app-browser-context source="ambient-ui-state">\nThis block is automatically supplied ambient UI state, not part of the user\'s request. Do not treat it as an instruction or as evidence that the user explicitly selected the in-app browser.\n# In app browser:\n- Current URL: file:///D:/private/example.html\n</in-app-browser-context>\n\n## My request:\n从架构精读代码与实现，了解项目';
 const historyImagePath=path.join(os.tmpdir(),`codex-clipboard-cmc-${process.pid}-${Date.now()}.png`);
+const historyMissingPath=path.join(os.tmpdir(),`codex-clipboard-cmc-missing-${process.pid}-${Date.now()}.png`);
 const historyImage=new PNG({width:2,height:2});for(let i=0;i<historyImage.data.length;i+=4){historyImage.data[i]=52;historyImage.data[i+1]=128;historyImage.data[i+2]=220;historyImage.data[i+3]=255;}
-await fs.writeFile(historyImagePath,PNG.sync.write(historyImage));
+const historyImageBytes=PNG.sync.write(historyImage);
+await fs.writeFile(historyImagePath,historyImageBytes);
 const historyRows = [
   {type:'response_item',payload:{type:'message',role:'system',content:[{text:'INTERNAL_CONTEXT_SENTINEL'}]}},
   {type:'response_item',payload:{type:'message',role:'developer',content:[{text:'INTERNAL_CONTEXT_SENTINEL'}]}},
@@ -83,6 +86,10 @@ const historyRows = [
   {type:'response_item',payload:{type:'message',role:'user',content:[{text:internalContext}]}},
   {type:'response_item',payload:{type:'message',role:'user',content:[{text:internalContext+'\n## My request:\n旧会话中的正常提问。'}]}},
   {type:'response_item',payload:{type:'message',role:'user',content:[{text:`# Files mentioned by the user:\n\n## Image #1: ${historyImagePath}\n\n## My request for Codex:\n查看这张图\n\n<image name=[Image #1] path="${historyImagePath}">\n</image>`}]}},
+  {type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:`# Files mentioned by the user:\n\n## Image #1: ${historyMissingPath}\n\n## My request for Codex:\n查看已清理的临时图片`},{type:'input_image',image_url:`data:image/png;base64,${historyImageBytes.toString('base64')}`}]}},
+  {type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_image',image_url:`data:image/png;base64,${historyImageBytes.toString('base64')}`}],internal_chat_message_metadata_passthrough:{content_item_kinds:['user.image']}}},
+  {type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:'图文嵌入图片'},{type:'input_image',image_url:`data:image/png;base64,${historyImageBytes.toString('base64')}`},{type:'input_image',image_url:`data:image/png;base64,${historyImageBytes.toString('base64')}`}],internal_chat_message_metadata_passthrough:{content_item_kinds:['user.text','user.image','user.image']}}},
+  {type:'response_item',payload:{type:'message',role:'user',content:[{type:'input_text',text:'内部图片不外显'},{type:'input_image',image_url:`data:image/png;base64,${historyImageBytes.toString('base64')}`}],internal_chat_message_metadata_passthrough:{content_item_kinds:['user.text','environments.environment_context']}}},
   {type:'response_item',payload:{type:'message',role:'assistant',channel:'analysis',content:[{text:'INTERNAL_REASONING_SENTINEL'}]}},
   {type:'response_item',payload:{type:'reasoning',text:'INTERNAL_REASONING_SENTINEL',summary:[{text:'可见的推理摘要。'}]}},
   {type:'response_item',payload:{type:'message',role:'assistant',content:[{text:'正常回复。'}]}},
@@ -96,7 +103,9 @@ await fs.writeFile(path.join(codexHome,'sessions','rollout-history-context-legac
 ].map(row=>JSON.stringify(row)).join('\n'));
 await fs.writeFile(path.join(codexHome,'sessions','rollout-long-history-fixture.jsonl'),Array.from({length:260},(_,index)=>JSON.stringify({
   timestamp:new Date(Date.UTC(2020,0,2,0,0,index)).toISOString(),
-  type:'response_item',payload:{type:'message',role:'user',content:[{text:`历史消息 ${index+1}`}]},
+  type:'response_item',payload:{type:'message',role:'user',content:[{text:index===50
+    ?`# Files mentioned by the user:\n\n## Image #1: ${historyImagePath}\n\n## My request for Codex:\n历史消息 ${index+1}\n\n<image name=[Image #1] path="${historyImagePath}">\n</image>`
+    :`历史消息 ${index+1}`}]},
 })).join('\n'));
 const port = await freePort();
 const base = `http://127.0.0.1:${port}`;
@@ -117,6 +126,10 @@ await fs.writeFile(
   mock,
   `
 import readline from 'node:readline';
+import {DatabaseSync} from 'node:sqlite';
+import path from 'node:path';
+let goalDb;
+function goals(){if(!goalDb){goalDb=new DatabaseSync(path.join(process.env.CODEX_HOME,'goals_1.sqlite'));goalDb.exec('CREATE TABLE IF NOT EXISTS thread_goals(thread_id TEXT PRIMARY KEY,goal_id TEXT,objective TEXT,status TEXT,token_budget INTEGER,tokens_used INTEGER,created_at_ms INTEGER,updated_at_ms INTEGER,time_used_seconds INTEGER)');}return goalDb;}
 if(process.argv.includes('--version')){console.log('codex-cli 1.0.0-test');process.exit(0);}
 const timers=new Map();const writerOnce=new Set();let count=0;let turnCount=0;let waiting=null;let waitingKind='';
 const send=value=>process.stdout.write(JSON.stringify(value)+'\\n');
@@ -135,12 +148,25 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
  if(msg.method==='initialized')return;
  if(msg.method==='thread/start'){const id='web-thread-'+(++count);setTimeout(()=>result(msg.id,{thread:{id}}),450);return;}
  if(msg.method==='thread/resume')return result(msg.id,{thread:{id:p.threadId}});
+ if(msg.method==='thread/read')return result(msg.id,{thread:{id:p.threadId,status:{type:timers.has(p.threadId)||goalDb?.prepare('SELECT status FROM thread_goals WHERE thread_id=?').get(p.threadId)?.status==='active'?'active':'idle'}}});
+ if(msg.method==='thread/settings/update'&&goalDb?.prepare('SELECT objective FROM thread_goals WHERE thread_id=?').get(p.threadId)?.objective==='失败后重试目标设置'&&!writerOnce.has('goal-settings:'+p.threadId)){
+  writerOnce.add('goal-settings:'+p.threadId);return send({id:msg.id,error:{code:-32600,message:'目标模型设置暂时失败'}});
+ }
+ if(msg.method==='thread/goal/set'){
+  const db=goals(),old=db.prepare('SELECT * FROM thread_goals WHERE thread_id=?').get(p.threadId),now=Date.now();
+  db.prepare('INSERT INTO thread_goals VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(thread_id) DO UPDATE SET objective=excluded.objective,status=excluded.status,updated_at_ms=excluded.updated_at_ms').run(p.threadId,old?.goal_id||'goal-'+p.threadId,p.objective??old?.objective??'',p.status??old?.status??'active',null,0,old?.created_at_ms||now,now,0);
+  const row=db.prepare('SELECT * FROM thread_goals WHERE thread_id=?').get(p.threadId);
+  if(p.status==='active')notice('turn/started',{threadId:p.threadId,turn:{id:'goal-turn-'+(++turnCount)}});
+  return result(msg.id,{goal:{goalId:row.goal_id,objective:row.objective,status:row.status,tokensUsed:row.tokens_used}});
+ }
+
  if(msg.method==='turn/interrupt'){
   if(!p.turnId)return send({id:msg.id,error:{message:'turnId required'}});
   clearInterval(timers.get(p.threadId));timers.delete(p.threadId);notice('turn/completed',{threadId:p.threadId,turn:{status:'interrupted'}});return result(msg.id,{});
  }
  if(msg.method==='turn/start'){
   const text=p.input.find(x=>x.type==='text')?.text || '';
+  if(text.includes('失败后重试首条附件消息')&&!writerOnce.has(p.threadId)){writerOnce.add(p.threadId);return send({id:msg.id,error:{code:-32600,message:'首条消息暂时发送失败'}});}
   if(text==='WRITER_QUEUE'&&!writerOnce.has(p.threadId)){writerOnce.add(p.threadId);return send({id:msg.id,error:{code:-32600,message:'thread already has an active writer'}});}
   const turnId='turn-'+(++turnCount);result(msg.id,{turn:{id:turnId}});notice('turn/started',{threadId:p.threadId,turn:{id:turnId}});
   if(text==='WARNING_TEST')notice('configWarning',{threadId:p.threadId,title:'configWarning',message:'COMPATIBILITY_WARNING_FOR_TEST'});
@@ -151,13 +177,14 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
   }
   if(text==='EFFORT_TEST'&&p.effort!=='high')return notice('error',{threadId:p.threadId,message:'Selected effort was not forwarded'});
   if(text==='IMAGE_TEST') {
-    if(!p.input.some(x=>x.type==='image'&&x.url.startsWith('data:image/png;base64,')))return notice('error',{threadId:p.threadId,message:'Image input missing'});
+    if(!p.input.some(x=>x.type==='localImage'&&x.path))return notice('error',{threadId:p.threadId,message:'Image input missing'});
     notice('turn/plan/updated',{threadId:p.threadId,turnId,plan:[{step:'检查上传图片',status:'inProgress'},{step:'整理结果',status:'pending'}]});
     notice('item/reasoning/summaryTextDelta',{threadId:p.threadId,turnId,itemId:'summary',delta:'先核对图片内容，再整理可见信息。'});
     notice('item/reasoning/textDelta',{threadId:p.threadId,turnId,itemId:'hidden',delta:'INTERNAL_REASONING_NOT_FOR_DISPLAY'});
     notice('item/started',{threadId:p.threadId,turnId,item:{id:'image-tool',type:'commandExecution',command:'检查图片尺寸'}});
     notice('item/completed',{threadId:p.threadId,turnId,item:{id:'image-tool',type:'commandExecution',exitCode:0,status:'completed'}});
   }
+  if(text==='IMAGE_COUNT_TEST'&&(p.input.filter(x=>x.type==='localImage').length!==9||p.input.some(x=>x.type==='image')))return notice('error',{threadId:p.threadId,message:'Nine local images were not forwarded'});
   notice('thread/status/changed',{threadId:p.threadId,status:{type:'active',activeFlags:[]}});
   if(text.startsWith('PERMISSION_')){waiting=p.threadId;waitingKind=text==='PERMISSION_GRANT'?'grant':'deny';return send({id:9100+turnCount,method:'item/permissions/requestApproval',params:{threadId:p.threadId,turnId,itemId:'permission-'+turnCount,permissions:{network:{enabled:true}},cwd:p.cwd,reason:'Test permission scope'}});}
   if(text==='QUESTION_TEST'){waiting=p.threadId;waitingKind='question';return send({id:9200+turnCount,method:'item/tool/requestUserInput',params:{threadId:p.threadId,turnId,itemId:'question',questions:[{id:'style',header:'风格',question:'选择回答风格',options:[{label:'简洁',description:'简短说明'},{label:'详细',description:'完整解释'}]},{id:'note',header:'补充',question:'补充要求',options:null}],isBlocking:true}});}
@@ -170,6 +197,7 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
 `,
 );
 let logs = "";
+const backendFixtures=await backendCliFixtures(home);
 const gateway = spawn(
   process.execPath,
   [path.join(root, "node_modules/tsx/dist/cli.mjs"), "src/index.ts"],
@@ -177,8 +205,10 @@ const gateway = spawn(
     cwd: root,
     windowsHide: true,
     env: {
-      CODEX_MOBILE_CONTROL_AGENTS:'codex',
       ...process.env,
+      CODEX_MOBILE_CONTROL_AGENTS:'codex,claude,antigravity',
+      CODEX_MOBILE_CONTROL_AGY_BIN:backendFixtures.CODEX_MOBILE_CONTROL_AGY_BIN,
+      CODEX_MOBILE_CONTROL_CLAUDE_BIN:backendFixtures.CODEX_MOBILE_CONTROL_CLAUDE_BIN,
       CODEX_HOME: codexHome,
       CODEX_MOBILE_CONTROL_HOME: home,
       CODEX_MOBILE_CONTROL_CODEX_BIN: process.execPath,
@@ -218,8 +248,10 @@ const viteModule = (label) =>
   `export const label = ${JSON.stringify(label)};document.querySelector('#hmrTitle').textContent=label;document.querySelector('#fetchButton').onclick=async()=>{const r=await fetch('/api/echo',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:'dynamic-request'})});document.querySelector('#apiResult').textContent=await r.text();};if(import.meta.hot)import.meta.hot.accept(next=>{if(next)document.querySelector('#hmrTitle').textContent=next.label;});`;
 await fs.writeFile(path.join(viteRoot, "main.js"), viteModule("热更新之前"));
 const vite = await createViteServer({
+  cacheDir:path.join(home,"vite-cache"),
   configFile: false,
   root: viteRoot,
+  cacheDir: path.join(viteRoot,'node_modules/.vite'),
   logLevel: "error",
   server: { host: "127.0.0.1", port: 0 },
   plugins: [
@@ -274,6 +306,41 @@ try {
   });
   page = await context.newPage();
   page.on("pageerror", (e) => errors.push(e.message));
+  if(process.env.CMC_WEB_IMAGE_COUNT_ONLY==='1'){
+    await (await import('./web-composer-transfer.mjs')).auditImageCount(page,artifacts,{base,token});
+    checks++;
+  }else if(process.env.CMC_WEB_TEXT_TYPES_ONLY==='1'){
+    await (await import('./web-upload-preview.mjs')).auditTextTypes(page,artifacts,{base,token});
+    checks++;
+  }else if(process.env.CMC_WEB_TEXT_ENCODING_ONLY==='1'){
+    await (await import('./web-upload-preview.mjs')).auditTextEncoding(page,artifacts,{base,token});
+    checks++;
+  }else if(process.env.CMC_WEB_UPLOAD_MIME_ONLY==='1'){
+    await (await import('./web-upload-preview.mjs')).auditUploadMime(page,artifacts,{base,token,pdfBytes});
+    checks++;
+  }else if(process.env.CMC_WEB_COMPOSER_TRANSFER_ONLY==='1'){
+    await (await import('./web-composer-transfer.mjs')).auditComposerTransfer(page,artifacts,{base,token});
+    checks++;
+  }else if(process.env.CMC_WEB_OUTPUT_LINKS_ONLY==='1'){
+    await (await import('./web-output-links.mjs')).auditOutputLinks(page,artifacts,{base,token,pdfBytes,home});
+    checks++;
+  }else if(process.env.CMC_WEB_PREVIEW_CONNECTION_ONLY==='1'){
+    await (await import('./web-upload-preview.mjs')).auditPreviewConnection(page,artifacts,{base,token,pdfBytes});
+    checks++;
+  }else if(process.env.CMC_WEB_UPLOAD_PREVIEW_ONLY==='1'){
+    await (await import('./web-upload-preview.mjs')).auditUploadedPreview(page,artifacts,{base,token,pdfBytes});
+    checks++;
+  }else if(process.env.CMC_WEB_UPLOAD_ONLY==='1'){
+    await (await import('./web-upload-recovery.mjs')).auditUploadRecovery(page,artifacts,{base,token});
+    checks++;
+  }else if(process.env.CMC_WEB_FUNCTIONS_ONLY==='1'){
+    await (await import('./web-attachments.mjs')).auditAttachments(page,artifacts,{base,token});
+    await (await import('./web-goal-command.mjs')).auditGoalCommand(page,artifacts,{base,token});
+    checks+=3;
+  }else if(process.env.CMC_WEB_BACKEND_ONLY==='1'){
+    await (await import('./backend-entry-web.mjs')).auditBackendEntry(page,artifacts,{base,token,metrics:backendFixtures.metrics});
+    checks++;
+  }else{
   await check("事件去重保留重复增量", async () => {
     const repeated = [
       { type: "message.delta", threadId: "a", eventId: "1", text: "好" },
@@ -310,7 +377,7 @@ try {
   });
   await check('历史接口过滤内部上下文并保留真实提问',async()=>{
     const result=await (await fetch(base+'/api/threads/history-context-fixture/events',{headers:{Authorization:'Bearer '+token}})).json();
-    assert.deepEqual(result.events.filter(event=>event.type==='user.message').map(event=>event.text),[quotedContext,'从架构精读代码与实现，了解项目','请保留同一条消息中的正常提问。','旧会话中的正常提问。','查看这张图']);
+    assert.deepEqual(result.events.filter(event=>event.type==='user.message').map(event=>event.text),[quotedContext,'从架构精读代码与实现，了解项目','请保留同一条消息中的正常提问。','旧会话中的正常提问。','查看这张图','查看已清理的临时图片','','图文嵌入图片','内部图片不外显']);
     const picture=result.events.find(event=>event.type==='user.message'&&event.text==='查看这张图');
     assert.equal(picture.attachments?.[0]?.name,'Image #1');
     assert.equal(picture.attachments.length,1,'文件标题和 image 标签指向同一张图时不重复显示');
@@ -319,6 +386,29 @@ try {
     assert.equal(imageResponse.status,200);
     assert.equal(imageResponse.headers.get('content-type'),'image/png');
     assert.equal(PNG.sync.read(Buffer.from(await imageResponse.arrayBuffer())).width,2);
+    const recovered=result.events.find(event=>event.type==='user.message'&&event.text==='查看已清理的临时图片');
+    const recoveredResponse=await fetch(base+recovered.attachments[0].url,{headers:{Authorization:'Bearer '+token}});
+    assert.equal(recoveredResponse.status,200,'临时文件丢失后应读取会话中附带的图片');
+    assert.deepEqual(Buffer.from(await recoveredResponse.arrayBuffer()),historyImageBytes);
+    const imageOnly=result.events.find(event=>event.type==='user.message'&&event.text===''&&event.attachments?.length===1);
+    assert.ok(imageOnly?.attachments?.[0]?.url,'无文字图片也应出现在历史记录');
+    const imageOnlyResponse=await fetch(base+imageOnly.attachments[0].url,{headers:{Authorization:'Bearer '+token}});
+    assert.equal(imageOnlyResponse.status,200);
+    assert.deepEqual(Buffer.from(await imageOnlyResponse.arrayBuffer()),historyImageBytes);
+    const mixed=result.events.find(event=>event.type==='user.message'&&event.text==='图文嵌入图片');
+    assert.equal(mixed.attachments?.length,2,'没有文件路径的多张嵌入图片也应保留');
+    for(const attachment of mixed.attachments){
+      const image=await fetch(base+attachment.url,{headers:{Authorization:'Bearer '+token}});
+      assert.equal(image.status,200);
+      assert.deepEqual(Buffer.from(await image.arrayBuffer()),historyImageBytes);
+    }
+    assert.equal(result.events.find(event=>event.type==='user.message'&&event.text==='内部图片不外显')?.attachments,undefined);
+    const older=await (await fetch(base+'/api/threads/long-history-fixture/events?count=260',{headers:{Authorization:'Bearer '+token}})).json();
+    const olderImage=older.events.find(event=>event.type==='user.message'&&event.text==='历史消息 51');
+    assert.ok(olderImage?.attachments?.[0]?.url,'分页后的旧图片应有下载地址');
+    const olderResponse=await fetch(base+olderImage.attachments[0].url,{headers:{Authorization:'Bearer '+token}});
+    assert.equal(olderResponse.status,200,'默认最近历史窗口之外的图片仍须能下载');
+    assert.equal(PNG.sync.read(Buffer.from(await olderResponse.arrayBuffer())).width,2);
     assert.doesNotMatch(JSON.stringify(result),/INTERNAL_CONTEXT_SENTINEL|INTERNAL_REASONING_SENTINEL|ambient-ui-state|private\/example.html/);
     assert.equal(result.events.find(event=>event.type==='reasoning.summary').text,'可见的推理摘要。');
     assert.equal(result.events.find(event=>event.type==='message.delta').text,'正常回复。');
@@ -347,6 +437,7 @@ try {
     assert.equal(await page.locator('#drawerBackdrop').isVisible(), false);
     assert.ok(await page.evaluate(()=>document.getElementById('main').getBoundingClientRect().left>=document.getElementById('sidebar').getBoundingClientRect().right));
     await page.locator('#closeDrawer').click();
+    await page.locator('#sidebar').waitFor({state:'hidden'});
     assert.equal(await page.locator('#sidebar').isVisible(), false);
     assert.equal(await page.locator('.nav-rail').isVisible(), true);
     assert.equal(await page.locator('#welcome').isVisible(), true);
@@ -360,6 +451,7 @@ try {
     await page.locator('#railSearch').click();
     assert.equal(await page.locator('#search').evaluate(node=>document.activeElement===node), true);
     await page.keyboard.press('Escape');
+    await page.locator('#sidebar').waitFor({state:'hidden'});
     assert.equal(await page.locator('#sidebar').isVisible(), false);
     assert.equal(await page.locator('#main').evaluate(node=>node.inert), false);
     await page.locator('#composerTools').click();
@@ -367,6 +459,24 @@ try {
     assert.equal(await page.getByRole('menuitem',{name:'文件',exact:true}).isVisible(),true);
     await page.keyboard.press('Escape');
     assert.equal(await page.locator('#composerTools').getAttribute('aria-expanded'),'false');
+  });
+  await check('斜杠命令筛选、帮助与模式切换',async()=>{
+    await page.locator('#prompt').fill('/he');
+    await page.locator('#slashCommands button').click();
+    await page.locator('dialog[open]').getByRole('button',{name:'关闭',exact:true}).click();
+    assert.equal(await page.locator('#prompt').inputValue(),'');
+    await page.locator('#prompt').fill('/plan');
+    await page.locator('#slashCommands button').click();
+    assert.equal(await page.locator('#composerModes').innerText(),'计划模式 ×');
+    await page.locator('#composerModes button').click();
+    assert.equal(await page.locator('#composerModes').isVisible(),false);
+    await page.locator('#prompt').fill('/fast');
+    await page.locator('#slashCommands button').click();
+    assert.equal(await page.locator('#composerModes').innerText(),'快速模式 ×');
+    await page.locator('#composerModes button').click();
+    await page.locator('#prompt').fill('普通消息 /plan');
+    assert.equal(await page.locator('#slashCommands').isVisible(),false);
+    await page.locator('#prompt').fill('');
   });
   await check("新会话、Markdown与重复流式文字", async () => {
     await page.locator("#prompt").fill("UI_SMOKE");
@@ -398,25 +508,76 @@ try {
     assert.ok(thread);
     const db=new DatabaseSync(path.join(codexHome,'goals_1.sqlite'));
     try{
-      db.exec('CREATE TABLE thread_goals(thread_id TEXT PRIMARY KEY,goal_id TEXT,objective TEXT,status TEXT,token_budget INTEGER,tokens_used INTEGER,created_at_ms INTEGER,updated_at_ms INTEGER)');
-      db.prepare('INSERT INTO thread_goals VALUES(?,?,?,?,?,?,?,?)').run(thread.id,'goal-1','检查图片并整理输出','active',null,120,Date.now(),Date.now());
+      db.exec('CREATE TABLE thread_goals(thread_id TEXT PRIMARY KEY,goal_id TEXT,objective TEXT,status TEXT,token_budget INTEGER,tokens_used INTEGER,created_at_ms INTEGER,updated_at_ms INTEGER,time_used_seconds INTEGER)');
+      db.prepare('INSERT INTO thread_goals VALUES(?,?,?,?,?,?,?,?,?)').run(thread.id,'goal-1','检查图片并整理输出','active',null,120,Date.now(),Date.now(),15001);
       await openSidebar(page);await page.locator('#refreshThreads').click();
-      await page.locator('#activeGoals .goal-row').filter({hasText:'检查图片并整理输出'}).waitFor();
+      await page.locator('#activeGoals .goal-row').filter({hasText:'检查图片并整理输出'}).waitFor({state:'detached'});
       await page.locator('.composer-wrap #goalDock').waitFor();
+      await page.locator('#goalChipStatus').getByText('已就绪',{exact:true}).waitFor();
       await page.locator('#threadGoal').getByText('目标：检查图片并整理输出',{exact:true}).waitFor();
+      assert.equal(await page.locator('#closeGoal').isVisible(),true);
       await page.locator('#threadGoal').click();
       await page.locator('#goalDetails').getByText('检查图片并整理输出',{exact:true}).waitFor();
       assert.equal(await page.locator('#threadGoal').getAttribute('aria-expanded'),'true');
       assert.equal(await page.locator('#editGoal').isVisible(),true);
       assert.equal(await page.locator('#toggleGoal').innerText(),'暂停');
-      db.prepare('UPDATE thread_goals SET status=? WHERE thread_id=?').run('paused',thread.id);
+      const pauseStatuses=[];
+      let goalRunning=true;
+      const continueRequests=[];
+      const listRoute=/\/api\/threads(?:\?.*)?$/;
+      await page.route(listRoute,route=>route.fulfill({json:{threads:response.threads.map(t=>t.id===thread.id?{...t,status:goalRunning?'running':'interrupted',goal:{goalId:'goal-1',objective:'检查图片并整理输出',status:db.prepare('SELECT status FROM thread_goals WHERE thread_id=?').get(thread.id).status,tokensUsed:120,timeUsedSeconds:15001}}:t)}}));
+      const historyRoute=`**/api/threads/${thread.id}/events**`;
+      const historySnapshot=await (await fetch(base+`/api/threads/${thread.id}/events`,{headers:{Authorization:'Bearer '+token}})).json();
+      await page.route(historyRoute,route=>route.fulfill({json:{...historySnapshot,status:goalRunning?'running':'interrupted'}}));
+      await page.locator('#refreshThreads').click();
+      await page.locator('#activeGoals .goal-row').filter({hasText:'检查图片并整理输出'}).waitFor();
+      await page.locator('#goalChipStatus').getByText('进行中',{exact:true}).waitFor();
+      await page.route(`**/api/threads/${thread.id}/goal`,async route=>{
+        const status=route.request().postDataJSON().status;pauseStatuses.push(status);
+        db.prepare('UPDATE thread_goals SET status=? WHERE thread_id=?').run(status,thread.id);
+        await route.fulfill({json:{goal:{objective:'检查图片并整理输出',status,tokensUsed:120,timeUsedSeconds:15001}}});
+      });
+      await page.locator('#refreshThreads').click();
+      await page.waitForFunction(()=>document.querySelector('#sendBtn').getAttribute('aria-label')==='停止任务');
+      const initialTime=await page.locator('#goalRunTime').innerText();
+      await page.waitForFunction(value=>document.querySelector('#goalRunTime').textContent!==value,initialTime);
+      await page.locator('#toggleGoal').click();
+      await page.waitForFunction(()=>document.querySelector('#toggleGoal').textContent==='继续');
+      const pausedTime=await page.locator('#goalRunTime').innerText();
+      assert.notEqual(pausedTime,initialTime,'pausing must retain elapsed time when the patch reply omits the goal ID');
+      await page.waitForTimeout(1500);
+      assert.equal(await page.locator('#goalRunTime').innerText(),pausedTime);
+      await page.waitForFunction(()=>document.querySelector('#sendBtn').getAttribute('aria-label')==='停止任务');
+      assert.equal(await page.locator('#toggleGoal').isEnabled(),false);
+      goalRunning=false;
+      await page.locator('#refreshThreads').click();
+      await page.waitForFunction(()=>!document.querySelector('#toggleGoal').disabled);
+      await page.route(`**/api/threads/${thread.id}/goal/continue`,async route=>{
+        assert.equal(route.request().method(),'POST');continueRequests.push(route.request().postDataJSON());goalRunning=true;
+        db.prepare('UPDATE thread_goals SET status=? WHERE thread_id=?').run('active',thread.id);
+        await route.fulfill({status:202,json:{goal:{objective:'检查图片并整理输出',status:'active',tokensUsed:120,timeUsedSeconds:15001}}});
+      });
+      await page.locator('#toggleGoal').click();
+      await page.waitForFunction(()=>document.querySelector('#toggleGoal').textContent==='暂停');
+      await page.locator('#toggleGoal').click();
+      await page.waitForFunction(()=>document.querySelector('#toggleGoal').textContent==='继续');
+      assert.deepEqual(pauseStatuses,['paused','paused']);
+      assert.equal(continueRequests.length,1);assert(continueRequests[0].requestId);assert(continueRequests[0].model);
+      await page.unroute(`**/api/threads/${thread.id}/goal/continue`);
+      await page.unroute(`**/api/threads/${thread.id}/goal`);
+      await page.unroute(listRoute);await page.unroute(historyRoute);
       await page.locator('#refreshThreads').click();
       await page.waitForFunction(()=>document.querySelector('#activeGoalsHeading').hidden);
       await page.locator('#goalChipStatus').getByText('已暂停',{exact:true}).waitFor();
       assert.equal(await page.locator('#toggleGoal').innerText(),'继续');
-      db.prepare('UPDATE thread_goals SET status=? WHERE thread_id=?').run('complete',thread.id);
-      await page.locator('#refreshThreads').click();
+      await page.route(`**/api/threads/${thread.id}/goal`,async route=>{
+        db.prepare('UPDATE thread_goals SET status=? WHERE thread_id=?').run('complete',thread.id);
+        await route.continue();
+      });
+      await page.locator('#closeGoal').click();
       await page.waitForFunction(()=>document.querySelector('#goalDock').hidden);
+      await page.locator('#activeGoals .goal-row').filter({hasText:'检查图片并整理输出'}).waitFor({state:'detached'});
+      await page.unroute(`**/api/threads/${thread.id}/goal`);
     }finally{db.close()}
   });
   await check("后台会话不会抢焦点或混入消息", async () => {
@@ -453,7 +614,18 @@ try {
     await reader.locator('#sendBtn').click();
     await reader.waitForFunction(()=>document.querySelector('#events').innerText.includes('任务：') && document.querySelector('#sendBtn').getAttribute('aria-label')==='发送消息');
     const position = () => reader.locator('#conversationScroll').evaluate(n=>({top:n.scrollTop,gap:n.scrollHeight-n.clientHeight-n.scrollTop}));
+    await reader.waitForFunction(()=>{const n=document.querySelector('#conversationScroll');return n.scrollHeight-n.clientHeight-n.scrollTop<100;},null,{timeout:1500});
     assert.ok((await position()).gap < 100);
+    await reader.locator('#events').evaluate(n=>{
+      n.style.minHeight=`${n.offsetHeight+240}px`;
+      document.querySelector('#conversationScroll').dispatchEvent(new Event('scroll'));
+    });
+    await reader.waitForTimeout(100);
+    assert.ok((await position()).gap<100,'Layout-driven scroll keeps automatic following');
+    await reader.locator('#events').evaluate(n=>n.style.minHeight='');
+    await reader.locator('#conversationScroll').hover();
+    await reader.mouse.wheel(0,-20000);
+    await reader.waitForTimeout(250);
     await reader.locator('#conversationScroll').evaluate(n=>n.scrollTop=250);
     const poll = reader.waitForResponse(r=>r.url().includes('/events') && r.request().method()==='GET');
     await poll;
@@ -472,9 +644,17 @@ try {
     await reader.setViewportSize({width:390,height:480});
     await reader.waitForTimeout(200);
     assert.ok(Math.abs((await position()).top-320)<3,'Keyboard-sized viewport does not pull history to bottom');
+    await reader.locator('#conversationScroll').hover();
+    await reader.mouse.wheel(0,20000);
+    await reader.waitForFunction(()=>{const n=document.querySelector('#conversationScroll');return n.scrollHeight-n.clientHeight-n.scrollTop<8});
+    await reader.waitForTimeout(600);
+    assert.ok((await position()).gap<100,'Manual scroll to bottom resumes following streamed messages');
+    await reader.mouse.wheel(0,-400);
+    await reader.locator('#jumpLatest').waitFor({state:'visible'});
     await reader.locator('#jumpLatest').click();
     await reader.waitForTimeout(700);
-    assert.ok((await position()).gap<100,'Jump to latest reaches the bottom');
+    const jumpPosition=await position();
+    assert.ok(jumpPosition.gap<100,`Jump to latest reaches the bottom (gap=${jumpPosition.gap}, top=${jumpPosition.top})`);
     await reader.waitForTimeout(600);
     assert.ok((await position()).gap<100,'Streaming follows when at the bottom');
     await reader.locator('#sendBtn').click();
@@ -598,6 +778,10 @@ try {
     await card.getByRole('textbox',{name:'补充要求'}).fill('保留细节');
     await card.getByRole('button',{name:'提交回答'}).click();
     await card.getByRole('heading',{name:'已回答'}).waitFor();
+    const reply=page.locator('#events .message.user').filter({hasText:'保留细节'});
+    await reply.locator('.reply-question').filter({hasText:'选择回答风格'}).waitFor();
+    assert.deepEqual(await reply.locator('.reply-question').allTextContents(),['选择回答风格','补充要求']);
+    assert.deepEqual(await reply.locator('.user-bubble-text').allTextContents(),['简洁','保留细节']);
     await page.waitForFunction(()=>document.querySelector('#sendBtn').getAttribute('aria-label')==='发送消息');
   });
   await check('Codex 自定义权限可选择且记忆',async()=>{
@@ -748,20 +932,20 @@ try {
   });
   await check('公网密码可在内网设置，读取接口不返回密码',async()=>{
     await navigate(page,'settings');
-    await page.locator('#publicPassword').fill('new-public-password-for-tests');
-    await page.locator('#publicPasswordConfirm').fill('new-public-password-for-tests');
+    await page.locator('#publicPassword').fill('246810');
+    await page.locator('#publicPasswordConfirm').fill('246810');
     assert.equal((await fs.readFile(path.join(home,'public-password.txt'),'utf8')).trim(),initialPublicPassword);
     const responsePromise=page.waitForResponse(response=>response.url().endsWith('/api/settings/public-access/password'));
     await page.locator('#savePublicPasswordBtn').click();
     const response=await responsePromise;
     assert.equal(response.status(),200,JSON.stringify(await response.json()));
-    await eventually(async()=>assert.equal((await fs.readFile(path.join(home,'public-password.txt'),'utf8')).trim(),'new-public-password-for-tests'));
+    await eventually(async()=>assert.equal((await fs.readFile(path.join(home,'public-password.txt'),'utf8')).trim(),'246810'));
     const config=JSON.parse(await fs.readFile(path.join(home,'public-access.json'),'utf8'));
-    assert.equal(config.passwordSha256,createHash('sha256').update('new-public-password-for-tests').digest('hex'));
+    assert.equal(config.passwordSha256,createHash('sha256').update('246810').digest('hex'));
     const result=await (await fetch(base+'/api/settings/public-access',{headers:{Authorization:`Bearer ${token}`}})).json();
     assert.equal(result.publicAccess.publicUrl,'https://phone.example.test');
     assert.equal(JSON.stringify(result).includes('passwordSha256'),false);
-    assert.equal(JSON.stringify(result).includes('new-public-password-for-tests'),false);
+    assert.equal(JSON.stringify(result).includes('246810'),false);
   });
   await check('模型只能选择电脑返回的可见列表',async()=>{
     assert.deepEqual(await page.locator('#chatModel option').evaluateAll(options=>options.map(o=>o.value)),['test-model','web-test-model']);
@@ -797,9 +981,13 @@ try {
     await page.waitForFunction(()=>document.querySelectorAll('#imageDrafts img').length===2);
     await page.locator('#prompt').fill('IMAGE_TEST');await page.locator('#sendBtn').click();
     await page.locator('.message.user img').last().waitFor();
-    const activity=page.locator('details.tool-group').last();
+    // The composer can briefly still be idle before turn/started arrives. Wait
+    // for this turn's final response before opening its completed process group.
+    await page.locator('.message.assistant').filter({hasText:'任务：IMAGE_TEST'}).last().waitFor();
+    await page.waitForFunction(()=>document.getElementById('sendBtn').getAttribute('aria-label')==='发送消息');
+    const activity=page.locator('#events details.tool-group').last();
     assert.equal(await activity.getAttribute('open'),null);
-    await activity.locator('summary').click();
+    await activity.evaluate(node=>{const completed=node.closest('details.completed-process');if(completed)completed.open=true;node.open=true;});
     await activity.getByText('先核对图片内容，再整理可见信息。',{exact:true}).waitFor();
     await activity.getByText(/进行中 检查上传图片/).waitFor();
     assert.equal(await page.getByText('INTERNAL_REASONING_NOT_FOR_DISPLAY',{exact:true}).count(),0);
@@ -929,6 +1117,7 @@ try {
     await page.reload();
     await openSidebar(page);
     await page.locator('#pinnedThreads .thread-row').waitFor();
+    await page.waitForFunction(()=>document.querySelector('#projects .project-row')?.textContent.includes('Other Workspace'));
     assert.match(await page.locator('#projects .project-row').first().innerText(),/Other Workspace/);
     const height=await page.locator('.sidebar-scroll').evaluate(node=>node.getBoundingClientRect().height);
     assert.ok(height>400,`Sidebar list should have room: ${height}`);
@@ -945,6 +1134,7 @@ try {
     assert.equal(await page.locator('#projects').isVisible(),false);
     assert.equal(await page.locator('#pinnedThreads').isVisible(),false);
     assert.equal(await page.locator('#threads').isVisible(),false);
+    await page.locator('#sidebarSearchToggle').click();
     await page.locator('#search').fill('Other Workspace');
     assert.equal(await page.locator('#projects').isVisible(),true);
     await page.locator('#search').fill('');
@@ -1016,7 +1206,13 @@ try {
     await page.locator('#threadMenuBtn').click();
     await page.getByRole('menuitem',{name:'显示运行提示',exact:true}).click();
     const warning=page.locator('#events [data-event-type=warning]').filter({hasText:'COMPATIBILITY_WARNING_FOR_TEST'});
+    const completed=page.locator('#events details.completed-process').filter({hasText:'COMPATIBILITY_WARNING_FOR_TEST'});
+    if(await completed.count()){
+      assert.equal(await completed.getAttribute('open'),null);
+      await completed.locator(':scope > summary').click();
+    }
     await warning.locator('summary').click();
+    await warning.locator('pre').waitFor({state:'visible'});
     assert.equal(await warning.locator('pre').isVisible(),true);
     assert.equal(await page.evaluate(()=>localStorage.getItem('cmc.showWarnings')),'true');
     await page.locator('#threadMenuBtn').click();
@@ -1044,7 +1240,7 @@ try {
     const restored=await resume(directory);assert.equal(restored.status,200,await restored.text());
     assert.ok((await json('/api/projects')).projects.some(p=>p.path===directory));
   });
-  await check('手机免选项目发送、即时反馈、顶部新任务和触控动效', async () => {
+  await check('手机免选项目发送、即时反馈、侧栏新任务和触控动效', async () => {
     const mobileContext=await browser.newContext({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
     const mobile=await mobileContext.newPage();
     await login(mobile);
@@ -1053,15 +1249,20 @@ try {
     await mobile.waitForFunction(()=>!document.querySelector('#sendBtn').disabled);
     await mobile.locator('#sendBtn').click();
     assert.equal(await mobile.locator('#prompt').inputValue(),'');
-    await mobile.locator('.running-indicator').filter({hasText:'正在启动任务'}).waitFor();
+    const outgoing=mobile.locator('.message.user').filter({hasText:'NO_PROJECT_TEST'});
+    await outgoing.waitFor();
+    await outgoing.evaluate(node=>{window.pendingBubble=node;});
+    assert.equal(await mobile.locator('.running-indicator').count(),0);
     assert.equal(await mobile.locator('.submit-spinner').count(),1);
     await mobile.locator('.message.assistant').filter({hasText:'任务：NO_PROJECT_TEST'}).waitFor();
+    assert.equal(await outgoing.evaluate(node=>node===window.pendingBubble),true,'acknowledgement preserves the outgoing bubble DOM');
     assert.ok((await json('/api/threads')).threads.some(t=>t.title==='NO_PROJECT_TEST' && t.projectPath.endsWith('默认工作区')));
     await mobile.waitForFunction(()=>document.querySelector('#sendBtn').getAttribute('aria-label')==='发送消息');
     await mobile.locator('#prompt').fill('FOLLOW_UP_TEST');await mobile.locator('#sendBtn').click();
     await mobile.locator('.message.assistant').filter({hasText:'任务：FOLLOW_UP_TEST'}).waitFor();
     await mobile.locator('#prompt').fill('保留在旧任务中的草稿');
-    await mobile.locator('#mobileNewThread').click();
+    await mobile.locator('#mobileDrawer').click();
+    await mobile.locator('#newThreadBtn').click();
     assert.equal(await mobile.locator('#welcome').isVisible(),true);
     assert.ok(await mobile.evaluate(()=>Object.values(JSON.parse(localStorage.getItem('cmc.drafts'))).includes('保留在旧任务中的草稿')));
     await mobile.locator('#modelSettingsBtn').click();
@@ -1086,7 +1287,7 @@ try {
     await navigate(page,'settings');
     await page.locator('[data-theme-choice="dark"]').click();
     assert.equal(await page.locator('html').getAttribute('data-theme'),'dark');
-    assert.equal(await page.locator('body').evaluate(n=>getComputedStyle(n).backgroundColor),'rgb(23, 24, 26)');
+    assert.equal(await page.locator('body').evaluate(n=>getComputedStyle(n).backgroundColor),'rgb(0, 0, 0)');
     await page.reload();
     assert.equal(await page.locator('html').getAttribute('data-theme'),'dark');
     await navigate(page,'settings');
@@ -1109,13 +1310,16 @@ try {
       await preview.waitForFunction(()=>document.getElementById('status').textContent==='已连接');
       await openSidebar(preview);
       await preview.locator('#threads .thread-row').filter({hasText:'历史图片预览'}).first().click();
-      const image=preview.locator('.message.user img').last();
+      const image=preview.locator('.message.user').filter({hasText:'查看这张图'}).locator('img').first();
       await image.waitFor();
       await image.evaluate(img=>new Promise((resolve,reject)=>{if(img.complete)return img.naturalWidth?resolve():reject(Error('图片加载失败'));img.onload=resolve;img.onerror=()=>reject(Error('图片加载失败'))}));
       assert.equal(await image.evaluate(img=>img.naturalWidth),2);
       assert.equal(await image.locator('xpath=ancestor::*[contains(@class,"user-bubble")]').count(),1);
       assert((await image.boundingBox()).width<=100,'历史图片应显示为缩略图');
       assert((await image.locator('xpath=ancestor::*[contains(@class,"user-bubble")]').innerText()).includes('查看这张图'));
+      const restored=preview.locator('.message.user').filter({hasText:'查看已清理的临时图片'}).locator('img').first();
+      await restored.evaluate(img=>new Promise((resolve,reject)=>{if(img.complete)return img.naturalWidth?resolve():reject(Error('恢复图片加载失败'));img.onload=resolve;img.onerror=()=>reject(Error('恢复图片加载失败'))}));
+      assert.equal(await restored.evaluate(img=>img.naturalWidth),2);
       assert.equal(await preview.locator('.message.user').last().innerText().then(text=>text.includes('<image')),false);
     } finally {await context.close()}
   });
@@ -1139,10 +1343,14 @@ try {
       assert.equal(initial.hasMore,true,`初始历史窗口 ${initial.events?.length} 条`);
       await historyPage.locator('#loadOlder').waitFor();
       assert.equal(await historyPage.locator('#events .message.user').count(),180);
+      await historyPage.locator('#loadOlder').scrollIntoViewIfNeeded();
+      const anchor=historyPage.locator('#events .message.user').filter({hasText:/^历史消息 81$/});
+      const anchorTop=(await anchor.boundingBox()).y;
       await historyPage.locator('#loadOlder').click();
       await historyPage.locator('#events .message.user').filter({hasText:/^历史消息 1$/}).waitFor();
       assert.equal(await historyPage.locator('#events .message.user').count(),260);
       assert.equal(await historyPage.locator('#loadOlder').isVisible(),false);
+      assert.ok(Math.abs((await anchor.boundingBox()).y-anchorTop)<4,'加载旧记录保持原消息位置');
     }finally{await context.close()}
   });
   await check('短消息不显示复制按钮、长消息可复制、权限和运行时排队停止',async()=>{
@@ -1179,17 +1387,78 @@ try {
     await page.locator('#stopBtn').click();
   });
   await check('配额窗口按实际周期显示，缺失 Token 不显示零',async()=>{
+    await page.route('**/api/usage?**',async route=>{
+      const response=await route.fetch(),data=await response.json(),now=Date.now();
+      data.quotaTrend=[{at:now-120000,durationMins:10080,remainingPercent:80},{at:now-60000,durationMins:10080,remainingPercent:77}];
+      await route.fulfill({response,json:data});
+    });
     await openSidebar(page);await page.locator('#usageBtn').click();
     await page.locator('.usage-dialog').getByText('77% 剩余',{exact:true}).waitFor();
     assert.match(await page.locator('.usage-body').innerText(),/7 天额度/);
     assert.match(await page.locator('.usage-body').innerText(),/暂无 Token 记录/);
     assert.equal(await page.getByRole('meter').getAttribute('aria-valuenow'),'77');
+    const chart=page.locator('.usage-trend-chart');
+    assert.match(await chart.locator('.usage-chart-line').getAttribute('d'),/H.*V/);
+    await chart.focus();await page.keyboard.press('End');
+    assert.match(await page.locator('.usage-chart-readout').innerText(),/1 周额度剩余 77%/);
+    await page.keyboard.press('Home');
+    assert.match(await page.locator('.usage-chart-readout').innerText(),/1 周额度剩余 80%/);
+    await chart.click({position:{x:10,y:30}});
+    assert.match(await page.locator('.usage-chart-readout').innerText(),/80%/);
     await page.locator('.usage-dialog').getByRole('button',{name:'关闭',exact:true}).click();
+    await page.unroute('**/api/usage?**');
+  });
+  await check('压缩后的上下文与会话累计消耗分开显示，刷新不重算累计值',async()=>{
+    let pending=false;
+    await page.route('**/api/usage?**',route=>route.fulfill({json:{quota:{windows:[],stale:false},quotaTrend:[],tokens:{total:1716876430,input:1712825353,cached:1684242176,output:4051077,reasoning:1580606,last:null,context:pending?null:30920,contextWindow:380000,contextPercent:pending?null:8.1368,contextState:pending?'awaiting_usage':'compacted'}}}));
+    await openSidebar(page);await page.locator('#usageBtn').click();
+    await page.locator('.usage-dialog').getByText('当前上下文',{exact:true}).waitFor();
+    assert.equal(await page.locator('.usage-context strong').first().innerText(),'30,920');
+    assert.match(await page.locator('.usage-body').innerText(),/会话累计消耗/);
+    assert.match(await page.locator('.usage-body').innerText(),/1,716,876,430/);
+    pending=true;await page.locator('.usage-dialog').getByRole('button',{name:'刷新',exact:true}).click();
+    await page.locator('.usage-dialog').getByText('压缩后统计待更新',{exact:true}).waitFor();
+    assert.equal(await page.locator('.usage-context strong').first().innerText(),'—');
+    assert.match(await page.locator('.usage-body').innerText(),/1,716,876,430/);
+    await page.locator('.usage-dialog').getByRole('button',{name:'关闭',exact:true}).click();await page.unroute('**/api/usage?**');
+  });
+  await check('云端快照的导入、错误重试、切换竞态和取消在真实浏览器恢复',async()=>{
+    const remoteContext=await browser.newContext({viewport:{width:390,height:844}});
+    try{await (await import('./remote-render-audit.mjs')).audit(await remoteContext.newPage(),artifacts,{base,token});}
+    finally{await remoteContext.close();}
+  });
+  await check('已安装后端入口、实际模型、续接、停止与公网边界的真实浏览器回归',async()=>{
+    const backendContext=await browser.newContext({viewport:{width:1440,height:960}});
+    try{await (await import('./backend-entry-web.mjs')).auditBackendEntry(await backendContext.newPage(),artifacts,{base,token,metrics:backendFixtures.metrics});}
+    finally{await backendContext.close();}
+  });
+  }
+  if(process.env.CMC_WEB_IMAGE_COUNT_ONLY!=='1'&&process.env.CMC_WEB_FUNCTIONS_ONLY!=='1'&&process.env.CMC_WEB_UPLOAD_ONLY!=='1'&&process.env.CMC_WEB_UPLOAD_PREVIEW_ONLY!=='1'&&process.env.CMC_WEB_PREVIEW_CONNECTION_ONLY!=='1'&&process.env.CMC_WEB_OUTPUT_LINKS_ONLY!=='1'&&process.env.CMC_WEB_COMPOSER_TRANSFER_ONLY!=='1'&&process.env.CMC_WEB_UPLOAD_MIME_ONLY!=='1'&&process.env.CMC_WEB_TEXT_ENCODING_ONLY!=='1'&&process.env.CMC_WEB_TEXT_TYPES_ONLY!=='1'){
+  await check('侧栏隐藏子代理，保留会话内查看与移动端搜索',async()=>{
+    const agentsContext=await browser.newContext({viewport:{width:1440,height:960}});
+    try{await (await import('./subagent-sidebar-web.mjs')).auditSubagentSidebar(await agentsContext.newPage(),artifacts,{base,token});}
+    finally{await agentsContext.close();}
   });
   await check("页面没有未捕获错误", async () => assert.deepEqual(errors, []));
+  await check('云端任务和消息来源在浏览器显示且不误标快照',async()=>{
+    const cloudContext=await browser.newContext({viewport:{width:1440,height:960}});
+    try{await (await import('./cloud-threads-web.mjs')).auditCloudThreads(await cloudContext.newPage(),artifacts,{base,token});}
+    finally{await cloudContext.close();}
+  });
+  }
+  if(process.env.CMC_WEB_IMAGE_COUNT_ONLY==='1')await check("多图检查页面没有未捕获错误",async()=>assert.deepEqual(errors,[]));
+  if(process.env.CMC_WEB_TEXT_TYPES_ONLY==='1')await check("文本类型检查页面没有未捕获错误",async()=>assert.deepEqual(errors,[]));
+  if(process.env.CMC_WEB_TEXT_ENCODING_ONLY==='1')await check("文本编码检查页面没有未捕获错误",async()=>assert.deepEqual(errors,[]));
+  if(process.env.CMC_WEB_UPLOAD_MIME_ONLY==='1')await check("附件类型检查页面没有未捕获错误",async()=>assert.deepEqual(errors,[]));
+  if(process.env.CMC_WEB_FUNCTIONS_ONLY==='1')await check("功能检查页面没有未捕获错误",async()=>assert.deepEqual(errors,[]));
+  if(process.env.CMC_WEB_UPLOAD_ONLY==='1')await check("上传检查页面没有未捕获错误",async()=>assert.deepEqual(errors,[]));
+  if(process.env.CMC_WEB_UPLOAD_PREVIEW_ONLY==='1')await check("附件预览页面没有未捕获错误",async()=>assert.deepEqual(errors,[]));
+  if(process.env.CMC_WEB_PREVIEW_CONNECTION_ONLY==='1')await check("预览连接检查页面没有未捕获错误",async()=>assert.deepEqual(errors,[]));
+  if(process.env.CMC_WEB_OUTPUT_LINKS_ONLY==='1')await check("输出文件检查页面没有未捕获错误",async()=>assert.deepEqual(errors,[]));
+  if(process.env.CMC_WEB_COMPOSER_TRANSFER_ONLY==='1')await check("输入转移检查页面没有未捕获错误",async()=>assert.deepEqual(errors,[]));
   console.log(`Web smoke passed: ${checks} checks`);
   await fs.writeFile(
-    path.join(artifacts, "web-test-results.json"),
+    path.join(artifacts, process.env.CMC_WEB_IMAGE_COUNT_ONLY==='1'?"web-image-count-290-results.json":process.env.CMC_WEB_TEXT_TYPES_ONLY==='1'?"web-text-types-288-results.json":process.env.CMC_WEB_TEXT_ENCODING_ONLY==='1'?"web-text-encoding-286-results.json":process.env.CMC_WEB_UPLOAD_MIME_ONLY==='1'?"web-upload-mime-284-results.json":process.env.CMC_WEB_COMPOSER_TRANSFER_ONLY==='1'?"web-composer-transfer-281-results.json":process.env.CMC_WEB_OUTPUT_LINKS_ONLY==='1'?"web-output-links-280-results.json":process.env.CMC_WEB_PREVIEW_CONNECTION_ONLY==='1'?"web-preview-connection-279-results.json":process.env.CMC_WEB_UPLOAD_PREVIEW_ONLY==='1'?"web-upload-preview-278-results.json":process.env.CMC_WEB_UPLOAD_ONLY==='1'?"web-upload-277-results.json":process.env.CMC_WEB_FUNCTIONS_ONLY==='1'?"web-functions-198-results.json":"web-test-results.json"),
     JSON.stringify(
       { checks, passed: true, errors, date: new Date().toISOString() },
       null,
@@ -1206,10 +1475,13 @@ try {
   await fs.writeFile(path.join(artifacts, "web-test-gateway.log"), logs);
   process.exitCode = 1;
 } finally {
+  console.log("Cleanup: browser");
   await browser?.close();
+  console.log("Cleanup: fixture servers");
   await fs.unlink(historyImagePath).catch(()=>{});
   previewServer.close();
   await vite.close();
+  console.log("Cleanup: own gateway",gateway.pid);
   if (gateway.pid) {
     if (process.platform === "win32") {
       try {
@@ -1219,6 +1491,13 @@ try {
       } catch {}
     } else gateway.kill();
   }
+  gateway.stdout.destroy(); gateway.stderr.destroy();
+  assert.equal(path.dirname(home),path.resolve(os.tmpdir()));
+  assert(path.basename(home).startsWith('cmc-web-'));
+  await fs.rm(home,{recursive:true,force:true,maxRetries:3,retryDelay:100});
+  console.log("Cleanup: fixture directory removed");
+  console.log("Cleanup: complete");
+  process.exit(process.exitCode || 0);
 }
 async function check(name, fn) {
   await fn();
@@ -1336,9 +1615,10 @@ async function chooseProject(page, id, value) {
 
 
 async function openSidebar(target) {
-  if (await target.locator('#sidebar').isVisible()) return;
+  if (await target.locator('#sidebar').evaluate(node=>node.classList.contains('open'))) return;
   const trigger = target.locator('#openDrawer');
   await (await trigger.isVisible() ? trigger : target.locator('#mobileDrawer')).click();
+  await target.locator('#sidebar').evaluate(node=>Promise.allSettled([...node.getAnimations(),...document.querySelector('#main').getAnimations()].map(a=>a.finished)));
 }
 async function navigate(target, view) {
   if (view === 'chat') {

@@ -1,27 +1,49 @@
-export type Agent = 'codex'|'claude'|'antigravity'|'grok';
-export const agentNames:Record<Agent,string>={codex:'Codex',claude:'Claude Code',antigravity:'Antigravity',grok:'Grok Build'};
+export type Agent = 'codex'|'claude'|'antigravity'|'grok'|'deepseek'|'hermes'|'opencode';
+export const agentNames:Record<Agent,string>={codex:'Codex',claude:'Claude Code',antigravity:'Antigravity',grok:'Grok Build',deepseek:'DeepSeek Harness',hermes:'Hermes',opencode:'OpenCode'};
 export function modelAgent(model=''):Agent { const prefix=model.split('::')[0];return Object.hasOwn(agentNames,prefix)&&prefix!=='codex'?prefix as Agent:'codex'; }
 export function threadAgent(id=''):Agent {const prefix=id.split('-')[0];return Object.hasOwn(agentNames,prefix)&&prefix!=='codex'?prefix as Agent:'codex';}
-export type AgentUpdate={kind:'text'|'tool'|'output'|'complete'|'session'|'result';id?:string;text?:string;name?:string;error?:boolean;usage?:any};
+export function publicAgentAllowed(agent:Agent){return agent==='codex'||agent==='antigravity';}
+import {editedFilePaths,claudeFileChange} from './agentFileChanges.js';
+export type AgentUpdate={kind:'text'|'tool'|'output'|'complete'|'session'|'result';id?:string;text?:string;name?:string;error?:boolean;usage?:any;files?:string[];diff?:string};
 // Only public response text and tool records cross this boundary. Raw reasoning is not rendered.
+// AGY tool ids are snake_case verbs; give the mobile timeline readable titles (Codex parity).
+const agyToolLabels:Record<string,string>={
+  write_to_file:'写入文件',replace_file_content:'修改文件',multi_replace_file_content:'批量修改文件',
+  run_command:'运行命令',sed_file:'编辑文件',grep_search:'搜索代码',list_dir:'列出目录',
+  view_file:'查看文件',read_url_content:'读取网页',search_web:'搜索网页',open_browser_url:'打开网页',
+  execute_browser_javascript:'执行浏览器脚本',capture_browser_screenshot:'浏览器截图',
+  generate_image:'生成图片',notebook_edit:'编辑笔记本',manage_task:'管理任务',
+  invoke_subagent:'调用子代理',call_mcp_tool:'调用 MCP 工具',ask_question:'向你提问',
+  ask_permission:'请求权限',ask_custom_permission:'请求权限',finish:'收尾',
+};
+function agyToolLabel(name:string):string{
+  if(agyToolLabels[name])return agyToolLabels[name];
+  if(name.startsWith('browser_'))return '浏览器操作';
+  if(name.endsWith('_subagent')||name==='define_subagent')return '子代理';
+  return name;
+}
+function recordText(value:unknown):string|undefined {
+  if(value==null)return undefined;
+  return typeof value==='string'?value:JSON.stringify(value);
+}
 export function agentUpdates(agent:Agent,line:any):AgentUpdate[]{
   if(agent==='antigravity'){
     if(line.event==='init')return [{kind:'session',id:line.conversation_id}];
     const s=line.step_update;
     if(s?.step_type==='agent_response'&&s.text_delta)return [{kind:'text',id:String(s.step_index),text:s.text_delta}];
-    if(s?.step_type==='tool')return [{kind:'tool',id:String(s.step_index),name:s.tool_name,text:JSON.stringify(s.tool_info?.parameters||{})},...(s.tool_info?.output?[{kind:'output' as const,id:String(s.step_index),text:String(s.tool_info.output)}]:[]),...(s.state==='DONE'?[{kind:'complete' as const,id:String(s.step_index),error:!!s.tool_info?.error}]:[])];
-    if(line.event==='result'){const r=line.result;return [{kind:'session',id:r.conversation_id},{kind:'result',text:r.response||r.error,error:r.status!=='SUCCESS',usage:r.usage}];}
+    if(s?.step_type==='tool')return [{kind:'tool',id:String(s.step_index),name:agyToolLabel(String(s.tool_name||'')),text:JSON.stringify(s.tool_info?.parameters||{}),files:editedFilePaths(s.tool_name,s.tool_info?.parameters)},...(s.tool_info?.output!=null?[{kind:'output' as const,id:String(s.step_index),text:recordText(s.tool_info.output)}]:[]),...(['DONE','ERROR','FAILED'].includes(s.state)?[{kind:'complete' as const,id:String(s.step_index),error:s.state!=='DONE'||!!s.tool_info?.error}]:[])];
+    if(line.event==='result'){const r=line.result||{};const failed=r.status!=='SUCCESS';return [{kind:'session',id:r.conversation_id},{kind:'result',text:recordText(failed?(r.error||r.response||'Antigravity 返回无效结果'):r.response),error:failed,usage:r.usage}];}
     return [];
   }
   const out:AgentUpdate[]=[];
   if(line.session_id)out.push({kind:'session',id:line.session_id});
   if(line.type==='assistant')for(const block of line.message?.content||[]){
     if(block.type==='text')out.push({kind:'text',id:line.message.id,text:block.text});
-    if(block.type==='tool_use')out.push({kind:'tool',id:block.id,name:block.name,text:JSON.stringify(block.input||{})});
+    if(block.type==='tool_use')out.push({kind:'tool',id:block.id,name:block.name,text:JSON.stringify(block.input||{}),files:editedFilePaths(block.name,block.input)});
   }
   if(line.type==='user')for(const block of line.message?.content||[])if(block.type==='tool_result'){
     out.push({kind:'output',id:block.tool_use_id,text:typeof block.content==='string'?block.content:JSON.stringify(block.content)});
-    out.push({kind:'complete',id:block.tool_use_id,error:!!block.is_error});
+    out.push({kind:'complete',id:block.tool_use_id,error:!!block.is_error,...(block.file_change||claudeFileChange(line.tool_use_result))});
   }
   if(line.type==='result')out.push({kind:'result',text:line.result||line.errors?.join('\n'),error:!!line.is_error,usage:line.usage});
   return out;

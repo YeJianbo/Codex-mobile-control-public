@@ -53,7 +53,12 @@ async function rootsWithStatus(roots: string[]): Promise<ProjectRoot[]> {
   );
 }
 
-export async function addProject(config: ServerConfig, projectPath: string): Promise<Project> {
+export async function addProject(config: ServerConfig, projectPath: string, create = false): Promise<Project> {
+  if(create){
+    if(!path.isAbsolute(projectPath))throw new Error('请输入电脑上的完整项目路径');
+    // A single new directory under an existing parent; never overwrite a project.
+    await fs.mkdir(canonicalProjectPath(projectPath));
+  }
   const root = await addProjectRoot(config, projectPath);
   return {
     id: projectId(root.path),

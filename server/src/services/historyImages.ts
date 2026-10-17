@@ -6,6 +6,11 @@ const imageExtension=/\.(png|jpe?g|webp|gif)$/i;
 const clipboardName=/^codex-clipboard-[a-z0-9-]+\.(png|jpe?g|webp|gif)$/i;
 const normalized=(value:string)=>process.platform==='win32'?value.toLowerCase():value;
 
+export function isHistoryClipboardImage(file:string):boolean {
+  return path.isAbsolute(file)&&imageExtension.test(file)&&clipboardName.test(path.basename(file))&&
+    normalized(path.resolve(path.dirname(file)))===normalized(path.resolve(os.tmpdir()));
+}
+
 export async function resolveHistoryImage(file:string,projectPaths:string[]):Promise<{absolutePath:string;size:number}|null> {
   if(!path.isAbsolute(file)||!imageExtension.test(file))return null;
   const absolutePath=await fs.realpath(file).catch(()=>null);

@@ -25,14 +25,34 @@ function request(publicEntry,method,target,headers={},payload){
       port:publicEntry?(remoteUrl?Number(remoteUrl.port||443):entry.port):gateway.port,path:target,method,
       ...(!publicEntry?{ca:fs.readFileSync(gateway.https.certPath),servername:'localhost'}:{}),
       headers:{...headers,...(body===undefined?{}:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(body)})},
-      timeout:10000,
+      timeout:target.startsWith('/api/models')?30000:10000,
     },response=>{
       let text='';response.setEncoding('utf8');response.on('data',part=>text+=part);
-      response.on('end',()=>resolve({status:response.statusCode,body:text?JSON.parse(text):{}}));
+    response.on('end',()=>{
+      try { resolve({status:response.statusCode,body:text?JSON.parse(text):{}}); }
+      catch { reject(new Error(`Public check received non-JSON HTTP ${response.statusCode}: ${text.slice(0,120)}`)); }
     });
-    req.on('timeout',()=>req.destroy(new Error('request timeout')));
+    });
+    req.on('timeout',()=>req.destroy(new Error(`request timeout: ${method} ${target.split('?')[0]}`)));
     req.on('error',reject);
     req.end(body);
+  });
+}
+function requestBytes(target,headers){
+  const transport=remoteUrl?https:http;
+  return new Promise((resolve,reject)=>{
+    const req=transport.request({
+      hostname:remoteUrl?remoteUrl.hostname:'127.0.0.1',
+      port:remoteUrl?Number(remoteUrl.port||443):entry.port,
+      path:target,method:'GET',headers,timeout:10000,
+    },response=>{
+      const chunks=[];
+      response.on('data',part=>chunks.push(part));
+      response.on('end',()=>resolve({status:response.statusCode,bytes:Buffer.concat(chunks)}));
+    });
+    req.on('timeout',()=>req.destroy(new Error(`request timeout: GET ${target.split('?')[0]}`)));
+    req.on('error',reject);
+    req.end();
   });
 }
 function proof(method,target){
@@ -73,6 +93,29 @@ try {
   const projects=await request(true,'GET','/api/projects',{...credentials,...proof('GET','/api/projects')});
   assert.equal(projects.status,200);
   assert.ok(Array.isArray(projects.body.projects));
+  const modelsTarget='/api/models?agents=all';
+  const models=await request(true,'GET',modelsTarget,{...credentials,...proof('GET',modelsTarget)});
+  assert.equal(models.status,200);
+  assert.ok(models.body.models?.length>0,'Public model list must not be empty');
+  for(const model of models.body.models){assert.equal(typeof model.model,'string');for(const effort of model.supportedReasoningEfforts||[])assert.equal(typeof effort.reasoningEffort,'string');}
+  const sample=fs.readdirSync(path.join(home,'uploads'),{withFileTypes:true}).find(file=>file.isFile()&&/^[a-f\d-]{36}\.(png|jpe?g|webp|gif)$/.test(file.name));
+  if(sample){
+    const target=`/api/uploads/images/${sample.name}`;
+    const image=await requestBytes(target,{...credentials,...proof('GET',target)});
+    assert.equal(image.status,200,'Paired public device must be able to load image bytes');
+    assert.deepEqual(image.bytes,fs.readFileSync(path.join(home,'uploads',sample.name)));
+  }
+  if(process.env.CODEX_PUBLIC_IMAGE_TARGET){
+    const target=process.env.CODEX_PUBLIC_IMAGE_TARGET;
+    if(!target.startsWith('/api/threads/')||!target.includes('/history-image?'))throw new Error('Invalid public image diagnostic target');
+    const image=await requestBytes(target,{...credentials,...proof('GET',target)});
+    assert.equal(image.status,200,'Paired public device must be able to load a historical image');
+    assert.ok(image.bytes.length>0);
+  }
+  const searchTarget='/api/threads/search?q=CMC_NO_MATCH_CHECK_0627';
+  const search=await request(true,'GET',searchTarget,{...credentials,...proof('GET',searchTarget)});
+  assert.equal(search.status,200);
+  assert.ok(Array.isArray(search.body.matches));
   const socketTarget=`/ws?token=${encodeURIComponent(claim.body.token)}&device=public-live-check`;
   await checkSocket(socketTarget,{'X-Remote-Password':password,...proof('GET',socketTarget)});
   assert.equal((await request(true,'GET','/console',{...credentials,...proof('GET','/console')})).status,404);
@@ -85,7 +128,7 @@ try {
     const escapeTarget=`/api/projects/${encodeURIComponent(project.id)}/file?path=..%2Foutside.txt`;
     assert.notEqual((await request(true,'GET',escapeTarget,{...credentials,...proof('GET',escapeTarget)})).status,200);
   }
-  console.log('Public entry live check passed: password, device proof, WebSocket, API allowlist and workspace boundary.');
+  console.log(`Public entry live check passed: ${models.body.models.length} models, password, device proof, image bytes, WebSocket, API allowlist and workspace boundary.`);
 }finally{
   if(device?.id)await request(false,'DELETE',`/api/devices/${encodeURIComponent(device.id)}`,admin);
 }

@@ -72,23 +72,45 @@ data class ChatEvent(
     val command: String = "",
     val createdAt: String = "",
     val updatedAt: String = "",
+    val readThrough:Long=0,
     val approvalId: String = "",
     val approvalType: String = "",
     val diff: String = "",
     val files: List<String> = emptyList(),
     val eventId: String = "",
+    val displayKey: String = "",
     val requestId: String = "",
     val replayed: Boolean = false,
+    val subagent: Boolean = false,
+    val timeUsedSeconds:Long?=null,
+    val detailsDeferred: Boolean = false,
+    val activityGroupId: String = "",
+    val activitySummary: String = "",
+    val activityCount: Int = 0,
+    val fileChanges:List<NativeFileChange> = emptyList(),
     val images: List<NativeImage> = emptyList(),
     val uploads: List<NativeUploadedFile> = emptyList(),
     val attachments: List<NativeAttachment> = emptyList(),
+    val questionReplies: List<NativeQuestionReply> = emptyList(),
+    val questionReplyId:String = "",
+    val messageSource:NativeMessageSource?=null,
+    val willRetry:Boolean=false,
+    val textComplete: Boolean = false,
+    val decision: String = "",
+    val turnId: String = "",
+    val serviceTier:String?=null,
+    val hasServiceTier:Boolean=false,
 )
+data class NativeMessageSource(val kind:String,val name:String,val threadId:String="",val avatar:String="",val automationId:String="")
+
+data class NativeQuestionReply(val question:String,val answer:String)
 
 data class NativeAttachment(val name:String,val path:String,val url:String="")
 data class NativeImage(val id: String, val name: String)
 data class NativeUploadedFile(val id:String,val name:String,val mime:String,val size:Long)
-data class NativeModel(val id: String, val name: String, val efforts: List<String>, val defaultEffort: String)
-data class NativeGoal(val objective:String,val status:String,val tokensUsed:Long=0,val tokenBudget:Long?=null)
+data class NativeModel(val id: String, val name: String, val efforts: List<String>, val defaultEffort: String,val available:Boolean=true,val unavailableReason:String="",val providerId:String="",val providerName:String="",val shortName:String="")
+data class NativeBackend(val agent:String,val available:Boolean,val reason:String="",val installed:Boolean=false,val supportsImages:Boolean?=null,val supportsPlanMode:Boolean?=null)
+data class NativeGoal(val objective:String,val status:String,val tokensUsed:Long=0,val tokenBudget:Long?=null,val timeUsedSeconds:Long?=null,val id:String="")
 
 data class ThreadRecord(
     val id: String,
@@ -98,6 +120,24 @@ data class ThreadRecord(
     val updatedAt: String = "",
     val pinnedIndex: Int = -1,
     val goal:NativeGoal?=null,
+    val source:String="",
+    val readOnly:Boolean=false,
+    val snapshotUpdatedAt:String="",
+    val snapshotStatus:String="",
+    val snapshotStale:Boolean=false,
+    val snapshotContentKind:String="summary",
+    val subagent:NativeSubagent?=null,
+    val unread:Boolean=false,
+    val completedAt:Long=0,
+    val closureKind:String?=null,
+)
+data class NativeSubagent(val parentThreadId:String="",val nickname:String="",val role:String="",val task:String="")
+
+data class ThreadMatch(
+    val threadId: String,
+    val title: String,
+    val snippet: String,
+    val updatedAt: String,
 )
 
 data class FileEntry(
