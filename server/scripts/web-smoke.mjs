@@ -24,6 +24,7 @@ const home = await fs.mkdtemp(path.join(os.tmpdir(), "cmc-web-"));
 const codexHome = path.join(home, "codex");
 await fs.mkdir(codexHome);
 const project = path.join(home, "Atlas Workspace");
+const projectlessRoot=path.join(home,'projectless');
 await fs.mkdir(project);
 // Small valid PDF with visible text; verifies canvas rendering, not just an iframe URL.
 const pdfObjects=[
@@ -65,7 +66,7 @@ for (const args of [
 await fs.writeFile(path.join(project, "设计说明.md"), "# 设计说明\n\n新内容\n");
 await fs.writeFile(
   path.join(codexHome, "config.toml"),
-  'model = "test-model"\napproval_policy = "on-request"\n',
+  'model = "test-model"\napproval_policy = "on-request"\n[desktop]\nprojectlessWorkspaceRoot = '+JSON.stringify(projectlessRoot)+'\n',
 );
 const token = "web-test-token";
 const internalContext = '<recommended_plugins>INTERNAL_CONTEXT_SENTINEL</recommended_plugins>\n# AGENTS.md instructions\n<INSTRUCTIONS>INTERNAL_CONTEXT_SENTINEL</INSTRUCTIONS>\n<environment_context><cwd>INTERNAL_CONTEXT_SENTINEL</cwd></environment_context>';
@@ -201,7 +202,7 @@ let logs = "";
 const backendFixtures=await backendCliFixtures(home);
 const gateway = spawn(
   process.execPath,
-  [path.join(root, "node_modules/tsx/dist/cli.mjs"), "src/index.ts"],
+  [path.join(root, 'dist/index.js')],
   {
     cwd: root,
     windowsHide: true,
@@ -341,6 +342,17 @@ try {
   }else if(process.env.CMC_WEB_BACKEND_ONLY==='1'){
     await (await import('./backend-entry-web.mjs')).auditBackendEntry(page,artifacts,{base,token,metrics:backendFixtures.metrics});
     checks++;
+  }else if(['1','subagents'].includes(process.env.CMC_WEB_HARNESS_PARITY_ONLY)){
+    if(process.env.CMC_WEB_HARNESS_PARITY_ONLY==='1'){
+    await check('云端快照导入、重试与切换恢复',async()=>{
+      const isolated=await browser.newContext({viewport:{width:390,height:844}});
+      try{await (await import('./remote-render-audit.mjs')).audit(await isolated.newPage(),artifacts,{base,token});}finally{await isolated.close();}
+    });
+    await check('Harness 模型、续聊、停止与公网开关',async()=>{
+      const isolated=await browser.newContext({viewport:{width:1440,height:960}});
+      try{await (await import('./backend-entry-web.mjs')).auditBackendEntry(await isolated.newPage(),artifacts,{base,token,metrics:backendFixtures.metrics});}finally{await isolated.close();}
+    });
+    }
   }else{
   await check("事件去重保留重复增量", async () => {
     const repeated = [
@@ -1265,7 +1277,11 @@ try {
     assert.equal(await mobile.locator('.submit-spinner').count(),1);
     await mobile.locator('.message.assistant').filter({hasText:'任务：NO_PROJECT_TEST'}).waitFor();
     assert.equal(await outgoing.evaluate(node=>node===window.pendingBubble),true,'acknowledgement preserves the outgoing bubble DOM');
-    assert.ok((await json('/api/threads')).threads.some(t=>t.title==='NO_PROJECT_TEST' && t.projectPath.endsWith('默认工作区')));
+    const created=(await json('/api/threads')).threads.find(t=>t.title==='NO_PROJECT_TEST');
+    assert(created);const relative=path.relative(projectlessRoot,created.projectPath);
+    assert(!path.isAbsolute(relative)&&!relative.startsWith('..'+path.sep)&&relative!=='..');
+    assert.equal(path.basename(created.projectPath),'no-project-test');
+    for(const folder of ['outputs','work'])assert((await fs.stat(path.join(created.projectPath,folder))).isDirectory());
     await mobile.waitForFunction(()=>document.querySelector('#sendBtn').getAttribute('aria-label')==='发送消息');
     await mobile.locator('#prompt').fill('FOLLOW_UP_TEST');await mobile.locator('#sendBtn').click();
     await mobile.locator('.message.assistant').filter({hasText:'任务：FOLLOW_UP_TEST'}).waitFor();
@@ -1343,7 +1359,7 @@ try {
       await openSidebar(historyPage);
       const row=historyPage.locator('#threads .thread-row').filter({hasText:'长会话历史'}).first();
       await row.waitFor();
-      await row.dispatchEvent('pointerdown',{pointerType:'touch'});
+      await row.dispatchEvent('pointerdown',{pointerType:'touch',isPrimary:true,button:0});
       await historyPage.getByRole('menuitem',{name:'重命名'}).waitFor();
       await row.dispatchEvent('pointerup',{pointerType:'touch'});
       await historyPage.keyboard.press('Escape');
@@ -1362,7 +1378,7 @@ try {
       assert.ok(Math.abs((await anchor.boundingBox()).y-anchorTop)<4,'加载旧记录保持原消息位置');
     }finally{await context.close()}
   });
-  await check('短消息不显示复制按钮、长消息可复制、权限和运行时排队停止',async()=>{
+  await check('消息动作放入长按菜单，权限和运行时排队停止',async()=>{
     await navigate(page,'chat');
     await openSidebar(page);await page.locator('#newThreadBtn').click();
     await page.locator('#prompt').fill('第一行\n第二行');
@@ -1378,8 +1394,10 @@ try {
     await page.locator('#prompt').fill(longMessage);
     await page.locator('#sendBtn').click();
     const longActions=page.locator('.message.user').filter({hasText:longMessage});
-    await longActions.getByRole('button',{name:'复制消息'}).click();
-    await longActions.getByRole('button',{name:'已复制'}).waitFor();
+    assert.equal(await longActions.getByRole('button',{name:'复制消息'}).count(),0);
+    await longActions.locator('.user-bubble-text').click({button:'right'});
+    await page.getByRole('menuitem',{name:'复制',exact:true}).click();
+    await page.locator('.toast').getByText('已复制',{exact:true}).waitFor();
     assert.equal(await page.locator('#prompt').inputValue(),'');
     await page.locator('#modelSettingsBtn').click();
     await page.getByRole('button',{name:'询问',exact:true}).click();
@@ -1395,40 +1413,24 @@ try {
     assert.equal(await page.locator('.running-indicator').count(),0);
     await page.locator('#stopBtn').click();
   });
-  await check('配额窗口按实际周期显示，缺失 Token 不显示零',async()=>{
-    await page.route('**/api/usage?**',async route=>{
-      const response=await route.fetch(),data=await response.json(),now=Date.now();
-      data.quotaTrend=[{at:now-120000,durationMins:10080,remainingPercent:80},{at:now-60000,durationMins:10080,remainingPercent:77}];
-      await route.fulfill({response,json:data});
-    });
-    await openSidebar(page);await page.locator('#usageBtn').click();
-    await page.locator('.usage-dialog').getByText('77% 剩余',{exact:true}).waitFor();
-    assert.match(await page.locator('.usage-body').innerText(),/7 天额度/);
-    assert.match(await page.locator('.usage-body').innerText(),/暂无 Token 记录/);
-    assert.equal(await page.getByRole('meter').getAttribute('aria-valuenow'),'77');
-    const chart=page.locator('.usage-trend-chart');
-    assert.match(await chart.locator('.usage-chart-line').getAttribute('d'),/H.*V/);
-    await chart.focus();await page.keyboard.press('End');
-    assert.match(await page.locator('.usage-chart-readout').innerText(),/1 周额度剩余 77%/);
-    await page.keyboard.press('Home');
-    assert.match(await page.locator('.usage-chart-readout').innerText(),/1 周额度剩余 80%/);
-    await chart.click({position:{x:10,y:30}});
-    assert.match(await page.locator('.usage-chart-readout').innerText(),/80%/);
-    await page.locator('.usage-dialog').getByRole('button',{name:'关闭',exact:true}).click();
-    await page.unroute('**/api/usage?**');
+  await check('账号额度从侧栏进入独立管理后台',async()=>{
+    await openSidebar(page);
+    const popup=context.waitForEvent('page');await page.locator('#usageBtn').click();
+    const management=await popup;await management.waitForURL(base+'/manage/#usage');await management.close();
   });
   await check('压缩后的上下文与会话累计消耗分开显示，刷新不重算累计值',async()=>{
     let pending=false;
     await page.route('**/api/usage?**',route=>route.fulfill({json:{quota:{windows:[],stale:false},quotaTrend:[],tokens:{total:1716876430,input:1712825353,cached:1684242176,output:4051077,reasoning:1580606,last:null,context:pending?null:30920,contextWindow:380000,contextPercent:pending?null:8.1368,contextState:pending?'awaiting_usage':'compacted'}}}));
-    await openSidebar(page);await page.locator('#usageBtn').click();
+    if(await page.locator('#sidebar').evaluate(node=>node.classList.contains('open')))await page.locator('#closeDrawer').click();
+    await page.locator('#threadMenuBtn').click();await page.getByRole('menuitem',{name:'本会话用量',exact:true}).click();
     await page.locator('.usage-dialog').getByText('当前上下文',{exact:true}).waitFor();
-    assert.equal(await page.locator('.usage-context strong').first().innerText(),'30,920');
-    assert.match(await page.locator('.usage-body').innerText(),/会话累计消耗/);
-    assert.match(await page.locator('.usage-body').innerText(),/1,716,876,430/);
-    pending=true;await page.locator('.usage-dialog').getByRole('button',{name:'刷新',exact:true}).click();
-    await page.locator('.usage-dialog').getByText('压缩后统计待更新',{exact:true}).waitFor();
-    assert.equal(await page.locator('.usage-context strong').first().innerText(),'—');
-    assert.match(await page.locator('.usage-body').innerText(),/1,716,876,430/);
+    await page.locator('.session-usage-context strong').first().getByText('30.9K',{exact:true}).waitFor();
+    assert.match(await page.locator('.session-usage-summary').innerText(),/17.17 亿/);
+    pending=true;await page.locator('.usage-dialog').getByRole('button',{name:'更新用量',exact:true}).click();
+    await page.locator('.session-usage-context strong').first().getByText('更新中',{exact:true}).waitFor();
+    assert.match(await page.locator('.session-usage-summary').innerText(),/17.17 亿/);
+    await page.locator('.session-usage-more summary').click();
+    assert.equal(await page.locator('.session-usage-extra strong').first().innerText(),'—','unknown last-turn usage stays unknown');
     await page.locator('.usage-dialog').getByRole('button',{name:'关闭',exact:true}).click();await page.unroute('**/api/usage?**');
   });
   await check('云端快照的导入、错误重试、切换竞态和取消在真实浏览器恢复',async()=>{

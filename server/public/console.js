@@ -5245,8 +5245,10 @@ async function openProjectFiles(){
 $("threadMenuBtn").onclick = () =>
   showMenu($("threadMenuBtn"), activeThread()?.readOnly?[["导入更新快照",showCloudSnapshotImport],["新会话",newThread]]:[
     ["导入云端快照",showCloudSnapshotImport],
-    ['本会话用量',showUsage],
-    ['本会话定时任务',()=>showAutomations(undefined,{threadId:state.threadId})],
+    ...(state.threadId?[
+      ['本会话用量',showUsage],
+      ['本会话定时任务',()=>showAutomations(undefined,{threadId:state.threadId})],
+    ]:[]),
     ['工作区文件',openProjectFiles],
     ...threadManagementItems(activeThread()),
     ["新会话", newThread],

@@ -16,7 +16,8 @@ export async function auditSubagentSidebar(page,artifacts,{base,token}){
      ...(id==='agent-main'?[{type:'tool.started',threadId:id,itemId:'patch',eventId:'patch-start',detail:'*** Begin Patch\n*** Update File: example.ts\n@@ -36,12 +36,13 @@\n'+Array.from({length:12},(_,i)=>' context'+i).join('\n')+'\n+hello\n*** Add File: sibling.ts\n+notSelected\n*** End Patch'},
        {type:'tool.completed',threadId:id,itemId:'patch',eventId:'patch-end',status:'ok',fileChanges:[{path:'example.ts',added:1,removed:0}]}]:[]),
      {type:'message.delta',threadId:id,itemId:'body',eventId:'answer',text:'子代理可见结果'},
-     {type:'turn.completed',threadId:id,eventId:'finished',status:'ok'}],status:'idle',hasMore:false});
+     {type:'turn.completed',threadId:id,eventId:'finished',status:'ok'},
+     ...(id==='agent-sol'?[{type:'turn.started',threadId:id,eventId:'active',turnId:'active'}]:[])],status:id==='agent-sol'?'running':'idle',hasMore:false});
    if(url.pathname.endsWith('/queue'))return json(route,{messages:[]});
    return json(route,{thread:fixtures.find(t=>t.id===id)});
  });
@@ -34,7 +35,8 @@ export async function auditSubagentSidebar(page,artifacts,{base,token}){
  await recent.getByText('协作研究任务',{exact:true}).click();
  assert.equal(await page.locator('#conversationScroll #conversationAgents').count(),0,'agents use a header button');
  await page.locator('#chatHeader #conversationAgents').click();
- await page.locator('#actionMenu').getByRole('menuitem',{name:/Sol/}).waitFor({state:'visible'});
+ await page.locator('#actionMenu').getByRole('menuitem',{name:'子代理 · Sol · 运行中',exact:true}).waitFor({state:'visible'});
+ await page.keyboard.press('Escape');
  await page.locator('#events > .activity-with-files .file-change-summary > summary').filter({hasText:'已更改 1 个文件'}).waitFor({state:'visible'});
  assert.equal(await page.locator('#events .file-change-summary').count(),1,'one file summary including folded process contents');
  const card=page.locator('#events > .activity-with-files .file-change-summary');
@@ -47,13 +49,14 @@ export async function auditSubagentSidebar(page,artifacts,{base,token}){
  await page.screenshot({path:path.join(artifacts,'compact-file-diff.png')});
  await page.locator('dialog.change-modal').getByRole('button',{name:'关闭',exact:true}).click();
  await page.locator('#conversationAgents').click();
- await page.locator('#actionMenu').getByRole('menuitem',{name:/Sol/}).click();
+ await page.locator('#actionMenu').getByRole('menuitem',{name:'子代理 · Sol · 运行中',exact:true}).click();
+ await page.locator('#conversationParentBack').click();
  await page.locator('#conversationAgents').click();
- await page.locator('#actionMenu').getByRole('menuitem',{name:'返回主会话',exact:true}).click();
- await page.locator('#conversationAgents').click();
- await page.locator('#actionMenu').getByRole('menuitem',{name:/Terra/}).waitFor({state:'visible'});
+ await page.locator('#actionMenu').getByRole('menuitem',{name:'子代理 · Sol · 运行中',exact:true}).waitFor({state:'visible'});
+ assert.equal(await page.locator('#actionMenu').getByRole('menuitem',{name:/Terra/}).count(),0,'idle agents stay in the sidebar');
  await page.screenshot({path:path.join(artifacts,'subagents-main-conversation.png')});
  await page.locator('#conversationAgents').click();
+ await page.locator('#actionMenu').waitFor({state:'hidden'});
  assert.equal(await page.locator('#actionMenu').isVisible(),false,'agent menu can close again');
  await page.setViewportSize({width:390,height:844});
  await page.waitForFunction(()=>!document.body.classList.contains('sidebar-expanded'));

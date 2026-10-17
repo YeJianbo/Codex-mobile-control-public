@@ -18,7 +18,10 @@ export async function audit(page,artifacts,{base,token}){
     await api([snapshot('newest-unrelated','Unrelated fixture','do not open me')]);
     await importUI([snapshot('ui-a','UI fixture A','FIRST_CURRENT',Array.from({length:200},(_,i)=>({role:i===0?'user':'assistant',text:i===0?'FIRST_CURRENT':`Fixture message ${i}`})))]);
     await page.waitForFunction(()=>document.querySelector('#threadTitle').textContent==='UI fixture A'&&document.querySelector('#events').textContent.includes('FIRST_CURRENT'));
-    assert.equal(await page.locator('#events .message').count(),200);
+    assert.equal(await page.locator('#events .message.user').count(),1);
+    await page.locator('#events details.completed-process > summary').click();
+    await page.waitForFunction(()=>document.querySelectorAll('#events .message').length===200);
+    assert.equal((await page.locator('#events').innerText()).match(/Fixture message \d+/g)?.length,199,'all adjacent assistant messages survive rendering');
     assert.equal(await page.locator('.composer-wrap').isVisible(),false);
     assert.match(await page.locator('#snapshotNotice').innerText(),/只读快照[\s\S]*已过期/);
     await page.screenshot({path:path.join(directory,'readonly-snapshot.png')});

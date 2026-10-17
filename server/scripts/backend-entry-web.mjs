@@ -21,15 +21,17 @@ export async function auditBackendEntry(page,artifacts,{base,token,metrics}){
  await check('LAN Claude launches, reports its actual model, resumes and restores saved history after reload',async()=>{
    await choose('Claude Code');await fresh();
    await send('START');await page.waitForFunction(()=>document.querySelector('#events').textContent.includes('claude fixture started')&&document.querySelector('#stopBtn').hidden);
-   await page.waitForFunction(()=>document.querySelector('#backendNotice').textContent.includes('grok-fixture'));
+   const threads=await fetch(base+'/api/threads',{headers:{Authorization:'Bearer '+token}}).then(r=>r.json());
+   const thread=threads.threads.find(row=>row.id.startsWith('claude-')&&row.title==='START');assert(thread);
+   const settings=async()=>{const response=await fetch(base+'/api/threads/'+thread.id+'/events?view=conversation&count=20',{headers:{Authorization:'Bearer '+token}});assert.equal(response.status,200);return response.json();};
+   assert.equal((await settings()).settings.actualModel,'grok-fixture');
    for(const viewport of [{width:1440,height:960},{width:390,height:844}]){
      await page.setViewportSize(viewport);
      await page.waitForFunction(()=>window.innerWidth>760||!document.body.classList.contains('sidebar-expanded'));
      await page.waitForFunction(()=>!document.querySelector('#main').getAnimations().some(a=>a.playState==='running'));
-     const layout=await page.evaluate(()=>{const notice=document.querySelector('#backendNotice'),composer=document.querySelector('#composer'),n=notice.getBoundingClientRect(),c=composer.getBoundingClientRect();notice.hidden=true;const composerWithoutNoticeHeight=composer.getBoundingClientRect().height;notice.hidden=false;return {noticeWidth:n.width,noticeBottom:n.bottom,noticeHeight:n.height,composerWidth:c.width,composerTop:c.top,composerHeight:c.height,composerWithoutNoticeHeight}});
-     assert(layout.noticeWidth>=layout.composerWidth-1,'backend notice spans the composer width');
-     assert(layout.noticeBottom<=layout.composerTop+1,'backend notice sits above the input grid');
-     assert(layout.noticeHeight<64&&Math.abs(layout.composerHeight-layout.composerWithoutNoticeHeight)<1,'backend notice must not stretch the input into a tall narrow column: '+JSON.stringify(layout));
+     assert.equal(await page.locator('#backendNotice').isVisible(),false,'healthy execution does not add a model declaration banner');
+     const layout=await page.locator('#composer').evaluate(node=>{const r=node.getBoundingClientRect();return {left:r.left,right:r.right,height:r.height,viewport:innerWidth};});
+     assert(layout.left>=-1&&layout.right<=layout.viewport+1&&layout.height<240,JSON.stringify(layout));
      if(viewport.width===390)await page.screenshot({path:path.join(directory,'claude-model-mobile.png')});
    }
    await page.setViewportSize({width:1440,height:960});
@@ -37,7 +39,7 @@ export async function auditBackendEntry(page,artifacts,{base,token,metrics}){
    const id=await page.locator('#threadTitle').innerText();await page.screenshot({path:path.join(directory,'claude-model-desktop.png')});
    await send('CONTINUE');await page.waitForFunction(()=>document.querySelector('#events').textContent.includes('claude fixture resumed'));
    await page.reload();await page.waitForFunction(()=>document.querySelector('#status').textContent==='已连接');await drawer();await page.locator('#threads .thread-row').filter({hasText:id}).first().click();
-   await page.waitForFunction(()=>document.querySelector('#backendNotice').textContent.includes('grok-fixture'));
+   assert.equal((await settings()).settings.actualModel,'grok-fixture');
    assert.equal(await page.locator('#threadTitle').innerText(),id);await page.locator('#stopBtn').waitFor({state:'hidden'});
  });
  await check('Claude owned mock turn stops without a stale running state and provider failure remains explicit',async()=>{
@@ -45,10 +47,10 @@ export async function auditBackendEntry(page,artifacts,{base,token,metrics}){
    await send('FAIL');await page.waitForFunction(()=>document.querySelector('#events').textContent.includes('fixture provider unavailable'));
    await page.screenshot({path:path.join(directory,'claude-error-desktop.png')});
  });
- await check('AGY installed mock backend starts, resumes and labels an unreported actual model',async()=>{
+ await check('AGY installed mock backend starts and resumes without inventing an actual model',async()=>{
    await choose('Antigravity');await fresh();
    await send('START');await page.waitForFunction(()=>document.querySelector('#events').textContent.includes('agy fixture started')&&document.querySelector('#stopBtn').hidden);
-   assert.match(await page.locator('#backendNotice').innerText(),/后端回报模型：未提供/);
+   assert.equal(await page.locator('#backendNotice').isVisible(),false);
    await send('CONTINUE');await page.waitForFunction(()=>document.querySelector('#events').textContent.includes('agy fixture resumed'));
    await page.waitForFunction(()=>document.querySelector('#sendBtn').dataset.action!=='stop'&&document.querySelector('#sendBtn').getAttribute('aria-busy')!=='true');
    await page.screenshot({path:path.join(directory,'agy-unreported-model.png')});
@@ -68,11 +70,11 @@ export async function auditBackendEntry(page,artifacts,{base,token,metrics}){
    await fs.writeFile(path.join(directory,'agy-integrity.json'),JSON.stringify({threadId:id,chunkCount:12052,utf16Length:expected.length,utf8Bytes:Buffer.byteLength(expected),sha256:sha(expected),liveWeb:true,durableHistory:true,reload:true,realModelRequests:0},null,2));
    await page.screenshot({path:path.join(directory,'agy-long-complete.png')});
  });
- await check('Blocked public capability overrides cached Claude models and explains the existing boundary',async()=>{
+ await check('Disabled public access overrides cached Claude models',async()=>{
    await page.setViewportSize({width:390,height:844});
-   await page.route('**/api/models?agents=all',route=>route.fulfill({json:{...catalog,backends:catalog.backends.map(b=>b.agent==='claude'?{...b,available:false,reason:'当前公网入口不支持该助手，请使用已配对的局域网连接'}:b),models:catalog.models.map(m=>m.model.startsWith('claude::')?{...m,available:false,unavailableReason:'当前公网入口不支持该助手'}:m)}}));
+   await page.route('**/api/models?agents=all',route=>route.fulfill({json:{...catalog,backends:catalog.backends.map(b=>b.agent==='claude'?{...b,available:false,publicAllowed:false,reason:'此助手的公网访问已关闭'}:b),models:catalog.models.map(m=>m.model.startsWith('claude::')?{...m,available:false,unavailableReason:'此助手的公网访问已关闭'}:m)}}));
    await page.reload();await page.waitForFunction(()=>document.querySelector('#status').textContent==='已连接');await drawer();await page.locator('#harnessBtn').click();
-   const row=page.locator('.harness-option').filter({hasText:'Claude Code'});assert.equal(await row.isDisabled(),true);assert.match(await row.innerText(),/公网不支持/);assert.match(await page.locator('.harness-dialog').innerText(),/已配对的局域网连接/);
+   const row=page.locator('.harness-option').filter({hasText:'Claude Code'});assert.equal(await row.isDisabled(),true);assert.match(await row.getAttribute('aria-label'),/公网访问已关闭/);assert.match(await page.locator('.harness-dialog .form-help').filter({hasText:'Claude Code'}).innerText(),/公网访问已关闭/);
    await page.screenshot({path:path.join(directory,'public-boundary-mobile.png')});await page.locator('.harness-dialog').getByRole('button',{name:'关闭',exact:true}).click();
  });
  const counts=JSON.parse(await fs.readFile(metrics,'utf8'));assert.equal(counts.claude,4);assert.equal(counts.agy,3);
