@@ -6,10 +6,10 @@ Windows发行包包含本仓库Gateway、Android APK和配套Local Console。打
 
 ```powershell
 conda run -n base python installer/build-release.py `
-  --version 0.6.445 `
+  --version 0.6.446 `
   --android-build-dir D:\codex\build\Codex-mobile-control\android\app `
-  --android-apk D:\codex\deliverables\Codex-mobile-control\Codex-Control-0.6.445.apk `
-  --android-build-log D:\codex\build\Codex-mobile-control\image445-build.log `
+  --android-apk D:\codex\deliverables\Codex-mobile-control\Codex-Control-0.6.446.apk `
+  --android-build-log D:\codex\build\Codex-mobile-control\harness446-build-final.log `
   --output-dir D:\codex\deliverables\Codex-mobile-control
 ```
 
@@ -19,7 +19,7 @@ conda run -n base python installer/build-release.py `
 
 ```powershell
 node installer/release-smoke.mjs `
-  --setup D:\codex\deliverables\Codex-mobile-control\Codex-Control-0.6.445-Setup-x64.exe `
+  --setup D:\codex\deliverables\Codex-mobile-control\Codex-Control-0.6.446-Setup-x64.exe `
   --work-root D:\codex\build\Codex-mobile-control\release-smoke `
   --report D:\codex\build\Codex-mobile-control\release-smoke\installation-verification.json
 ```

@@ -1810,12 +1810,14 @@ function commitComposerModes(key,sent){
   if(state.pending?.key===key&&state.pending.selection===state.selection)composerModes.set(draftKey(),options);
   renderSlashCommands();
 }
-function slashOptions(){return state.harness==='codex'?(composerModes.get(draftKey())||{mode:'default'}):{};}
+function harnessPlanAvailable(){return state.backends.find(backend=>backend.agent===state.harness)?.supportsPlanMode??['codex','claude','antigravity'].includes(state.harness);}
+function availableSlashCommands(){return slashCommands.filter(([name])=>name==='help'||name==='status'||name==='plan'&&harnessPlanAvailable()||state.harness==='codex');}
+function slashOptions(){const options=composerModes.get(draftKey())||{mode:'default'};return state.harness==='codex'?options:{mode:harnessPlanAvailable()?options.mode:'default'};}
 function renderSlashCommands(){
   let host=$('slashCommands');
   if(!host){host=el('div','slash-commands');host.id='slashCommands';$('composer').before(host);}
   const draft=$('prompt').value;
-  const matches=state.harness==='codex'&&/^\/\S*$/.test(draft)?slashCommands.filter(([name])=>name.startsWith(draft.slice(1).toLowerCase())):[];
+  const matches=/^\/\S*$/.test(draft)?availableSlashCommands().filter(([name])=>name.startsWith(draft.slice(1).toLowerCase())):[];
   const commandsKey=JSON.stringify([draftKey(),state.harness,matches]);
   if(host.dataset.signature!==commandsKey){
     host.dataset.signature=commandsKey;host.hidden=!matches.length;
@@ -1857,7 +1859,7 @@ async function executeSlash(name,goalObjective=null){
       await saveObjective(goalObjective);
     }
   }else if(name==='plan'||name==='fast'){
-    if(name==='plan'&&['grok','deepseek','hermes'].includes(state.harness)){toast('当前 '+harnessNames[state.harness]+' ACP 接口不提供计划模式切换');return;}
+    if(name==='plan'&&!harnessPlanAvailable()){toast('当前助手未提供计划模式');return;}
     if(name==='fast'&&state.harness!=='codex'){toast('当前助手未提供快速模式切换');return;}
     if(name==='plan')options.mode=options.mode==='plan'?'default':'plan';
     else options.fast=options.fast!==true;
@@ -2088,8 +2090,8 @@ async function sendPrompt() {
   const newGoal=state.harness==='codex'&&!!goalCommand&&!state.threadId;
   if(state.harness==='codex'&&goalCommand&&!newGoal){await executeSlash('goal',goalCommand[1].trim());return;}
   if(newGoal&&!state.capabilities.includes('new-thread-goals')){toast('请更新电脑网关后直接创建目标；当前可先建立会话再设置目标',true);return;}
-  const slash=slashCommands.find(([name])=>'/'+name===$('prompt').value.trim().toLowerCase());
-  if(state.harness==='codex'&&slash){await executeSlash(slash[0]);return;}
+  const slash=availableSlashCommands().find(([name])=>'/'+name===$('prompt').value.trim().toLowerCase());
+  if(slash){await executeSlash(slash[0]);return;}
   if (isRunning()) {
     await enqueueMessage();
     return;
@@ -4188,13 +4190,14 @@ async function loadSettings(afterSave=false) {
   const initialSettings=!state.settingsLoaded;
   state.settingsLoaded=false;state.rawSettingsLoaded=false;updateControls();
   $('settingsLoadStatus').hidden=false;$('settingsLoadMessage').textContent='正在读取设置…';$('retrySettings').hidden=true;
-  const [modelsResult,settingsResult, rawResult, summaryResult, remoteApprovalResult, capacityRetryResult] = await Promise.allSettled([
+  const [modelsResult,settingsResult, rawResult, summaryResult, remoteApprovalResult, capacityRetryResult,harnessAccessResult] = await Promise.allSettled([
     loadModels(),
     api("/api/settings/user"),
     api("/api/settings/user/raw"),
     api("/api/settings/approval-summary"),
     api("/api/settings/remote-approval"),
     api('/api/settings/capacity-retry'),
+    api('/api/settings/harness-access'),
   ]);
   if(generation!==state.generation||request!==state.settingsRequest)return;
   state.settingsLoaded=settingsResult.status==='fulfilled'&&modelsResult.status==='fulfilled';
@@ -4215,11 +4218,28 @@ async function loadSettings(afterSave=false) {
   else $('approvalSummary').textContent='摘要读取失败';
   if(remoteApprovalResult.status==='fulfilled')$('settingRemoteAutoApproval').checked=remoteApprovalResult.value.desktopAutoApprove===true;
   if(capacityRetryResult.status==='fulfilled')$('settingCapacityRetry').checked=capacityRetryResult.value.enabled===true;
+  if(harnessAccessResult.status==='fulfilled')renderHarnessAccess(harnessAccessResult.value);
   const errors=[[modelsResult,'模型'],[settingsResult,'普通设置'],[rawResult,'完整配置'],[summaryResult,'审批摘要'],[remoteApprovalResult,'远程审批状态'],[capacityRetryResult,'自动重试']].filter(([result])=>result.status==='rejected').map(([result,label])=>label+'：'+errorMessage(result.reason));
   $('settingsLoadStatus').hidden=!errors.length;$('settingsLoadMessage').textContent=errors.length?'部分设置未读取成功。'+errors.join('；'):'';$('retrySettings').hidden=!errors.length;
   updateControls();
   await refreshCodex();
   return {errors};
+}
+
+function renderHarnessAccess(result){
+  const container=$('harnessPublicAccess');container.replaceChildren();
+  for(const agent of result.agents||[]){
+    const label=document.createElement('label');label.className='switch-row';
+    const name=document.createElement('span');name.textContent=agent.name;
+    const input=document.createElement('input');input.type='checkbox';input.setAttribute('role','switch');input.checked=agent.enabled;input.dataset.harnessPublic=agent.agent;
+    input.onchange=()=>run(async()=>{
+      input.disabled=true;
+      try{await api('/api/settings/harness-access',{method:'PUT',body:{agents:{[agent.agent]:input.checked}}});await loadModels();}
+      catch(error){input.checked=!input.checked;throw error;}
+      finally{input.disabled=false;}
+    });
+    label.append(name,input);container.append(label);
+  }
 }
 const settingsFields = {
   model: "settingModel",
@@ -4774,7 +4794,7 @@ async function setThreadPinned(thread){
   const generation=state.generation,key=JSON.stringify([generation,thread.id]);
   if(pinningThreads.has(key))return;
   pinningThreads.add(key);
-  const pinned=!thread.pinnedIndex;
+  const pinned=(thread.pinnedIndex??-1)<0;
   try{
     await api(`/api/threads/${encodeURIComponent(thread.id)}/pin`,{method:'POST',body:{pinned}});
     if(generation!==state.generation)return;
@@ -4794,7 +4814,7 @@ function showThreadMenu(anchor,thread){
 function threadManagementItems(thread){
   if(!thread||thread.readOnly||thread.source==='cloudCodex')return [];
   return [
-    ...(harnessForThread(thread.id)==='codex' ? [[thread.pinnedIndex?'取消置顶':'置顶',()=>setThreadPinned(thread)]] : []),
+    ...((harnessForThread(thread.id)==='codex'||state.capabilities.includes('harness-thread-pins')) ? [[(thread.pinnedIndex??-1)>=0?'取消置顶':'置顶',()=>setThreadPinned(thread)]] : []),
     ...(harnessForThread(thread.id)==='codex' ? [['移动到项目或分区',()=>moveSelectedThread(thread)]] : []),
     ['标记未读',()=>markThreadUnread(thread)],
     ['复制会话 ID',()=>copy(thread.id)],

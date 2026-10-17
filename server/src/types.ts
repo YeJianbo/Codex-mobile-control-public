@@ -39,6 +39,7 @@ export type ServerConfig = {
   token: string;
   projectRoots: string[];
   capacityAutoRetry?: boolean;
+  publicAgents?: Partial<Record<import('./services/agentProtocol.js').Agent,boolean>>;
   https?: {
     enabled: boolean;
     certPath?: string;

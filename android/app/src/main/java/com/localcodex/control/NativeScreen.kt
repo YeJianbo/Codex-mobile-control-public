@@ -1614,8 +1614,8 @@ private fun nativeCommandIcon(name:String)=when(name){
     val codex=nativeThreadAgent(t.id)=="codex"
     ModernDropdown(expanded,dismiss,210.dp){Column(Modifier.padding(6.dp)){
         if(!t.readOnly){
+            PopupMenuRow(R.drawable.ic_lucide_pin,if(t.pinnedIndex>=0)"取消置顶" else "置顶"){dismiss();pin()}
             if(codex){
-                PopupMenuRow(R.drawable.ic_lucide_pin,if(t.pinnedIndex>=0)"取消置顶" else "置顶"){dismiss();pin()}
                 PopupMenuRow(R.drawable.ic_lucide_folder,"移动到项目或分区"){dismiss();manage("move")}
             }
             PopupMenuRow(R.drawable.ic_lucide_circle_dot,"标记为未读"){dismiss();manage("unread")}

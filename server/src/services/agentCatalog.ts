@@ -2,11 +2,36 @@ import {execa} from 'execa';
 import type {PickerModel} from './modelCatalog.js';
 import {agentNames} from './agentProtocol.js';
 
+async function catalogHandshake(command:string,args:string[],request:unknown,agent:'claude'|'grok',run:typeof execa){
+  const task=run(command,args,{input:JSON.stringify(request)+'\n',timeout:15000,windowsHide:true,reject:false});
+  let output='',finished=false;
+  void Promise.resolve(task).then(()=>{finished=true;},()=>{finished=true;});
+  const stop=async()=>{
+    if(finished)return;
+    if(process.platform==='win32'&&task.pid)await execa('taskkill.exe',['/PID',String(task.pid),'/T','/F'],{windowsHide:true,reject:false,timeout:5000}).catch(()=>{});
+    else task.kill?.();
+  };
+  // A stdio control server stays alive after initialize. Return its handshake
+  // instead of waiting for EOF; on Windows, terminate the owned wrapper tree.
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  const early=new Promise<{stdout:string}>(resolve=>{
+    timer=setTimeout(()=>{void stop();resolve({stdout:output});},12000);
+    task.stdout?.on?.('data',(chunk:Buffer)=>{
+      output+=chunk.toString();
+      for(const line of output.split(/\r?\n/)){
+        try{const record=JSON.parse(line);if(agent==='claude'?record.type==='control_response'&&record.response?.request_id==='catalog':record.id===1){resolve({stdout:output});return;}}catch{}
+      }
+    });
+  });
+  try{return await Promise.race([task,early]);}
+  finally{clearTimeout(timer);await stop();}
+}
+
 // Both CLIs support a control handshake without creating a session or sending a prompt.
 export async function readAgentCatalog(agent:'claude'|'grok',command:string,run:typeof execa=execa){
   const args=agent==='claude'?['-p','--input-format','stream-json','--output-format','stream-json','--verbose']:['agent','--no-leader','stdio'];
   const request=agent==='claude'?{type:'control_request',request_id:'catalog',request:{subtype:'initialize'}}:{jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:1,clientCapabilities:{fs:{readTextFile:false,writeTextFile:false},terminal:false}}};
-  const result=await run(command,args,{input:JSON.stringify(request)+'\n',timeout:12000,windowsHide:true,reject:false});
+  const result=await catalogHandshake(command,args,request,agent,run);
   const records=result.stdout.split(/\r?\n/).flatMap(line=>{try{return [JSON.parse(line)];}catch{return [];}});
   const payload=agent==='claude'?records.find(r=>r.type==='control_response'&&r.response?.request_id==='catalog')?.response?.response:records.find(r=>r.id===1)?.result;
   const entries=agent==='claude'?payload?.models:payload?._meta?.modelState?.availableModels;

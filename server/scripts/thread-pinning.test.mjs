@@ -6,6 +6,35 @@ import path from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {desktopSidebar,desktopPinnedThreads,PINNED_SECTION_ID} from '../src/services/desktopSidebar.ts';
 import {listThreadsWithCodexHistory} from '../src/services/codexSessions.ts';
+import {StateStore} from '../src/services/stateStore.ts';
+
+test('Harness pins persist across reload and survive authoritative desktop pin merging',async()=>{
+ const home=await fs.mkdtemp(path.join(os.tmpdir(),'cmc-harness-pins-'));
+ const previous=process.env.CODEX_HOME,previousGateway=process.env.CODEX_MOBILE_CONTROL_HOME;
+ process.env.CODEX_HOME=home;process.env.CODEX_MOBILE_CONTROL_HOME=path.join(home,'gateway');
+ let store;
+ const db=new DatabaseSync(path.join(home,'state_5.sqlite'));
+ try{
+  db.exec('CREATE TABLE threads(id TEXT,cwd TEXT,name TEXT,title TEXT,recency_at_ms INTEGER,updated_at_ms INTEGER,created_at_ms INTEGER,is_pinned INTEGER,section_position INTEGER,archived INTEGER,thread_section_id TEXT)');
+  store=new StateStore();await store.load();
+  for(const id of ['claude-test','opencode-test'])await store.upsertThread({id,projectPath:home,title:id,status:'idle'});
+  store.setThreadPinned('claude-test',true);store.setThreadPinned('opencode-test',true);
+  store.setThreadPinned('claude-test',true);
+  assert.equal(store.threads.find(row=>row.id==='claude-test').pinnedIndex,1);
+  store.close();store=new StateStore();await store.load();
+  const merged=await listThreadsWithCodexHistory(store.threads);
+  assert.equal(merged.find(row=>row.id==='claude-test').pinnedIndex,1);
+  assert.equal(merged.find(row=>row.id==='opencode-test').pinnedIndex,2);
+  store.setThreadPinned('claude-test',false);store.close();store=new StateStore();await store.load();
+  assert.equal(store.threads.find(row=>row.id==='claude-test').pinnedIndex,undefined);
+  assert.equal(store.threads.find(row=>row.id==='opencode-test').pinnedIndex,1);
+ }finally{
+  store?.close();db.close();
+  if(previous===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previous;
+  if(previousGateway===undefined)delete process.env.CODEX_MOBILE_CONTROL_HOME;else process.env.CODEX_MOBILE_CONTROL_HOME=previousGateway;
+  await fs.rm(home,{recursive:true,force:true});
+ }
+});
 
 test('section pin and unpin survive stale desktop JSON and cached thread metadata',async()=>{
  const home=await fs.mkdtemp(path.join(os.tmpdir(),'cmc-pins-')),previous=process.env.CODEX_HOME;

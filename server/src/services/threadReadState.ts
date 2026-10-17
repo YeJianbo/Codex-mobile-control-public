@@ -61,10 +61,13 @@ export async function withThreadReadState(threads:ThreadRecord[],store:StateStor
   const state=await fs.readFile(path.join(codexHome(),'.codex-global-state.json'),'utf8').then(text=>JSON.parse(text)).catch(()=>({}));
   const unread=desktopUnreadThreads(state);
   return Promise.all(threads.map(async thread=>{
+    if(thread.readOnly||thread.source==='cloudCodex')return {...thread,unread:false};
     const manual=store.manualUnread(thread.id);
     if(manual!==undefined)return {...thread,unread:true,completedAt:manual};
-    if(thread.readOnly||thread.source==='cloudCodex'||!unread.has(thread.id))return {...thread,unread:false};
-    const completedAt=await readCodexThreadCompletion(thread.id).catch(()=>0);
+    const desktopUnread=unread.has(thread.id),local=store.threadCompletion(thread.id);
+    const localUnread=store.observeDesktopUnread(thread.id,desktopUnread);
+    if(thread.status==='running'||!desktopUnread&&(!local||!localUnread))return {...thread,unread:false};
+    const completedAt=Math.max(local,desktopUnread?await readCodexThreadCompletion(thread.id).catch(()=>0):0);
     return {...thread,completedAt,unread:completedAt>store.threadReadThrough(thread.id)&&completedAt>0};
   }));
 }

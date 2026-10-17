@@ -77,6 +77,8 @@ export class StateStore {
     this.codexLiveHistory=new CodexLiveHistory(this.db,this.parsedHistory);
     this.db.exec("CREATE TABLE IF NOT EXISTS thread_sources (thread_id TEXT PRIMARY KEY, source TEXT NOT NULL)");
     this.db.exec("CREATE TABLE IF NOT EXISTS thread_read_receipts (thread_id TEXT PRIMARY KEY, completed_at_ms INTEGER NOT NULL)");
+    this.db.exec('CREATE TABLE IF NOT EXISTS thread_completions (thread_id TEXT PRIMARY KEY,completed_at_ms INTEGER NOT NULL,desktop_unread_seen INTEGER NOT NULL DEFAULT 0)');
+    this.db.exec('CREATE TABLE IF NOT EXISTS thread_pins (thread_id TEXT PRIMARY KEY,pinned_at INTEGER NOT NULL)');
     this.db.exec("CREATE TABLE IF NOT EXISTS archived_threads (id TEXT PRIMARY KEY,payload TEXT NOT NULL); CREATE TABLE IF NOT EXISTS unread_threads (id TEXT PRIMARY KEY,completed_at_ms INTEGER NOT NULL)");
     this.hiddenThreads = new Set((this.db.prepare("SELECT id FROM hidden_threads").all() as { id: string }[]).map(row => row.id));
     const sqliteState = this.loadSqliteState();
@@ -101,14 +103,27 @@ export class StateStore {
     const row=this.db!.prepare('SELECT completed_at_ms FROM thread_read_receipts WHERE thread_id=?').get(threadId) as {completed_at_ms:number}|undefined;
     return row?.completed_at_ms??0;
   }
+  threadCompletion(threadId:string):number {
+    return (this.db!.prepare('SELECT completed_at_ms FROM thread_completions WHERE thread_id=?').get(threadId) as {completed_at_ms:number}|undefined)?.completed_at_ms??0;
+  }
+  observeDesktopUnread(threadId:string,unread:boolean):boolean {
+    const row=this.db!.prepare('SELECT desktop_unread_seen FROM thread_completions WHERE thread_id=?').get(threadId) as {desktop_unread_seen:number}|undefined;
+    if(unread&&row&&!row.desktop_unread_seen)this.db!.prepare('UPDATE thread_completions SET desktop_unread_seen=1 WHERE thread_id=?').run(threadId);
+    return !row?.desktop_unread_seen;
+  }
   markThreadRead(threadId:string,completedAt:number):number {
-    this.db!.prepare('DELETE FROM unread_threads WHERE id=?').run(threadId);
+    this.db!.prepare('DELETE FROM unread_threads WHERE id=? AND completed_at_ms<=?').run(threadId,completedAt);
     this.db!.prepare('INSERT INTO thread_read_receipts(thread_id,completed_at_ms) VALUES (?,?) ON CONFLICT(thread_id) DO UPDATE SET completed_at_ms=MAX(completed_at_ms,excluded.completed_at_ms)').run(threadId,completedAt);
     return this.threadReadThrough(threadId);
   }
 
   get threads(): ThreadRecord[] {
-    return this.state.threads.filter(thread => !this.hiddenThreads.has(thread.id)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    const pins=new Map((this.db!.prepare('SELECT thread_id,pinned_at FROM thread_pins ORDER BY pinned_at,thread_id').all() as {thread_id:string;pinned_at:number}[]).map((row,index)=>[row.thread_id,index+1]));
+    return this.state.threads.filter(thread => !this.hiddenThreads.has(thread.id)).map(thread=>pins.has(thread.id)?{...thread,pinnedIndex:pins.get(thread.id)}:thread).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  }
+  setThreadPinned(threadId:string,pinned:boolean):void{
+    if(pinned)this.db!.prepare('INSERT OR IGNORE INTO thread_pins(thread_id,pinned_at) VALUES (?,?)').run(threadId,Date.now());
+    else this.db!.prepare('DELETE FROM thread_pins WHERE thread_id=?').run(threadId);
   }
 
   readFollowups(): Record<string, unknown>[] {
@@ -444,6 +459,10 @@ export class StateStore {
     try{
       this.archiveAgentEvent(event,payload);
       this.archiveCodexEvent(event,payload);
+      if(event.type==='turn.completed'&&event.status==='completed'){
+        const at=Date.parse(event.createdAt||'');
+        if(at>0)db.prepare('INSERT INTO thread_completions(thread_id,completed_at_ms) VALUES (?,?) ON CONFLICT(thread_id) DO UPDATE SET completed_at_ms=excluded.completed_at_ms,desktop_unread_seen=0 WHERE excluded.completed_at_ms>completed_at_ms').run(event.threadId,at);
+      }
       sql.insert.run(event.type, "threadId" in event ? event.threadId ?? null : null, payload);
       // Delete the expired prefix by primary key without scanning retained payloads.
       sql.trim.run(maxEvents);

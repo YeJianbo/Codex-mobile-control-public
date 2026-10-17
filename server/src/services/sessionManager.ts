@@ -12,7 +12,7 @@ import {desktopThreadSettings} from './desktopSidebar.js';
 import {readUserSettings,readCustomPermissions} from './codexSettings.js';
 import {isWriterOccupied} from './userFacingError.js';
 import {AgentSessions} from './agentSessions.js';
-import {modelAgent,threadAgent} from './agentProtocol.js';
+import {modelAgent,threadAgent,publicAgentAllowed} from './agentProtocol.js';
 import {readRemoteAutoApproval} from './remoteApprovalSettings.js';
 import {latestMobileThreadLifecycle} from './mobileHistory.js';
 import {readCodexGoals} from './codexGoals.js';
@@ -363,6 +363,10 @@ export class SessionManager {
   }
 
   private async executeClientCommand(command: ClientCommand,viaPublic=false): Promise<void> {
+    if(viaPublic&&command.type!=='turn.interrupt'&&command.type!=='approval.resolve'){
+      const agent='threadId' in command&&command.threadId?threadAgent(command.threadId):command.type==='thread.start'?modelAgent(command.model):'codex';
+      if(!publicAgentAllowed(agent))throw new Error('此助手的公网访问已关闭');
+    }
     const goalObjective=(command.type==='thread.start'||command.type==='turn.start')&&!(command.type==='turn.start'&&command.replaceTurnId)&&modelAgent(command.model)==='codex'&&!command.images?.length&&!command.files?.length
       ?/^\/goal\s+([\s\S]+)$/i.exec((command.type==='thread.start'?command.initialText:command.text)?.trim()||'')?.[1].trim():undefined;
     if(goalObjective&&goalObjective.length>200000)throw new Error('目标内容不能超过 200000 字符');

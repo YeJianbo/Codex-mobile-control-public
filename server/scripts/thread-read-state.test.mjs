@@ -35,5 +35,23 @@ assert.equal((await withThreadReadState([thread],store))[0].unread,true);
 await fs.writeFile(globalFile,JSON.stringify(v1([])));
 assert.equal((await withThreadReadState([thread],store))[0].unread,false);
 const reloaded=new StateStore();await reloaded.load();assert.equal(reloaded.threadReadThrough('t'),2000);
+for(const id of ['new-codex','claude-new','antigravity-new','grok-new','deepseek-new','hermes-new','opencode-new']){
+  const row={...thread,id,status:'completed'};
+  await store.appendEvent({type:'turn.completed',threadId:id,turnId:'turn-1',status:'completed',createdAt:new Date(10000).toISOString()});
+  let [current]=await withThreadReadState([row],store);assert.equal(current.unread,true,id);assert.equal(current.completedAt,10000);
+  assert.equal((await withThreadReadState([{...row,status:'running'}],store))[0].unread,false);
+  store.markThreadRead(id,10000);assert.equal((await withThreadReadState([row],store))[0].unread,false);
+  await store.appendEvent({type:'turn.completed',threadId:id,turnId:'turn-2',status:'completed',createdAt:new Date(12000).toISOString()});
+  assert.equal((await withThreadReadState([row],store))[0].unread,true);
+  store.markThreadUnread(id,13000);store.markThreadRead(id,12000);assert.equal(store.manualUnread(id),13000,'stale read cannot erase a newer manual unread');
+  store.markThreadRead(id,13000);
+}
+const desktopRow={...thread,id:'desktop-aware',status:'completed'};
+await store.appendEvent({type:'turn.completed',threadId:desktopRow.id,turnId:'d1',status:'completed',createdAt:new Date(15000).toISOString()});
+await fs.writeFile(globalFile,JSON.stringify(v1([desktopRow.id])));assert.equal((await withThreadReadState([desktopRow],store))[0].unread,true);
+await fs.writeFile(globalFile,JSON.stringify(v1([])));assert.equal((await withThreadReadState([desktopRow],store))[0].unread,false,'desktop read removal still clears the dot');
+await store.appendEvent({type:'turn.completed',threadId:desktopRow.id,turnId:'d2',status:'completed',createdAt:new Date(17000).toISOString()});
+assert.equal((await withThreadReadState([desktopRow],store))[0].unread,true,'a new completion does not depend on Desktop adding an unread ID');
+reloaded.close();store.close();
 console.log('PASS: desktop read removal, account/host isolation, per-completion receipts, running suppression, and persisted receipts');
 console.log('Fixture directory: '+home);

@@ -19,6 +19,7 @@ import {
 } from "../public/console-core.js";
 
 const root = path.resolve(import.meta.dirname, "..");
+const failedChecks=[];
 const home = await fs.mkdtemp(path.join(os.tmpdir(), "cmc-web-"));
 const codexHome = path.join(home, "codex");
 await fs.mkdir(codexHome);
@@ -167,7 +168,7 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
  if(msg.method==='turn/start'){
   const text=p.input.find(x=>x.type==='text')?.text || '';
   if(text.includes('失败后重试首条附件消息')&&!writerOnce.has(p.threadId)){writerOnce.add(p.threadId);return send({id:msg.id,error:{code:-32600,message:'首条消息暂时发送失败'}});}
-  if(text==='WRITER_QUEUE'&&!writerOnce.has(p.threadId)){writerOnce.add(p.threadId);return send({id:msg.id,error:{code:-32600,message:'thread already has an active writer'}});}
+  if(text==='WRITER_QUEUE'&&!writerOnce.has('writer:'+p.threadId)){writerOnce.add('writer:'+p.threadId);return send({id:msg.id,error:{code:-32600,message:'thread already has an active writer'}});}
   const turnId='turn-'+(++turnCount);result(msg.id,{turn:{id:turnId}});notice('turn/started',{threadId:p.threadId,turn:{id:turnId}});
   if(text==='WARNING_TEST')notice('configWarning',{threadId:p.threadId,title:'configWarning',message:'COMPATIBILITY_WARNING_FOR_TEST'});
   if(text==='ERROR_TEST') {
@@ -696,8 +697,9 @@ try {
     await page.waitForFunction(()=>document.querySelector('#sendBtn').getAttribute('aria-label')==='停止任务');
     const picture=PNG.sync.write(new PNG({width:2,height:2}));
     await page.locator('#imageInput').setInputFiles({name:'队列图片.png',mimeType:'image/png',buffer:picture});
-    await page.locator('#fileInput').setInputFiles({name:'队列文件.txt',mimeType:'text/plain',buffer:Buffer.from('queued file')});
     await page.locator('#imageDrafts img').waitFor();
+    await page.waitForFunction(()=>document.querySelector('#uploadFeedback').hidden);
+    await page.locator('#fileInput').setInputFiles({name:'队列文件.txt',mimeType:'text/plain',buffer:Buffer.from('queued file')});
     await page.locator('#fileDrafts .file-attachment').waitFor();
     await page.locator('#prompt').fill('待修改的队列内容');
     await page.locator('#sendBtn').click();
@@ -920,6 +922,14 @@ try {
   });
   await check("设置保存到隔离配置", async () => {
     await navigate(page, 'settings');
+    await page.locator('summary').filter({hasText:'助手公网访问'}).click();
+    await page.locator('#harnessPublicAccess input').first().waitFor();
+    assert.equal(await page.locator('#harnessPublicAccess input').count(),7);
+    const publicSwitch=page.locator('#harnessPublicAccess input[data-harness-public=claude]');
+    const publicSaved=page.waitForResponse(response=>response.url().endsWith('/api/settings/harness-access')&&response.request().method()==='PUT');
+    await publicSwitch.uncheck();assert.equal((await publicSaved).status(),200);
+    assert.equal((await json('/api/settings/harness-access')).agents.find(row=>row.agent==='claude').enabled,false);
+    await publicSwitch.check();
     await chooseProject(page, "settingModel", "web-test-model");
     await page.locator("#saveSettingsBtn").click();
     await eventually(async () =>
@@ -930,15 +940,12 @@ try {
     );
     await page.screenshot({ path: path.join(artifacts, "web-settings.png") });
   });
-  await check('公网密码可在内网设置，读取接口不返回密码',async()=>{
+  await check('网关设置提供管理入口，公网密码接口不返回密码',async()=>{
     await navigate(page,'settings');
-    await page.locator('#publicPassword').fill('246810');
-    await page.locator('#publicPasswordConfirm').fill('246810');
+    await page.locator('[data-management-page=access]').waitFor();
     assert.equal((await fs.readFile(path.join(home,'public-password.txt'),'utf8')).trim(),initialPublicPassword);
-    const responsePromise=page.waitForResponse(response=>response.url().endsWith('/api/settings/public-access/password'));
-    await page.locator('#savePublicPasswordBtn').click();
-    const response=await responsePromise;
-    assert.equal(response.status(),200,JSON.stringify(await response.json()));
+    const response=await fetch(base+'/api/settings/public-access/password',{method:'PUT',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify({password:'246810'})});
+    assert.equal(response.status,200,JSON.stringify(await response.json()));
     await eventually(async()=>assert.equal((await fs.readFile(path.join(home,'public-password.txt'),'utf8')).trim(),'246810'));
     const config=JSON.parse(await fs.readFile(path.join(home,'public-access.json'),'utf8'));
     assert.equal(config.passwordSha256,createHash('sha256').update('246810').digest('hex'));
@@ -985,11 +992,16 @@ try {
     // for this turn's final response before opening its completed process group.
     await page.locator('.message.assistant').filter({hasText:'任务：IMAGE_TEST'}).last().waitFor();
     await page.waitForFunction(()=>document.getElementById('sendBtn').getAttribute('aria-label')==='发送消息');
-    const activity=page.locator('#events details.tool-group').last();
+    const completed=page.locator('#events details.completed-process').last();
+    assert.equal(await completed.getAttribute('open'),null);
+    assert.equal(await completed.locator('details.tool-group').count(),0,'collapsed process does not render nested operation details');
+    await completed.locator(':scope > summary').click();
+    const activity=completed.locator('details.tool-group').last();
     assert.equal(await activity.getAttribute('open'),null);
-    await activity.evaluate(node=>{const completed=node.closest('details.completed-process');if(completed)completed.open=true;node.open=true;});
-    await activity.getByText('先核对图片内容，再整理可见信息。',{exact:true}).waitFor();
-    await activity.getByText(/进行中 检查上传图片/).waitFor();
+    await activity.locator(':scope > summary').click();
+    await completed.getByText('先核对图片内容，再整理可见信息。',{exact:true}).waitFor();
+    await activity.getByText('更新计划',{exact:true}).click();
+    await completed.getByText(/进行中 检查上传图片/).waitFor();
     assert.equal(await page.getByText('INTERNAL_REASONING_NOT_FOR_DISPLAY',{exact:true}).count(),0);
     await page.waitForFunction(()=>document.getElementById('status').textContent==='已连接'&&document.getElementById('sendBtn').getAttribute('aria-label')==='发送消息');
     const imageSrc=await page.locator('.message.user img').last().getAttribute('src');
@@ -1029,22 +1041,23 @@ try {
     await page.locator('.output-modal .markdown').getByRole('heading',{name:'Atlas'}).waitFor();
     await page.locator('.output-modal').getByRole('button',{name:'关闭',exact:true}).click();
   });
-  await check('电脑图形界面一次性登录和配对',async()=>{
+  await check('电脑一次性登录进入管理后台，配对二维码可扫描',async()=>{
     const pairing=await (await fetch(base+'/api/pair/start',{headers:{Authorization:`Bearer ${token}`}})).json();
     const desktopContext=await browser.newContext();
     const desktop=await desktopContext.newPage();
     await desktop.goto(base+'/console#desktopPair='+pairing.code);
-    await desktop.locator('#pairDialog[open]').waitFor();
-    assert.equal(new URL(desktop.url()).hash,'');
-    assert.equal((await desktop.locator('#pairCode').innerText()).length,6);
-    assert.equal(await desktop.locator('#pairQr svg').count(),1);
-    const pixels=PNG.sync.read(await desktop.locator('#pairQr').screenshot());
+    await desktop.waitForURL(base+'/manage/#access');
+    assert.equal(await desktop.evaluate(()=>Boolean(localStorage.getItem('cmc.token'))),true);
+    assert.equal(pairing.code.length,6);
+    const qr=await desktopContext.newPage();
+    await qr.setContent('<main>'+pairing.qrSvg+'</main>');
+    const pixels=PNG.sync.read(await qr.locator('svg').screenshot());
     const decoded=jsQR(new Uint8ClampedArray(pixels.data),pixels.width,pixels.height);
     assert.ok(decoded,'Displayed pairing QR must be scannable');
     const pairingUrl=new URL(decoded.data);
-    assert.equal(pairingUrl.searchParams.get('code'),await desktop.locator('#pairCode').innerText());
-    assert.equal(pairingUrl.searchParams.get('baseUrl'),await desktop.locator('#pairAddress').inputValue());
-    await desktop.screenshot({path:path.join(artifacts,'desktop-pairing.png')});
+    assert.equal(pairingUrl.searchParams.get('code'),pairing.code);
+    assert.equal(decoded.data,pairing.setupUrl);
+    await qr.screenshot({path:path.join(artifacts,'desktop-pairing.png')});
     await desktopContext.close();
   });
   await check("手机窄屏导航、弹窗和主要工作区", async () => {
@@ -1205,15 +1218,11 @@ try {
     assert.equal(await page.locator('#events [data-event-type=warning]').count(),0);
     await page.locator('#threadMenuBtn').click();
     await page.getByRole('menuitem',{name:'显示运行提示',exact:true}).click();
-    const warning=page.locator('#events [data-event-type=warning]').filter({hasText:'COMPATIBILITY_WARNING_FOR_TEST'});
-    const completed=page.locator('#events details.completed-process').filter({hasText:'COMPATIBILITY_WARNING_FOR_TEST'});
-    if(await completed.count()){
-      assert.equal(await completed.getAttribute('open'),null);
-      await completed.locator(':scope > summary').click();
-    }
+    const warning=page.locator('#events [data-event-type=warning]').last();
     await warning.locator('summary').click();
     await warning.locator('pre').waitFor({state:'visible'});
     assert.equal(await warning.locator('pre').isVisible(),true);
+    assert.equal(await warning.locator('pre').innerText(),'COMPATIBILITY_WARNING_FOR_TEST');
     assert.equal(await page.evaluate(()=>localStorage.getItem('cmc.showWarnings')),'true');
     await page.locator('#threadMenuBtn').click();
     await page.getByRole('menuitem',{name:'隐藏运行提示',exact:true}).click();
@@ -1456,15 +1465,16 @@ try {
   if(process.env.CMC_WEB_PREVIEW_CONNECTION_ONLY==='1')await check("预览连接检查页面没有未捕获错误",async()=>assert.deepEqual(errors,[]));
   if(process.env.CMC_WEB_OUTPUT_LINKS_ONLY==='1')await check("输出文件检查页面没有未捕获错误",async()=>assert.deepEqual(errors,[]));
   if(process.env.CMC_WEB_COMPOSER_TRANSFER_ONLY==='1')await check("输入转移检查页面没有未捕获错误",async()=>assert.deepEqual(errors,[]));
-  console.log(`Web smoke passed: ${checks} checks`);
+  console.log(`Web smoke: ${checks} passed, ${failedChecks.length} failed`);
   await fs.writeFile(
     path.join(artifacts, process.env.CMC_WEB_IMAGE_COUNT_ONLY==='1'?"web-image-count-290-results.json":process.env.CMC_WEB_TEXT_TYPES_ONLY==='1'?"web-text-types-288-results.json":process.env.CMC_WEB_TEXT_ENCODING_ONLY==='1'?"web-text-encoding-286-results.json":process.env.CMC_WEB_UPLOAD_MIME_ONLY==='1'?"web-upload-mime-284-results.json":process.env.CMC_WEB_COMPOSER_TRANSFER_ONLY==='1'?"web-composer-transfer-281-results.json":process.env.CMC_WEB_OUTPUT_LINKS_ONLY==='1'?"web-output-links-280-results.json":process.env.CMC_WEB_PREVIEW_CONNECTION_ONLY==='1'?"web-preview-connection-279-results.json":process.env.CMC_WEB_UPLOAD_PREVIEW_ONLY==='1'?"web-upload-preview-278-results.json":process.env.CMC_WEB_UPLOAD_ONLY==='1'?"web-upload-277-results.json":process.env.CMC_WEB_FUNCTIONS_ONLY==='1'?"web-functions-198-results.json":"web-test-results.json"),
     JSON.stringify(
-      { checks, passed: true, errors, date: new Date().toISOString() },
+      { checks, passed: failedChecks.length===0, failedChecks, errors, date: new Date().toISOString() },
       null,
       2,
     ),
   );
+  if(failedChecks.length)throw new AggregateError(failedChecks.map(row=>Error(row.name+': '+row.error)),'Web checks failed');
 } catch (error) {
   console.error(error);
   console.error('Browser errors:',JSON.stringify(errors));
@@ -1500,7 +1510,14 @@ try {
   process.exit(process.exitCode || 0);
 }
 async function check(name, fn) {
-  await fn();
+  try{await fn();}
+  catch(error){
+    if(process.env.CMC_WEB_COLLECT_FAILURES!=='1')throw error;
+    failedChecks.push({name,error:String(error)});
+    console.error(`not ok - ${name}: ${error}`);
+    await page?.screenshot({path:path.join(artifacts,`web-failure-${failedChecks.length}.png`)}).catch(()=>{});
+    return;
+  }
   checks++;
   console.log(`ok - ${name}`);
 }
@@ -1635,6 +1652,13 @@ async function navigate(target, view) {
   const rail = target.locator(`.nav-rail [data-page=${view}]`);
   if (await rail.isVisible()) return rail.click();
   if (await target.locator('#workTabs').isVisible()) return target.locator(`#workTabs [data-page=${view}]`).click();
+  if(view==='files'){
+    await target.locator('#sidebar').evaluate(node=>Promise.allSettled(node.getAnimations().map(animation=>animation.finished)));
+    if(await target.locator('#sidebar').evaluate(node=>node.classList.contains('open')))await target.locator('#closeDrawer').click();
+    await navigate(target,'chat');
+    await target.locator('#threadMenuBtn').click();
+    return target.getByRole('menuitem',{name:'工作区文件',exact:true}).click();
+  }
   await openSidebar(target);
   return target.locator(`.sidebar-tools [data-page=${view}]`).click();
 }

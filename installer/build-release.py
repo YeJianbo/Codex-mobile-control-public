@@ -68,6 +68,7 @@ docs=stage/'docs';docs.mkdir(exist_ok=True)
 shutil.copy2(root/'docs/installation.md',docs/'安装使用说明.md')
 shutil.copy2(root/'docs/mobile-usage.md',docs/'mobile-usage.md')
 shutil.copy2(root/'docs/harnesses.md',docs/'harnesses.md')
+shutil.copy2(root/'docs/feature-parity.md',docs/'feature-parity.md')
 shutil.copy2(root/'docs/harness-icons.md',docs/'harness-icons.md')
 for script in (stage/'installer').glob('*.ps1'):
     text=script.read_text(encoding='utf-8-sig');script.write_text(text,encoding='utf-8-sig')

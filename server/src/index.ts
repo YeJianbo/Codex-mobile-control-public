@@ -52,7 +52,7 @@ import type { GatewayEvent, ThreadRecord } from "./types.js";
 import {readClashOpenAI,selectClashOpenAI,testClashOpenAI} from './services/clashOpenAI.js';
 import { registerPreviewProxy, handlePreviewUpgrade } from "./services/previewProxy.js";
 import {readModelCatalog,assertAvailableModel} from './services/modelCatalog.js';
-import {modelAgent,threadAgent,publicAgentAllowed} from './services/agentProtocol.js';
+import {modelAgent,threadAgent,publicAgentAllowed,configurePublicAgentAccess,agentNames} from './services/agentProtocol.js';
 import {pairAddresses} from './services/pairAddresses.js';
 import {registerImageUploads} from './services/imageUploads.js';
 import {UploadStorage} from './services/uploadStorage.js';
@@ -169,6 +169,7 @@ const clientCommandSchema = z.discriminatedUnion("type", [
 ]);
 
 const config = await loadServerConfig();
+configurePublicAgentAccess(config.publicAgents);
 const publicProxySecret=await fs.readFile(path.join(appHome(),'public-access.json'),'utf8').then(raw=>(JSON.parse(raw) as {proxySecret?:string}).proxySecret).catch(()=>undefined);
 const store = new StateStore();
 await store.load();
@@ -678,7 +679,7 @@ app.get("/api/threads", async (request) => {
 app.post('/api/threads/:threadId/read',async request=>{
   const {threadId}=z.object({threadId:z.string().min(1).max(200)}).parse(request.params);
   const {completedAt}=z.object({completedAt:z.number().int().positive().max(Number.MAX_SAFE_INTEGER)}).parse(request.body);
-  const latest=await readCodexThreadCompletion(threadId).catch(()=>0);
+  const latest=Math.max(store.threadCompletion(threadId),await readCodexThreadCompletion(threadId).catch(()=>0));
   const manual=store.manualUnread(threadId);
   if((!latest||completedAt>latest)&&(manual===undefined||completedAt> manual))return {readThrough:store.threadReadThrough(threadId)};
   const readThrough=store.markThreadRead(threadId,completedAt);
@@ -776,7 +777,7 @@ app.get('/api/threads/:threadId/queue',async request=>{
 app.post('/api/threads/:threadId/queue',async request=>{
   const {threadId}=request.params as {threadId:string};
   const sourcePublic=request.headers['x-public-proxy-secret']===publicProxySecret&&publicProxySecret!=null;
-  if(sourcePublic&&!publicAgentAllowed(threadAgent(threadId)))throw new Error('公网仅支持 Codex 和 Antigravity 会话');
+  if(sourcePublic&&!publicAgentAllowed(threadAgent(threadId)))throw new Error('此助手的公网访问已关闭');
   const body=z.object({id:z.string().min(1).max(160),text:z.string().max(200000),model:z.string().optional(),effort:z.string().optional(),mode:z.enum(["plan","default"]).optional(),fast:z.boolean().optional(),permission:z.enum(['ask','auto','full','custom']).optional(),images:z.array(z.object({id:z.string(),name:z.string()})).default([]),files:z.array(fileSchema).max(8).default([])}).parse(request.body);
   if(!body.text.trim()&&!body.images.length&&!body.files.length)throw new Error('请输入消息或添加附件');
   if(!(await listThreadsWithCodexHistory(store.threads)).some(t=>t.id===threadId))throw new Error('找不到此任务');
@@ -784,7 +785,7 @@ app.post('/api/threads/:threadId/queue',async request=>{
 });
 function assertPublicQueueEntry(request:{headers:Record<string,unknown>},threadId:string,id:string,allowMissing=false){
   if(request.headers['x-public-proxy-secret']!==publicProxySecret||publicProxySecret==null)return;
-  if(!publicAgentAllowed(threadAgent(threadId)))throw new Error('公网仅支持 Codex 和 Antigravity 会话');
+  if(!publicAgentAllowed(threadAgent(threadId)))throw new Error('此助手的公网访问已关闭');
   const entry=followups.entry(id,threadId);
   if(!entry&&allowMissing)return;
   if(!entry?.sourcePublic)throw new Error('公网只能处理本机排队的消息');
@@ -815,7 +816,7 @@ app.delete('/api/threads/:threadId/queue/:id',async request=>{const {threadId,id
 app.post('/api/threads/:threadId/queue/:id/:action',async request=>{
   const {threadId,id,action}=request.params as {threadId:string;id:string;action:string};
   const viaPublic=request.headers['x-public-proxy-secret']===publicProxySecret&&publicProxySecret!=null;
-  if(viaPublic&&!publicAgentAllowed(threadAgent(threadId)))throw new Error('公网仅支持 Codex 和 Antigravity 会话');
+  if(viaPublic&&!publicAgentAllowed(threadAgent(threadId)))throw new Error('此助手的公网访问已关闭');
   if(viaPublic&&!followups.list(threadId).some(entry=>entry.id===id&&entry.sourcePublic))throw new Error('公网只能处理本机排队的消息');
   if(action==='steer'){
     const history=await readCodexThreadEvents(threadId);
@@ -962,7 +963,7 @@ app.post('/api/threads/:threadId/compact',async request=>{
 
 app.post("/api/threads/:threadId/resume", async (request) => {
   const params = request.params as { threadId: string };
-  if(request.headers['x-public-proxy-secret']===publicProxySecret&&publicProxySecret!=null&&!publicAgentAllowed(threadAgent(params.threadId)))throw new Error('公网仅支持 Codex 和 Antigravity 会话');
+  if(request.headers['x-public-proxy-secret']===publicProxySecret&&publicProxySecret!=null&&!publicAgentAllowed(threadAgent(params.threadId)))throw new Error('此助手的公网访问已关闭');
   const body = resumeThreadSchema.parse(request.body ?? {});
   await validateAgentModel(body.model,params.threadId);
   body.projectPath = await assertProjectAccess(body.projectPath, params.threadId);
@@ -984,8 +985,12 @@ app.patch("/api/threads/:threadId", async (request) => {
 
 app.post('/api/threads/:threadId/pin',async request=>{
   const {threadId}=request.params as {threadId:string};
-  if(threadAgent(threadId)!=='codex')throw new Error('此助手暂不支持与桌面同步置顶');
   const {pinned}=z.object({pinned:z.boolean()}).parse(request.body);
+  if(threadAgent(threadId)!=='codex'){
+    await managedThread(threadId);store.setThreadPinned(threadId,pinned);
+    hub.publish({type:'thread.read-state.changed'},false);
+    return {ok:true,pinned};
+  }
   await codex.request('thread/section/move',{threadId,sectionId:pinned?PINNED_SECTION_ID:null});
   return {ok:true,pinned};
 });
@@ -1380,7 +1385,7 @@ app.get('/api/models',async request=>{
   const viaPublic=request.headers['x-public-proxy-secret']===publicProxySecret&&publicProxySecret!=null;
   const backends=await sessions.agents.backends(viaPublic);
   const models=[...(codexModels.status==='fulfilled'?codexModels.value.models:[]),...(otherModels.status==='fulfilled'?otherModels.value:[])];
-  return {models:models.map(model=>{const backend=backends.find(b=>b.agent===modelAgent(model.model));return backend?{...model,available:backend.available,unavailableReason:backend.reason}:model;}),backends,source:'local-agents'};
+  return {models:models.map(model=>{const agent=modelAgent(model.model),backend=backends.find(b=>b.agent===agent);if(viaPublic&&!publicAgentAllowed(agent))return {...model,available:false,unavailableReason:'此助手的公网访问已关闭'};return backend?{...model,available:backend.available,unavailableReason:backend.reason}:model;}),backends,source:'local-agents'};
 });
 const agentHealthMonitor=new AgentHealthMonitor();
 app.get('/api/agents/updates',async request=>agentHealthMonitor.checkUpdates((request.query as any).refresh==='1'));
@@ -1390,7 +1395,7 @@ app.get('/api/agents/health',async request=>{
   const checks=Promise.allSettled([codex.status(),sessions.agents.health(refresh,viaPublic)]);
   const health=await agentHealthMonitor.enrich(checks.then(([status,agents])=>{
     const runtime=status.status==='fulfilled'?status.value:null;
-    return [{agent:'codex',name:'Codex',available:runtime?.initialized===true,installed:runtime?.cliAvailable===true||runtime?.running===true,state:runtime?.initialized?'ready':runtime?.running?'connecting':'unavailable',version:runtime?.cliVersion||'',reason:runtime?.lastError||(status.status==='rejected'?'Codex 状态读取失败':''),pendingRequests:runtime?.pendingRequests||0,supportsRestart:true,checkedAt:new Date().toISOString()},...(agents.status==='fulfilled'?agents.value:[])];
+    return [{agent:'codex',name:'Codex',publicAllowed:publicAgentAllowed('codex'),available:runtime?.initialized===true,installed:runtime?.cliAvailable===true||runtime?.running===true,state:runtime?.initialized?'ready':runtime?.running?'connecting':'unavailable',version:runtime?.cliVersion||'',reason:runtime?.lastError||(status.status==='rejected'?'Codex 状态读取失败':''),pendingRequests:runtime?.pendingRequests||0,supportsRestart:true,checkedAt:new Date().toISOString()},...(agents.status==='fulfilled'?agents.value:[])];
   }));
   const [,agents]=await checks;
   return {checkedAt:new Date().toISOString(),...health,error:agents.status==='rejected'?'助手状态读取失败，请重新检查':''};
@@ -1401,6 +1406,20 @@ app.get("/api/settings/approval-summary", async () => ({
 }));
 
 app.get('/api/settings/remote-approval',async()=>({desktopAutoApprove:await readRemoteAutoApproval(),...codex.desktopApprovalStatus()}));
+const harnessAccess=()=>({agents:Object.entries(agentNames).map(([agent,name])=>({agent,name,enabled:publicAgentAllowed(agent as keyof typeof agentNames)}))});
+let harnessAccessWrite=Promise.resolve();
+app.get('/api/settings/harness-access',async()=>harnessAccess());
+app.put('/api/settings/harness-access',async request=>{
+  const agents=z.object({codex:z.boolean().optional(),claude:z.boolean().optional(),antigravity:z.boolean().optional(),grok:z.boolean().optional(),deepseek:z.boolean().optional(),hermes:z.boolean().optional(),opencode:z.boolean().optional()}).strict().parse(z.object({agents:z.unknown()}).strict().parse(request.body).agents);
+  const operation=harnessAccessWrite.then(async()=>{
+    const publicAgents={...config.publicAgents,...agents};
+    await saveServerConfig({...config,publicAgents});
+    config.publicAgents=publicAgents;configurePublicAgentAccess(publicAgents);
+    return harnessAccess();
+  });
+  harnessAccessWrite=operation.then(()=>{},()=>{});
+  return operation;
+});
 app.get('/api/settings/capacity-retry',async()=>({enabled:config.capacityAutoRetry===true,maxAttempts:null,...sessions.capacityRetryStatus()}));
 app.put('/api/settings/capacity-retry',async request=>{
   const {enabled}=z.object({enabled:z.boolean()}).parse(request.body);
@@ -1512,7 +1531,7 @@ wss.on("connection", (socket, request) => {
       }
       const message = clientCommandSchema.parse(identity);
       if('threadId' in message)assertControllableThread(message.threadId||'');
-      if(viaPublic&&(message.type==='debug.echo'||(message.type==='thread.start'&&!publicAgentAllowed(modelAgent(message.model)))||('threadId' in message&&message.threadId&&!publicAgentAllowed(threadAgent(message.threadId)))))throw new Error('公网仅支持 Codex 和 Antigravity 会话');
+      if(viaPublic&&(message.type==='debug.echo'||(message.type==='thread.start'&&!publicAgentAllowed(modelAgent(message.model)))||((message.type==='turn.start'||message.type==='thread.resume')&&!publicAgentAllowed(threadAgent(message.threadId)))))throw new Error('此助手的公网访问已关闭');
       if((message.type==='thread.start'||message.type==='turn.start')&&message.requestId&&(message.type==='thread.start'?modelAgent(message.model):threadAgent(message.threadId))!=='codex'){
         const threadId='threadId' in message?message.threadId:undefined;
         const receipt=submissions.status(message.requestId,store.events,threadId);

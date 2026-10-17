@@ -2,9 +2,11 @@ export type Agent = 'codex'|'claude'|'antigravity'|'grok'|'deepseek'|'hermes'|'o
 export const agentNames:Record<Agent,string>={codex:'Codex',claude:'Claude Code',antigravity:'Antigravity',grok:'Grok Build',deepseek:'DeepSeek Harness',hermes:'Hermes',opencode:'OpenCode'};
 export function modelAgent(model=''):Agent { const prefix=model.split('::')[0];return Object.hasOwn(agentNames,prefix)&&prefix!=='codex'?prefix as Agent:'codex'; }
 export function threadAgent(id=''):Agent {const prefix=id.split('-')[0];return Object.hasOwn(agentNames,prefix)&&prefix!=='codex'?prefix as Agent:'codex';}
-export function publicAgentAllowed(agent:Agent){return agent==='codex'||agent==='antigravity';}
+let publicAgentAccess:Partial<Record<Agent,boolean>>={};
+export function configurePublicAgentAccess(access:Partial<Record<Agent,boolean>>={}){publicAgentAccess={...access};}
+export function publicAgentAllowed(agent:Agent){return publicAgentAccess[agent]!==false;}
 import {editedFilePaths,claudeFileChange} from './agentFileChanges.js';
-export type AgentUpdate={kind:'text'|'tool'|'output'|'complete'|'session'|'result';id?:string;text?:string;name?:string;error?:boolean;usage?:any;files?:string[];diff?:string};
+export type AgentUpdate={kind:'text'|'tool'|'output'|'complete'|'session'|'result'|'plan'|'retry';id?:string;text?:string;name?:string;error?:boolean;usage?:any;files?:string[];diff?:string};
 // Only public response text and tool records cross this boundary. Raw reasoning is not rendered.
 // AGY tool ids are snake_case verbs; give the mobile timeline readable titles (Codex parity).
 const agyToolLabels:Record<string,string>={
@@ -36,6 +38,8 @@ export function agentUpdates(agent:Agent,line:any):AgentUpdate[]{
     return [];
   }
   const out:AgentUpdate[]=[];
+  if(agent==='claude'&&line.type==='system'&&line.subtype==='api_retry')out.push({kind:'retry',text:'Claude 服务请求未成功，正在重试'+(Number.isInteger(line.attempt)&&line.attempt>0?`（第 ${line.attempt} 次）`:'')});
+  if(line.type==='plan'&&Array.isArray(line.entries))out.push({kind:'plan',text:line.entries.filter((entry:any)=>typeof entry.content==='string').map((entry:any)=>`${entry.status==='completed'?'✓':entry.status==='in_progress'?'进行中':'待开始'} ${entry.content}`).join('\n')});
   if(line.session_id)out.push({kind:'session',id:line.session_id});
   if(line.type==='assistant')for(const block of line.message?.content||[]){
     if(block.type==='text')out.push({kind:'text',id:line.message.id,text:block.text});

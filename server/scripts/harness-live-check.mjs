@@ -28,9 +28,11 @@ const turn=async command=>{
   return {id,pid,events:events.slice(start).filter(e=>e.threadId===id),meta:store.readAgentMeta(id)};
 };
 try{
+  console.log('Discovering installed harness capabilities (no model prompts).');
   const models=await manager.agents.models();
   const backends=await manager.agents.backends();
   for(const agent of agents.length?agents:['claude','antigravity','grok','deepseek','hermes']){
+    console.log('Checking '+agent+' in an isolated project.');
     const backend=backends.find(b=>b.agent===agent);
     const result={agent,installed:backend?.installed,available:backend?.available,catalog:models.filter(m=>m.model.startsWith(agent+'::')).map(m=>m.model)};
     try{

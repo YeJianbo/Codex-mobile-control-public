@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {agentUpdates,modelAgent,threadAgent,publicAgentAllowed} from '../src/services/agentProtocol.ts';
+import {agentUpdates,modelAgent,threadAgent,publicAgentAllowed,configurePublicAgentAccess} from '../src/services/agentProtocol.ts';
 test('agent routing never changes an existing Codex thread',()=>{
   assert.equal(modelAgent('antigravity::claude-sonnet-4-6'),'antigravity');
   assert.equal(threadAgent('01a07e7c-abc'),'codex');
@@ -26,7 +26,19 @@ test('AGY structured output, failed tools and malformed final records remain rea
   assert.equal(agentUpdates('antigravity',{event:'result',result:{status:'FAILED',error:{message:'provider'}}})[1].text,'{"message":"provider"}');
 });
 
-test('public execution allows only Codex and AGY',()=>{
-  for(const agent of ['codex','antigravity'])assert(publicAgentAllowed(agent));
-  for(const agent of ['claude','grok'])assert.equal(publicAgentAllowed(agent),false);
+test('authenticated public execution defaults to every harness, with independent reversible controls',()=>{
+  const agents=['codex','antigravity','claude','grok','deepseek','hermes','opencode'];
+  try{
+    for(const agent of agents)assert(publicAgentAllowed(agent));
+    configurePublicAgentAccess({claude:false,opencode:false});
+    for(const agent of agents)assert.equal(publicAgentAllowed(agent),!['claude','opencode'].includes(agent));
+    configurePublicAgentAccess({claude:true});assert(publicAgentAllowed('claude'));assert(publicAgentAllowed('opencode'));
+  }finally{configurePublicAgentAccess();}
+});
+
+test('native plans and upstream retries use shared visible process records',()=>{
+  const plan=agentUpdates('opencode',{type:'plan',entries:[{content:'读取文件',status:'completed'},{content:'核对结果',status:'in_progress'}]});
+  assert.equal(plan[0].kind,'plan');assert.match(plan[0].text,/✓ 读取文件\n进行中 核对结果/);
+  const retry=agentUpdates('claude',{type:'system',subtype:'api_retry',attempt:2,error:{secret:'must not expose'}});
+  assert.equal(retry[0].kind,'retry');assert.match(retry[0].text,/第 2 次/);assert(!retry[0].text.includes('secret'));
 });

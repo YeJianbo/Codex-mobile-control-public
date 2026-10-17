@@ -9,7 +9,7 @@ export function permittedPublicRequest(method,rawUrl) {
   if(pathname==='/ws')return method==='GET';
   if(pathname==='/health')return method==='GET';
   if(pathname==='/api/settings/fast')return method==='GET';
-  if(pathname==='/api/settings/capacity-retry'||pathname==='/api/settings/remote-approval')return method==='GET'||method==='PUT';
+  if(pathname==='/api/settings/capacity-retry'||pathname==='/api/settings/remote-approval'||pathname==='/api/settings/harness-access')return method==='GET'||method==='PUT';
   if(pathname==='/api/network/openai')return method==='GET';
   if(pathname==='/api/network/openai/node')return method==='PUT';
   if(pathname==='/api/network/openai/test')return method==='POST';

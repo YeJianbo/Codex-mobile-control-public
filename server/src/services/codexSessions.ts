@@ -88,7 +88,7 @@ export async function listThreadsWithCodexHistory(storedThreads: ThreadRecord[],
   }
   for(const [id,thread] of merged){
     if(pinned.has(id))thread.pinnedIndex=pinned.get(id);
-    else if(desktop.pinsAuthoritative)delete thread.pinnedIndex;
+    else if(desktop.pinsAuthoritative&&!/^(claude|antigravity|grok|deepseek|hermes|opencode)-/.test(id))delete thread.pinnedIndex;
   }
   for(const id of desktop.archived)merged.delete(id);
   if(desktop.threadsLoaded){

@@ -117,6 +117,19 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
     var subagentClose by mutableStateOf(NativeSubagentCloseState());private set
     fun dismissSubagentClose(){if(!subagentClose.busy)subagentClose=NativeSubagentCloseState()}
     var agentHealth by mutableStateOf(NativeAgentHealthState());private set
+    fun setHarnessPublicAccess(agent:String,enabled:Boolean){
+        if(!state.connected||agentHealth.accessBusy.isNotBlank())return
+        val api=client?:return;val epoch=generation
+        agentHealth=agentHealth.copy(accessBusy=agent,error="")
+        viewModelScope.launch{
+            try{
+                withContext(Dispatchers.IO){api.nativeJson("PUT","/api/settings/harness-access",JSONObject().put("agents",JSONObject().put(agent,enabled)))}
+                if(epoch!=generation||client!==api)return@launch
+                agentHealth=agentHealth.copy(agents=agentHealth.agents.map{if(it.agent==agent)it.copy(publicAllowed=enabled) else it},accessBusy="")
+                loadAgentHealth()
+            }catch(e:CancellationException){throw e}catch(e:Exception){if(epoch==generation&&client===api)agentHealth=agentHealth.copy(accessBusy="",error=nativeError(e))}
+        }
+    }
     fun loadAgentHealth(force:Boolean=false):Job?{
         if(!state.connected||agentHealth.loading)return null
         val api=client?:return null;val epoch=generation
@@ -443,7 +456,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
                 if(listJob?.isActive!=true)launch{refreshLists()}
                 if(pinJob?.isActive!=true)pinJob=launch{refreshPinOrder()}
                 refreshHistory()
-                if(uiForeground&&state.harness in setOf("codex","antigravity")&&!state.usageLoading&&System.currentTimeMillis()-lastUsageRefresh>=60000)loadUsage()
+                if(uiForeground&&!state.usageLoading&&System.currentTimeMillis()-lastUsageRefresh>=60000)loadUsage()
                 // A wake received during this read is already satisfied by its result.
                 while(pollingWake.tryReceive().isSuccess){}
                 val interval=when{!uiForeground->30000L;state.running||state.sending||pending!=null||state.queue.isNotEmpty()->2500L;else->10000L}

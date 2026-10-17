@@ -20,8 +20,8 @@ import java.util.Locale
 
 data class NativeHarnessProcess(val state:String="unknown",val count:Int=0,val memoryBytes:Long?=null,val sampledAt:String="",val error:String="")
 data class NativeHarnessUpdate(val state:String="not_checked",val installedVersion:String="",val latestVersion:String="",val checkedAt:String="",val source:String="",val url:String="",val error:String="")
-data class NativeAgentHealth(val agent:String,val name:String,val state:String,val installed:Boolean?,val version:String,val reason:String,val activeCount:Int?,val models:Int?,val pending:Int,val versionError:String,val lastFailure:String,val process:NativeHarnessProcess=NativeHarnessProcess(),val update:NativeHarnessUpdate=NativeHarnessUpdate())
-data class NativeAgentHealthState(val agents:List<NativeAgentHealth> = emptyList(),val loading:Boolean=false,val checkedAt:String="",val error:String="",val desktop:NativeAgentHealth?=null,val checkingUpdates:Boolean=false)
+data class NativeAgentHealth(val agent:String,val name:String,val state:String,val installed:Boolean?,val version:String,val reason:String,val activeCount:Int?,val models:Int?,val pending:Int,val versionError:String,val lastFailure:String,val process:NativeHarnessProcess=NativeHarnessProcess(),val update:NativeHarnessUpdate=NativeHarnessUpdate(),val publicAllowed:Boolean=true)
+data class NativeAgentHealthState(val agents:List<NativeAgentHealth> = emptyList(),val loading:Boolean=false,val checkedAt:String="",val error:String="",val desktop:NativeAgentHealth?=null,val checkingUpdates:Boolean=false,val accessBusy:String="")
 
 internal fun parseNativeAgentHealth(row:JSONObject):NativeAgentHealth{
     fun text(data:JSONObject,key:String)=if(data.isNull(key))"" else data.optString(key)
@@ -29,7 +29,7 @@ internal fun parseNativeAgentHealth(row:JSONObject):NativeAgentHealth{
     val update=row.optJSONObject("update")?:JSONObject()
     return NativeAgentHealth(text(row,"agent").ifBlank{text(row,"id")},text(row,"name"),text(row,"state"),row.opt("installed") as? Boolean,text(row,"version"),text(row,"reason"),if(!row.isNull("activeCount"))row.optInt("activeCount") else null,if(!row.isNull("modelCount"))row.optInt("modelCount") else null,row.optInt("pendingRequests"),text(row,"versionError"),row.optJSONObject("lastFailure")?.let{text(it,"message")}.orEmpty(),
         NativeHarnessProcess(text(process,"state").ifBlank{"unknown"},process.optInt("count"),if(process.isNull("memoryBytes"))null else process.optLong("memoryBytes").takeIf{it>=0},text(process,"sampledAt"),text(process,"error")),
-        NativeHarnessUpdate(text(update,"state").ifBlank{"not_checked"},text(update,"installedVersion"),text(update,"latestVersion"),text(update,"checkedAt"),text(update,"source"),text(update,"url"),text(update,"error")))
+        NativeHarnessUpdate(text(update,"state").ifBlank{"not_checked"},text(update,"installedVersion"),text(update,"latestVersion"),text(update,"checkedAt"),text(update,"source"),text(update,"url"),text(update,"error")),row.optBoolean("publicAllowed",true))
 }
 
 @Composable internal fun NativeAgentManagement(vm:NativeViewModel,back:()->Unit){
@@ -45,10 +45,10 @@ internal fun parseNativeAgentHealth(row:JSONObject):NativeAgentHealth{
             while(true){delay(30000);vm.loadAgentHealth()}
         }
     }
-    NativeAgentManagementContent(state,connected,back,{vm.loadAgentHealth(force=true)},{vm.checkAgentUpdates()},vm.state.backendRestart,"shared-backend-restart" in vm.state.capabilities,{vm.sharedBackendRestart()})
+    NativeAgentManagementContent(state,connected,back,{vm.loadAgentHealth(force=true)},{vm.checkAgentUpdates()},vm.state.backendRestart,"shared-backend-restart" in vm.state.capabilities,{vm.sharedBackendRestart()},"harness-public-access" in vm.state.capabilities,vm::setHarnessPublicAccess)
 }
 
-@Composable internal fun NativeAgentManagementContent(state:NativeAgentHealthState,connected:Boolean,back:()->Unit,onRefresh:()->Unit,onCheckUpdates:()->Unit,restart:NativeBackendRestart=NativeBackendRestart(),canRestart:Boolean=false,onRestart:()->Unit={}){
+@Composable internal fun NativeAgentManagementContent(state:NativeAgentHealthState,connected:Boolean,back:()->Unit,onRefresh:()->Unit,onCheckUpdates:()->Unit,restart:NativeBackendRestart=NativeBackendRestart(),canRestart:Boolean=false,onRestart:()->Unit={},canManagePublic:Boolean=false,onPublicAccess:(String,Boolean)->Unit={_,_->}){
     NativeManagementPage("助手管理","",back,modifier=Modifier.testTag("agentManagement"),actions={
         TextButton(onClick=onRefresh,enabled=connected&&!state.loading){Text(if(state.loading)"检查中…" else "刷新")}
     }){
@@ -82,6 +82,10 @@ internal fun parseNativeAgentHealth(row:JSONObject):NativeAgentHealth{
                 if(agent.reason.isNotBlank())Text(agent.reason,Modifier.padding(top=8.dp),fontSize=12.sp,color=MaterialTheme.colors.error)
                 if(agent.versionError.isNotBlank())Text(agent.versionError,Modifier.padding(top=8.dp),fontSize=12.sp,color=muted)
                 if(agent.lastFailure.isNotBlank())Text("上次任务失败 · ${agent.lastFailure}",Modifier.padding(top=8.dp),fontSize=12.sp,color=muted)
+                if(canManagePublic&&agent.agent!="codex-desktop")Row(Modifier.fillMaxWidth().padding(top=12.dp),verticalAlignment=Alignment.CenterVertically){
+                    Text("公网访问",Modifier.weight(1f),fontSize=14.sp)
+                    DashboardSwitch(agent.publicAllowed,{onPublicAccess(agent.agent,it)},enabled=connected&&state.accessBusy.isBlank(),modifier=Modifier.testTag("harnessPublic:${agent.agent}"))
+                }
                 if(agent.agent=="codex"&&canRestart){
                     TextButton(onClick=onRestart,enabled=connected&&!restart.busy,modifier=Modifier.testTag("agentRestart:codex")){Text(if(restart.busy)"正在检查…" else "重启 Codex")}
                     if(restart.error.isNotBlank())Text(restart.error,fontSize=12.sp,color=MaterialTheme.colors.error)

@@ -66,8 +66,10 @@ export class AgentSessions {
     return Object.keys(commands).map(key=>{
       const agent=key as CliAgent,enabled=!process.env.CODEX_MOBILE_CONTROL_AGENTS||process.env.CODEX_MOBILE_CONTROL_AGENTS.split(',').includes(agent);
       const installed=this.executables.has(agent),publicAllowed=publicAgentAllowed(agent);
-      const supportsPlan=agent==='opencode'?this.planCapabilities.get(agent)===true:agent==='claude'||agent==='antigravity';
-      return {agent,name:agentNames[agent],installed,available:enabled&&installed&&!this.protocolErrors.has(agent)&&(!viaPublic||publicAllowed),supportsImages:this.imageCapabilities.get(agent),supportsPlan,supportsPlanMode:supportsPlan,supportsApproval:agent!=='antigravity',accountStatus:'not-checked',reason:!enabled?'此网关未启用该助手':viaPublic&&!publicAllowed?'当前公网入口不支持该助手，请使用已配对的局域网连接':!installed?(this.discoveryErrors.get(agent)||'未检测到 CLI'):this.protocolErrors.get(agent)||'',discovery:this.executables.get(agent)?.source};
+      const supportsPlan=this.planCapabilities.get(agent)===true||agent==='claude'||agent==='antigravity';
+      const protocolError=this.protocolErrors.get(agent)||'';
+      const loginExpired=/token refresh failed|session has ended|please log in again|not logged in|authentication required/i.test(protocolError);
+      return {agent,name:agentNames[agent],installed,publicAllowed,available:enabled&&installed&&!this.protocolErrors.has(agent)&&(!viaPublic||publicAllowed),supportsImages:this.imageCapabilities.get(agent),supportsPlan,supportsPlanMode:supportsPlan,supportsApproval:agent!=='antigravity',accountStatus:loginExpired?'reauth-required':'not-checked',reason:!enabled?'此网关未启用该助手':viaPublic&&!publicAllowed?'此助手的公网访问已关闭':!installed?(this.discoveryErrors.get(agent)||'未检测到 CLI'):loginExpired?'登录已失效，请在账号中重新授权':protocolError,discovery:this.executables.get(agent)?.source};
     });
   }
   async health(refresh=false,viaPublic=false){
@@ -111,7 +113,7 @@ export class AgentSessions {
       const agent=backend.agent,command=this.executables.get(agent)?.command;
       const saved=this.healthVersions.get(agent),version=saved?.command===command?saved:undefined;
       const activeCount=[...new Set([...this.active.keys(),...this.starting])].filter(id=>threadAgent(id)===agent).length;
-      return {agent,name:backend.name,installed:backend.installed,available:backend.available,state:backend.available?'ready':'unavailable',reason:backend.reason.split(/[\r\n：]/)[0].slice(0,240),version:version?.version||'',versionError:version?.error||'',activeCount,modelCount:this.catalog?this.catalog.models.filter(m=>modelAgent(m.model)===agent).length:null,supportsImages:backend.supportsImages,supportsApproval:backend.supportsApproval,checkedAt:new Date().toISOString(),lastFailure:this.lastFailures.get(agent)||null};
+      return {agent,name:backend.name,installed:backend.installed,available:backend.available,publicAllowed:backend.publicAllowed,state:backend.available?'ready':'unavailable',reason:backend.reason.split(/[\r\n：]/)[0].slice(0,240),version:version?.version||'',versionError:version?.error||'',activeCount,modelCount:this.catalog?this.catalog.models.filter(m=>modelAgent(m.model)===agent).length:null,supportsImages:backend.supportsImages,supportsApproval:backend.supportsApproval,checkedAt:new Date().toISOString(),lastFailure:this.lastFailures.get(agent)||null};
     });
   }
   owns(id:string){return this.active.has(id)||this.starting.has(id);}
@@ -338,8 +340,7 @@ export class AgentSessions {
     if(official&&meta.session&&meta.transport!=='acp')throw Error('原会话使用 CLI 协议，请创建新的 ACP 助理任务');
     if(official){const catalog=await this.officialModels(agent);if(!catalog.available)throw Error(catalog.reason);if(model&&!catalog.models.some(entry=>entry.model===model))throw Error('该模型不在 ACP 目录中');}
     else await this.validate(model,id);
-    if(['grok','deepseek','hermes'].includes(agent)&&command.mode==='plan')throw Error(`当前 ${agentNames[agent]} ACP 接口不提供计划模式切换`);
-    if(agent==='opencode'&&command.mode==='plan'&&this.planCapabilities.get(agent)!==true)throw Error('OpenCode ACP 当前配置未提供计划模式');
+    if(['grok','deepseek','hermes','opencode'].includes(agent)&&command.mode==='plan'&&this.planCapabilities.get(agent)!==true)throw Error(`${agentNames[agent]} 当前配置未提供计划模式`);
     if(command.fast===true)throw Error('当前助手未提供快速模式切换');
     if(!official&&command.images?.length&&this.imageCapabilities.get(agent)===false)throw Error(`当前 ${agentNames[agent]} CLI 不支持图片消息；请使用支持图片的后端，或作为文件附件发送。`);
     const text=command.initialText??command.text??'';
@@ -417,7 +418,7 @@ export class AgentSessions {
   }
   private async consume(id:string,agent:CliAgent,child:any,run:{stopped:boolean},meta:Meta,model:string,turnId:string){
     const legacyAgy=agent==='antigravity'&&meta.transport!=='acp';
-    let stderr='',responded=false,resultSeen=false,failed=false,streamed=false;
+    let stderr='',responded=false,resultSeen=false,failed=false,streamed=false,compacting=false;
     const agyResponses=new Map<string,string>();
     let agyResponseId='',agyFinal:string|undefined,agyIntegrityError='';
     const seenTools=new Set<string>(),completedTools=new Set<string>(),toolOutput=new Map<string,string>();
@@ -427,6 +428,13 @@ export class AgentSessions {
     try{
       for await(const line of createInterface({input:child.stdout})){
         let record;try{record=JSON.parse(line);}catch{continue;}
+        if(agent==='claude'&&record.type==='system'){
+          if(record.subtype==='status'&&record.status==='compacting'){
+            compacting=true;this.hub.publish({type:'context.compaction',threadId:id,itemId:turnId+':compact',title:'正在压缩上下文',status:'running'});
+          }else if(compacting&&(record.subtype==='compact_boundary'||record.subtype==='status'&&record.status==null)){
+            compacting=false;this.hub.publish({type:'context.compaction',threadId:id,itemId:turnId+':compact',title:'上下文已压缩',status:'ok'});
+          }
+        }
         const actualModel=record.model||record.model_id||record.message?.model||record.result?.model;
         if(typeof actualModel==='string'&&actualModel.length<=200&&actualModel!==meta.actualModel){meta.actualModel=actualModel;this.store.writeAgentMeta(id,meta);}
         if(agent==='claude'&&record.type==='control_request'){
@@ -456,6 +464,8 @@ export class AgentSessions {
         for(const event of updates){
           const itemId=turnId+':'+(event.id||'reply');
           if(event.kind==='session'&&event.id){meta.session=event.id;meta.model=model;this.store.writeAgentMeta(id,meta);}
+          if(event.kind==='plan'&&event.text)this.hub.publish({type:'plan.updated',threadId:id,turnId,title:'任务计划',text:event.text});
+          if(event.kind==='retry'&&event.text)this.hub.publish({type:'error',threadId:id,turnId,title:'正在重试',message:event.text,willRetry:true});
           if(event.kind==='text'&&event.text){
             responded=true;
             if(legacyAgy){agyResponseId=itemId;agyResponses.set(itemId,(agyResponses.get(itemId)||'')+event.text);}
@@ -488,11 +498,14 @@ export class AgentSessions {
             if(failed&&event.text)stderr=event.text;
             if(event.usage){
               const u=event.usage,old=meta.tokens||{};
-              const cached=Number(u.cache_read_input_tokens??u.cache_read_tokens??0),output=Number(u.output_tokens||0);
-              const input=Number(u.input_tokens||0)+(agent==='claude'?cached+Number(u.cache_creation_input_tokens||0):0);
-              const total=Number(u.total_tokens??input+(legacyAgy?cached:0)+output);
+              const metric=(value:unknown)=>typeof value==='number'&&Number.isFinite(value)&&value>=0?value:null;
+              const cached=metric(u.cache_read_input_tokens??u.cache_read_tokens),rawOutput=metric(u.output_tokens),rawInput=metric(u.input_tokens);
+              const output=rawOutput===null?null:rawOutput+(agent==='opencode'?(metric(u.thinking_tokens)??0):0);
+              const input=rawInput===null?null:rawInput+((agent==='claude'||legacyAgy||agent==='opencode')?(cached??0)+(metric(u.cache_creation_input_tokens)??0):0);
+              const total=input!==null&&output!==null?input+output:metric(u.total_tokens);
+              const accumulate=(previous:number|null|undefined,value:number|null)=>value===null?previous??null:(previous??0)+value;
               const contextWindow=u.context_window??record.modelUsage?.[meta.actualModel||'']?.contextWindow??old.contextWindow??null;
-              meta.tokens={input:(old.input||0)+input,cached:(old.cached||0)+cached,output:(old.output||0)+output,reasoning:u.thinking_tokens==null?null:(old.reasoning||0)+Number(u.thinking_tokens),total:(old.total||0)+total,last:total,contextWindow};this.store.writeAgentMeta(id,meta);
+              meta.tokens={input:accumulate(old.input,input),cached:accumulate(old.cached,cached),output:accumulate(old.output,output),reasoning:accumulate(old.reasoning,metric(u.thinking_tokens)),total:accumulate(old.total,total),last:total,contextWindow,context:metric(u.context_used)??old.context??null};this.store.writeAgentMeta(id,meta);
               this.hub.publish({type:'usage.updated',threadId:id});
             }
           }

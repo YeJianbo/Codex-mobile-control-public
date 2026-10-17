@@ -25,7 +25,7 @@ class NativeHarnessSwitchTest {
         app.getSharedPreferences("native",0).edit().clear().commit()
         app.getSharedPreferences("connection",0).edit().clear().commit()
         val statusReads=AtomicInteger();val forcedReads=AtomicInteger()
-        val agents=listOf("codex","claude","antigravity","grok","deepseek","hermes")
+        val agents=listOf("codex","claude","antigravity","grok","deepseek","hermes","opencode")
         val catalog=JSONObject().put("models",JSONArray(agents.map{JSONObject().put("model",if(it=="codex")"gpt-6.1-sol" else "$it::default").put("displayName",nativeAgentName(it)).put("supportedReasoningEfforts",JSONArray())})).put("backends",JSONArray(agents.drop(1).map{JSONObject().put("agent",it).put("installed",true).put("available",true)}))
         val rows=catalog.getJSONArray("models")
         for(index in 1 until rows.length())rows.getJSONObject(index).put("displayName",nativeAgentName(agents[index])+" · 默认模型")
@@ -51,7 +51,7 @@ class NativeHarnessSwitchTest {
         try{
             ui.setContent{NativeApp(vm)}
             ui.runOnUiThread{vm.connect(address,"fixture")}
-            ui.waitUntil(10000){vm.state.connected&&vm.state.models.size==9}
+            ui.waitUntil(10000){vm.state.connected&&vm.state.models.size==10}
             ui.onNodeWithContentDescription("展开侧栏").performClick()
             ui.onNodeWithContentDescription("切换助手").performClick()
             ui.onNodeWithText("Hermes").assertIsDisplayed()
@@ -61,14 +61,17 @@ class NativeHarnessSwitchTest {
             ui.waitUntil(10000){vm.state.harness=="hermes"}
             ui.onNodeWithText("默认模型").performClick()
             ui.onNode(hasText("默认模型") and hasAnyAncestor(hasTestTag("modelControls"))).performClick()
-            ui.onNodeWithText("gpt-6.1-sol").assertIsDisplayed()
-            ui.onNodeWithText("gpt-6-astra").assertIsDisplayed()
+            ui.onNodeWithText("6.1 Sol").assertIsDisplayed()
+            ui.onNodeWithText("6 Astra").assertIsDisplayed()
             screenshot(app,"harness-303-models.png")
-            ui.onNodeWithText("gpt-6.1-sol").performClick()
+            ui.onNodeWithText("6.1 Sol").performClick()
             Assert.assertEquals("hermes::openai-codex:gpt-6.1-sol",vm.state.model)
             androidx.test.espresso.Espresso.pressBack()
             ui.onNodeWithTag("connectionStatus").performClick()
-            ui.waitUntil(10000){forcedReads.get()>=2&&!vm.state.backendStatusLoading}
+            ui.onNodeWithTag("harnessConnectionStatus").assertIsDisplayed()
+            val hermesReads=forcedReads.get()
+            ui.onNodeWithText("重新检查 Hermes").performClick()
+            ui.waitUntil(10000){forcedReads.get()>hermesReads&&!vm.state.backendStatusLoading}
             ui.onNodeWithTag("harnessConnectionStatus").assertTextEquals("Hermes 已就绪")
             ui.onNodeWithTag("codexConnectionStatus").assertDoesNotExist()
             Assert.assertEquals(0,statusReads.get())
@@ -83,7 +86,10 @@ class NativeHarnessSwitchTest {
             Assert.assertEquals(custom,vm.state.model)
             androidx.test.espresso.Espresso.pressBack()
             ui.onNodeWithTag("connectionStatus").performClick()
-            ui.waitUntil(10000){forcedReads.get()>=4&&!vm.state.backendStatusLoading}
+            ui.onNodeWithTag("harnessConnectionStatus").assertIsDisplayed()
+            val deepseekReads=forcedReads.get()
+            ui.onNodeWithText("重新检查 DeepSeek Harness").performClick()
+            ui.waitUntil(10000){forcedReads.get()>deepseekReads&&!vm.state.backendStatusLoading}
             ui.onNodeWithTag("harnessConnectionStatus").assertTextEquals("DeepSeek Harness 已就绪")
             ui.onNodeWithTag("codexConnectionStatus").assertDoesNotExist()
             Assert.assertEquals(0,statusReads.get());Assert.assertTrue(forcedReads.get()>=2)

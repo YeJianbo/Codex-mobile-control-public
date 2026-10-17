@@ -340,9 +340,9 @@ export class CodexAppServerClient extends EventEmitter {
       clearTimeout(pending.timeout);
       if (message.error) {
         const detail=JSON.stringify(message.error);
-        pending.reject(new Error(detail.includes('already has an active writer')
-          ?'该会话仍由旧的桌面 Codex 进程占用。完全退出桌面后即可从手机继续；桌面下次启动时请使用共享入口。原会话和待发消息会保留。'
-          :detail));
+        // Keep the RPC error intact so submission receipts and the queue can
+        // distinguish an explicit writer rejection from an uncertain send.
+        pending.reject(new Error(detail));
       } else {
         pending.resolve(message.result);
       }

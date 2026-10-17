@@ -51,6 +51,19 @@ try{
  const pair=await api('POST','/api/pair/start');
  const claimResponse=await fetch(base+'/api/pair/claim',{method:'POST',headers:{'Content-Type':'application/json',...proof('POST','/api/pair/claim')},body:JSON.stringify({code:pair.code,certificate:Buffer.from(cert.cert).toString('base64'),name:'isolated permissions test'})});
  assert.equal(claimResponse.status,200);token=(await claimResponse.json()).token;
+ const access=await api('GET','/api/settings/harness-access',undefined,true);
+ assert.equal(access.agents.length,7);assert(access.agents.every(agent=>agent.enabled));
+ const updated=await api('PUT','/api/settings/harness-access',{agents:{claude:false}},true);
+ assert.equal(updated.agents.find(agent=>agent.agent==='claude').enabled,false);
+ assert.equal(updated.agents.find(agent=>agent.agent==='opencode').enabled,true);
+ assert.equal(JSON.parse(await fs.readFile(path.join(home,'server.json'),'utf8')).publicAgents.claude,false);
+ await api('PUT','/api/settings/harness-access',{agents:{claude:true}},true);
+ await Promise.all(['claude','grok','opencode'].map(agent=>api('PUT','/api/settings/harness-access',{agents:{[agent]:false}},true)));
+ const concurrent=await api('GET','/api/settings/harness-access',undefined,true);
+ for(const agent of ['claude','grok','opencode'])assert.equal(concurrent.agents.find(row=>row.agent===agent).enabled,false);
+ const persisted=JSON.parse(await fs.readFile(path.join(home,'server.json'),'utf8')).publicAgents;
+ for(const agent of ['claude','grok','opencode'])assert.equal(persisted[agent],false);
+ await api('PUT','/api/settings/harness-access',{agents:{claude:true,grok:true,opencode:true}},true);
  const imageHistory=await api('GET',`/api/threads/${imageThread}/events?count=20`);
  const imageEvent=imageHistory.events.find(x=>x.type==='message.delta');assert(imageEvent);
  for(const [file,expected] of [[image,200],[outside,403],[fake,403],[path.join(project,'secret.txt'),403]]){

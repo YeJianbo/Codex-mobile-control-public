@@ -40,6 +40,7 @@ export function grokAcp(options:{command?:string;cwd:string;session?:string;mode
     if(message.id!==undefined&&message.method){send({id:message.id,error:{code:-32601,message:'Client method not supported'}});return;}
     if(message.method!=='session/update'||!promptStarted||message.params?._meta?.isReplay)return;
     const update=message.params?.update;if(!update)return;
+    if(update.sessionUpdate==='plan')emit({type:'plan',entries:update.entries});
     if(update.sessionUpdate==='agent_message_chunk'&&update.content?.type==='text')emit({type:'assistant',message:{id:'reply',content:[{type:'text',text:update.content.text}]}});
     if(update.sessionUpdate==='tool_call')emit({type:'assistant',message:{content:[{type:'tool_use',id:update.toolCallId,name:update.title||update.kind||'工具',input:update.rawInput||{}}]}});
     if(update.sessionUpdate==='tool_call_update'){

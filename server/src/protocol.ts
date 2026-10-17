@@ -9,6 +9,8 @@ export const CONTROL_CAPABILITIES = [
   "focused-thread-stream",
   "mobile-live-activity-details",
   "agent-health",
+  "harness-public-access",
+  "harness-thread-pins",
   "shared-backend-restart",
   "capacity-auto-retry",
   "last-message-edit",

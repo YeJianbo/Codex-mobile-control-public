@@ -86,7 +86,11 @@ class AcpConnection {
     if(!exited){
       if(process.platform==='win32'&&this.child.pid){
         const result=await this.terminate('taskkill.exe',['/PID',String(this.child.pid),'/T','/F'],{windowsHide:true,reject:false});
-        if(result.exitCode!==0){this.reader.close();throw Error(`${agentNames[this.agent]} 进程收尾失败（taskkill ${result.exitCode}）：${String(result.stderr||result.stdout||'').trim().slice(0,300)}`);}
+        if(result.exitCode!==0){
+          let raceTimer:NodeJS.Timeout|undefined;
+          const alreadyExited=await Promise.race([Promise.resolve(this.child).then(()=>true,()=>true),new Promise<boolean>(resolve=>{raceTimer=setTimeout(()=>resolve(false),1000);})]).finally(()=>clearTimeout(raceTimer));
+          if(!alreadyExited){this.reader.close();throw Error(`${agentNames[this.agent]} 进程收尾失败（taskkill ${result.exitCode}）`);}
+        }
       }else this.child.kill();
     }
     await Promise.resolve(this.child).catch(()=>{});this.reader.close();
@@ -225,6 +229,7 @@ export function harnessAcp(options:{agent:Harness;command:string;cwd:string;sess
     if(params?.sessionId===session&&params?.update?.sessionUpdate==='config_option_update')config=params.update.configOptions||[];
     if(!promptStarted||params?.sessionId!==session||params?._meta?.isReplay||params?.update?._meta?.isReplay)return;
     const update=params?.update;if(!update)return;
+    if(update.sessionUpdate==='plan')emit({type:'plan',entries:update.entries});
     if(update.sessionUpdate==='agent_message_chunk'&&update.content?.type==='text')emit({type:'assistant',message:{id:update.messageId||'reply',content:[{type:'text',text:update.content.text}]}});
     if(update.sessionUpdate==='usage_update'){contextWindow=Number.isFinite(update.size)?update.size:contextWindow;contextUsed=Number.isFinite(update.used)?update.used:contextUsed;}
     if(update.sessionUpdate==='tool_call'||update.sessionUpdate==='tool_call_update'){
@@ -275,6 +280,10 @@ export function harnessAcp(options:{agent:Harness;command:string;cwd:string;sess
       }
       // Reset the session policy explicitly, including on resume; do not inherit a prior grant.
       if(options.agent==='hermes')await connection.request('session/set_mode',{sessionId:session,modeId:options.permission==='full'?'dont_ask':options.permission==='auto'?'accept_edits':'default'});
+      if(options.agent!=='opencode'&&options.mode==='plan'){
+        if(!sessionModes({...state,configOptions:config}).includes('plan'))throw Error(`${agentNames[options.agent]} 当前配置未提供计划模式`);
+        await connection.request('session/set_mode',{sessionId:session,modeId:'plan'});
+      }
       if(options.agent==='opencode'){
         const modes=sessionModes({...state,configOptions:config}),modeId=options.mode==='plan'?'plan':modes.includes('build')?'build':configOption({configOptions:config},'mode')?.currentValue||state?.modes?.currentModeId;
         if(options.mode==='plan'&&!modes.includes('plan'))throw Error('OpenCode ACP 当前配置未提供计划模式');
@@ -291,7 +300,7 @@ export function harnessAcp(options:{agent:Harness;command:string;cwd:string;sess
       const result=await connection.request('session/prompt',{sessionId:session,prompt},0);
       const u=result?.usage||result?._meta?.usage;
       if(result?.stopReason==='cancelled'&&!stopped)throw Error('任务被助手取消');
-      emit({type:'result',session_id:session,model:actualModel,is_error:false,result:'',usage:u||contextWindow?{input_tokens:u?.inputTokens||0,output_tokens:u?.outputTokens||0,total_tokens:u?.totalTokens,cache_read_input_tokens:u?.cachedReadTokens||0,thinking_tokens:u?.thoughtTokens,context_window:contextWindow,context_used:contextUsed}:undefined});
+      emit({type:'result',session_id:session,model:actualModel,is_error:false,result:'',usage:u||contextWindow?{...(u?{input_tokens:u.inputTokens,output_tokens:u.outputTokens,total_tokens:u.totalTokens,cache_read_input_tokens:u.cachedReadTokens,thinking_tokens:u.thoughtTokens}:{}),context_window:contextWindow,context_used:contextUsed}:undefined});
       return {exitCode:0};
     }catch(error){const detail=String((error as Error).message);stderr.write(detail);emit({type:'result',is_error:true,result:detail});return {exitCode:1};}
     finally{try{await connection.close();}finally{stdout.end();stderr.end();settled=true;}}
