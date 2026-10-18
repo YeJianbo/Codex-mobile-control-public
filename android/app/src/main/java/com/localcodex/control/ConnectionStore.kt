@@ -38,7 +38,8 @@ class ConnectionStore(context: Context) {
             val row = rows.getJSONObject(index)
             val efforts = row.getJSONArray("efforts")
             NativeModel(row.getString("id"), row.getString("name"),
-                (0 until efforts.length()).map { efforts.getString(it) }, row.getString("defaultEffort"),row.optBoolean("available",true),row.optString("unavailableReason"),row.optString("providerId"),row.optString("providerName"),row.optString("shortName"))
+                (0 until efforts.length()).map { efforts.getString(it) }, row.getString("defaultEffort"),row.optBoolean("available",true),row.optString("unavailableReason"),row.optString("providerId"),row.optString("providerName"),row.optString("shortName"),
+                row.optString("harness").takeIf{it in nativeHarnesses}?:nativeAgent(row.getString("id")))
         }
     }.getOrDefault(emptyList())
 
@@ -59,7 +60,7 @@ class ConnectionStore(context: Context) {
     private fun encodeModels(models:List<NativeModel>):String {
         val rows = JSONArray(models.map { JSONObject().put("id", it.id).put("name", it.name)
             .put("efforts", JSONArray(it.efforts)).put("defaultEffort", it.defaultEffort).put("available",it.available).put("unavailableReason",it.unavailableReason)
-            .put("providerId",it.providerId).put("providerName",it.providerName).put("shortName",it.shortName) })
+            .put("providerId",it.providerId).put("providerName",it.providerName).put("shortName",it.shortName).put("harness",it.harness) })
         return rows.toString()
     }
 

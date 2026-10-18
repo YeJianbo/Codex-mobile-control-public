@@ -27,6 +27,7 @@ export async function auditUploadRecovery(page,artifacts,{base,token}){
     await page.waitForFunction(()=>document.querySelector('#status').textContent==='已连接');
     await page.locator('#openDrawer').click();await page.locator('#projects .project-row').filter({hasText:'Atlas Workspace'}).click();
     await page.locator('#prompt').fill('保留这条草稿');
+    await page.waitForFunction(()=>!document.querySelector('#sendBtn').disabled);
     await page.locator('#fileInput').setInputFiles([file('complete.txt'),file('held.txt')]);
     await page.waitForFunction(()=>document.querySelector('#uploadStatus').textContent.includes('held.txt'));
     await page.locator('#fileDrafts .file-attachment').filter({hasText:'complete.txt'}).waitFor();

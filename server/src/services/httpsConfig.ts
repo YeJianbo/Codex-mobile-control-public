@@ -3,7 +3,7 @@ import path from "node:path";
 import os from "node:os";
 import selfsigned from "selfsigned";
 import type { ServerConfig } from "../types.js";
-import { saveServerConfig } from "./configStore.js";
+import { updateServerConfig } from "./configStore.js";
 import { appHome } from "./paths.js";
 
 export type HttpsConfigView = {
@@ -39,12 +39,13 @@ export async function updateHttpsConfig(
       host: config.host,
     });
   }
-  config.https = {
-    enabled: input.enabled ?? Boolean(config.https?.enabled),
-    certPath,
-    keyPath,
-  };
-  await saveServerConfig(config);
+  await updateServerConfig(config, draft => {
+    draft.https = {
+      enabled: input.enabled ?? Boolean(draft.https?.enabled),
+      certPath: input.certPath !== undefined || input.generateSelfSigned ? certPath : draft.https?.certPath ?? certPath,
+      keyPath: input.keyPath !== undefined || input.generateSelfSigned ? keyPath : draft.https?.keyPath ?? keyPath,
+    };
+  });
   return {
     ...(await readHttpsConfig(config)),
     restartRequired: true,

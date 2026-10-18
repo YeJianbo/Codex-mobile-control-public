@@ -19,7 +19,7 @@ const transcript=(id,text)=>[
  row('response_item',{type:'message',role:'assistant',content:[{type:'output_text',text:'reply '+text}]}),
  row('event_msg',{type:'task_complete',turn_id:id}),
 ];
-let number=0;
+let number=0;const managers=[];
 async function fixture(failure=''){
  const id=`44444444-4444-4444-4444-${String(++number).padStart(12,'0')}`;
  const file=path.join(sessions,`rollout-${id}.jsonl`);
@@ -53,7 +53,7 @@ async function fixture(failure=''){
   return {};
  };
  const hub={publish:event=>{published.push(event);void store.appendEvent({...event,eventId:`published-${id}-${published.length}`,createdAt:new Date().toISOString()});}};
- const makeManager=()=>new SessionManager(codex,hub,store,()=>new Map());
+ const makeManager=()=>{const manager=new SessionManager(codex,hub,store,()=>new Map());managers.push(manager);return manager;};
  return {id,file,turns,calls,published,makeManager,manager:makeManager(),command:{type:'turn.start',threadId:id,requestId:`edit-${id}`,text:'修改后的最后一条',replaceTurnId:'last'}};
 }
 try{
@@ -89,6 +89,7 @@ try{
  assert.equal(uncertain.calls.filter(c=>c.method==='turn/start').length,1);
  console.log('PASS uncertain send is preserved and never replayed');
 }finally{
+ for(const manager of managers){manager.closeCapacityRetries();manager.receipts.close();}
  store.close();
  if(previous===undefined)delete process.env.CODEX_MOBILE_CONTROL_HOME;else process.env.CODEX_MOBILE_CONTROL_HOME=previous;
  if(previousCodex===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previousCodex;

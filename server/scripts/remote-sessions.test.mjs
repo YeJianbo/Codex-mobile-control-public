@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test,{after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -13,6 +13,9 @@ const home=await fs.mkdtemp(path.join(os.tmpdir(),'cmc-remote-unit-'));
 process.env.CODEX_MOBILE_CONTROL_HOME=home;
 process.env.CODEX_HOME=path.join(home,'codex');
 await fs.mkdir(process.env.CODEX_HOME);
+const opened=[],managers=[];
+function openLedger(file){const value=new CommandReceipts(file);opened.push(value);return value;}
+after(async()=>{for(const manager of managers){manager.closeCapacityRetries();manager.receipts.close();}for(const value of opened)value.close();await fs.rm(home,{recursive:true,force:true});});
 const fixture=(externalId='sample',updatedAt=new Date(Date.now()-600000).toISOString())=>({externalId,title:'任务摘要',updatedAt,status:'running',messages:[{role:'user',text:'用户请求'},{role:'assistant',text:'可见进展'}]});
 const input=(rows)=>({schemaVersion:1,snapshots:rows});
 
@@ -43,7 +46,7 @@ test('curated summaries are explicitly distinguished from message exports',async
  await assert.rejects(store.import(input([{...fixture(),messages:[{role:'assistant',text:'<developer>private instructions</developer>'}]}])));
 });
 test('explicit writer rejection allows a retry while coalescing new parallel retries',async()=>{
- const receipts=new CommandReceipts(path.join(home,'receipts-retry.json'));let calls=0;
+ const receipts=openLedger(path.join(home,'receipts-retry.json'));let calls=0;
  const command={type:'turn.start',requestId:'retry-known',threadId:'local'};
  await assert.rejects(receipts.run(command,async()=>{calls++;throw new Error('thread already has an active writer');},()=>{}));
  assert.equal((await receipts.get(command.requestId)).state,'failed');
@@ -51,23 +54,23 @@ test('explicit writer rejection allows a retry while coalescing new parallel ret
  await Promise.all([receipts.run(command,work,()=>{}),receipts.run(command,work,()=>{})]);assert.equal(calls,2);
 });
 test('same request ID coalesces parallel calls and survives restart without executing twice',async()=>{
- const file=path.join(home,'receipts-1.json');const receipts=new CommandReceipts(file);let calls=0;let release;const deferred=new Promise(r=>release=r);const command={type:'thread.start',requestId:'same',initialText:'task',images:[{id:'image-a',name:'a'}]};
+ const file=path.join(home,'receipts-1.json');const receipts=openLedger(file);let calls=0;let release;const deferred=new Promise(r=>release=r);const command={type:'thread.start',requestId:'same',initialText:'task',images:[{id:'image-a',name:'a'}]};
  const work=async()=>{calls++;await receipts.noteThread('same','local-id');await deferred;};
  const first=receipts.run(command,work,()=>{});await new Promise(r=>setTimeout(r,10));const second=receipts.run({...command},work,()=>{});release();await Promise.all([first,second]);assert.equal(calls,1);
- await new CommandReceipts(file).run(command,async()=>{calls++;},()=>{});assert.equal(calls,1);assert.equal((await receipts.get('same')).threadId,'local-id');assert.equal((await receipts.get('same')).fingerprint,undefined);
+ await openLedger(file).run(command,async()=>{calls++;},()=>{});assert.equal(calls,1);assert.equal((await receipts.get('same')).threadId,'local-id');assert.equal((await receipts.get('same')).fingerprint,undefined);
  await assert.rejects(receipts.run({...command,images:[{id:'image-b',name:'a'}]},work,()=>{}),/不同内容/);
 });
 test('timeouts and interrupted receipts cannot silently re-execute',async()=>{
- const file=path.join(home,'receipts-2.json');const receipts=new CommandReceipts(file);let calls=0;const cmd={type:'turn.start',requestId:'unknown',threadId:'t'};
+ const file=path.join(home,'receipts-2.json');const receipts=openLedger(file);let calls=0;const cmd={type:'turn.start',requestId:'unknown',threadId:'t'};
  await assert.rejects(receipts.run(cmd,async()=>{calls++;throw new Error('RPC timeout');},()=>{}));assert.equal((await receipts.get('unknown')).state,'uncertain');
- await assert.rejects(new CommandReceipts(file).run(cmd,async()=>{calls++;},()=>{}));assert.equal(calls,1);
- const raw=JSON.parse(await fs.readFile(file));raw[0].state='starting';await fs.writeFile(file,JSON.stringify(raw));assert.equal((await new CommandReceipts(file).get('unknown')).state,'uncertain');
+ await assert.rejects(openLedger(file).run(cmd,async()=>{calls++;},()=>{}));assert.equal(calls,1);
+ const interrupted=path.join(home,'interrupted.json');await fs.writeFile(interrupted,JSON.stringify([{requestId:'unknown',fingerprint:'legacy',type:'turn.start',state:'starting',updatedAt:new Date().toISOString()}]));const recovered=openLedger(interrupted);assert.equal((await recovered.get('unknown')).state,'uncertain');recovered.close();
 });
 function sessionFixture(){
  const codex=new EventEmitter(),calls=[],threads=[],events=[];let count=0;
  codex.request=async(method,p)=>{calls.push({method,p});if(method==='thread/start')return {thread:{id:'local-'+(++count)}};if(method==='thread/resume')return {thread:{id:p.threadId,turns:[]}};if(method==='model/list')return {data:['gpt-6-sol','gpt-6.1-sol','gpt-6-astra'].map(model=>({model,supportedReasoningEfforts:['medium','high'].map(reasoningEffort=>({reasoningEffort})),defaultReasoningEffort:'medium'}))};if(method==='turn/start'){await new Promise(r=>setTimeout(r,10));return {turn:{id:'turn-1'}};}return {};};
  const store={threads,approvals:[],readAgentMeta(){},async upsertThread(row){let previous=threads.find(t=>t.id===row.id);if(previous)Object.assign(previous,row);else threads.push(previous={...row});return previous;}};
- const manager=new SessionManager(codex,{publish:e=>events.push(e)},store);return {manager,codex,calls,threads,events};
+ const manager=new SessionManager(codex,{publish:e=>events.push(e)},store);managers.push(manager);return {manager,codex,calls,threads,events};
 }
 
 test('Codex start and steer preserve more than eight uploaded images as local inputs',async()=>{

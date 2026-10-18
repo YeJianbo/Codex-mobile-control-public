@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test,{after} from 'node:test';
 import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
 import fs from 'node:fs/promises';
@@ -8,7 +8,8 @@ import {SessionManager} from '../src/services/sessionManager.ts';
 import {CommandReceipts} from '../src/services/commandReceipts.ts';
 
 const home=await fs.mkdtemp(path.join(os.tmpdir(),'cmc-goal-execution-'));
-let sequence=0;
+let sequence=0;const managers=[];
+after(async()=>{for(const manager of managers){manager.closeCapacityRetries();manager.receipts.close();}await fs.rm(home,{recursive:true,force:true});});
 function fixture(){
  const codex=new EventEmitter(),calls=[],events=[],threads=[{id:'goal-thread',status:'interrupted'}];
  const goal={objective:'推进课题',status:'active',tokensUsed:42,timeUsedSeconds:15001};let backend='notLoaded';
@@ -30,7 +31,7 @@ function fixture(){
  };
  const store={threads,approvals:[],eventsForThread:()=>events,async upsertThread(row){Object.assign(threads[0],Object.fromEntries(Object.entries(row).filter(([,value])=>value!==undefined)));return threads[0]}};
  const manager=new SessionManager(codex,{publish:e=>events.push(e)},store,()=>new Map([['goal-thread',goal]]));
- manager.receipts=new CommandReceipts(path.join(home,`receipt-${++sequence}.json`));
+ managers.push(manager);manager.receipts=new CommandReceipts(path.join(home,`receipt-${++sequence}.json`));
  return {manager,codex,calls,events,threads,goal,continuations,setBackend:value=>backend=value};
 }
 const command=id=>({type:'turn.start',requestId:id,threadId:'goal-thread',continueGoal:true,text:'',model:'gpt-6-astra',effort:'medium',mode:'default',permission:'full',fast:true});

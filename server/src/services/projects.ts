@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import type { Project, ProjectRoot, ServerConfig } from "../types.js";
-import { saveServerConfig } from "./configStore.js";
+import { updateServerConfig } from "./configStore.js";
 
 export function canonicalProjectPath(value: string): string {
   if (process.platform === 'win32') {
@@ -74,10 +74,11 @@ export async function addProjectRoot(config: ServerConfig, projectPath: string):
   if (!stat.isDirectory()) {
     throw new Error("项目路径不是目录");
   }
-  if (!config.projectRoots.some((root) => path.resolve(root).toLowerCase() === absolutePath.toLowerCase())) {
-    config.projectRoots.push(absolutePath);
-    await saveServerConfig(config);
-  }
+  await updateServerConfig(config, draft => {
+    if (!draft.projectRoots.some(root => canonicalProjectPath(root).toLowerCase() === absolutePath.toLowerCase())) {
+      draft.projectRoots.push(absolutePath);
+    }
+  });
   return {
     name: path.basename(absolutePath),
     path: absolutePath,
@@ -91,8 +92,9 @@ export async function removeProjectRoot(config: ServerConfig, rootPath: string):
   if (!existing) {
     throw new Error("项目根目录不存在");
   }
-  config.projectRoots = config.projectRoots.filter((root) => path.resolve(root).toLowerCase() !== absolutePath.toLowerCase());
-  await saveServerConfig(config);
+  await updateServerConfig(config, draft => {
+    draft.projectRoots = draft.projectRoots.filter(root => path.resolve(root).toLowerCase() !== absolutePath.toLowerCase());
+  });
   const stat = await fs.stat(absolutePath).catch(() => null);
   return {
     path: absolutePath,

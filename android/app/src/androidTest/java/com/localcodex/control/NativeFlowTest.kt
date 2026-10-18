@@ -540,7 +540,7 @@ class NativeFlowTest {
         ui.onNodeWithTag("fileEditor").assertExists()
         ui.onNodeWithText("返回目录").performScrollTo().performClick()
         ui.waitUntil(10000){vm.state.file==null&&!vm.state.fileBusy}
-        ui.onNodeWithText("上一级").performClick()
+        ui.onNodeWithContentDescription("上一级").performClick()
         ui.waitUntil(10000){vm.state.filePath.isEmpty()&&!vm.state.fileBusy}
         Assert.assertTrue(requests.isEmpty())
     }
@@ -1322,8 +1322,6 @@ class NativeFlowTest {
     @Volatile private var oldestHistory=""
     @Volatile private var olderDelayMs=0L
     private val historyCounts=CopyOnWriteArrayList<Int>()
-    private var saveTarget:android.net.Uri?=null
-    private var savePickerRequests=0
     private val consoleActions=CopyOnWriteArrayList<JSONObject>()
     private val consoleQueries=CopyOnWriteArrayList<String>()
     @Volatile private var consoleOffline=false
@@ -1647,17 +1645,7 @@ if(m.optString("text").contains("WRITER")){queue="""[{"id":"$id","text":"WRITER 
         server.start()
         val address=server.url("/").toString().trimEnd('/')
         ui.runOnUiThread {vm=NativeViewModel(ApplicationProvider.getApplicationContext<Application>());vm.connect(address,"test")}
-        val registry=object:androidx.activity.result.ActivityResultRegistry(){
-            override fun <I,O> onLaunch(requestCode:Int,contract:androidx.activity.result.contract.ActivityResultContract<I,O>,input:I,options:androidx.core.app.ActivityOptionsCompat?){
-                val intent=contract.createIntent(application,input)
-                Assert.assertEquals(android.content.Intent.ACTION_CREATE_DOCUMENT,intent.action)
-                Assert.assertEquals("image/png",intent.type)
-                savePickerRequests++
-                dispatchResult(requestCode,android.app.Activity.RESULT_OK,android.content.Intent().setData(saveTarget))
-            }
-        }
-        val owner=object:androidx.activity.result.ActivityResultRegistryOwner{override val activityResultRegistry=registry}
-        ui.setContent{androidx.compose.runtime.CompositionLocalProvider(androidx.activity.compose.LocalActivityResultRegistryOwner provides owner){NativeApp(displayedVm.value?:vm)}}
+        ui.setContent{NativeApp(displayedVm.value?:vm)}
         ui.waitUntil(15000){vm.state.connected&&vm.state.threads.isNotEmpty()}
     }
     @After fun cleanup(){releaseAccountPreview.countDown();releaseGoalSave.countDown();releaseInterrupt.countDown();releaseUpload.countDown();releaseFullImage.countDown();releaseOldQueueRead.countDown();releaseQueueCancel.countDown();ui.runOnUiThread{vm.disconnect()};server.shutdown()}
@@ -2130,7 +2118,8 @@ if(m.optString("text").contains("WRITER")){queue="""[{"id":"$id","text":"WRITER 
         ui.waitUntil(15000){vm.state.threads.firstOrNull()?.goal?.status=="active"}
         ui.onNodeWithContentDescription("展开侧栏").performClick()
         ui.onNodeWithText("进行中").assertIsDisplayed()
-        ui.onNodeWithText("核对运行目标").performClick()
+        ui.onNodeWithText("核对运行目标").assertDoesNotExist()
+        ui.onNodeWithTag("runningThread:t").assertTextContains(nativeDisplayThreadTitle(vm.state.threads.first{it.id=="t"}.title),substring=true).performClick()
         ui.waitUntil(10000){vm.state.threadId=="t"}
         ui.onNodeWithTag("goalChip").assertIsDisplayed()
         ui.onNodeWithTag("goalClose").assertDoesNotExist()
@@ -3482,15 +3471,24 @@ if(m.optString("text").contains("WRITER")){queue="""[{"id":"$id","text":"WRITER 
         ui.onNodeWithContentDescription("复位图片").performClick()
         ui.onNodeWithContentDescription("图片预览").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"100% · 1/1"))
         val context=ApplicationProvider.getApplicationContext<Application>()
-        val output=java.io.File(context.cacheDir,"outputs/saved-test.png").apply{parentFile!!.mkdirs();delete()}
-        val uri=androidx.core.content.FileProvider.getUriForFile(context,context.packageName+".files",output)
-        saveTarget=uri
-        try {
-            ui.onNodeWithContentDescription("保存图片").performClick()
-            ui.waitUntil(10000){output.exists()&&output.length()>0}
-            Assert.assertEquals(1,savePickerRequests)
-            Assert.assertArrayEquals(android.util.Base64.decode("iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAJUlEQVR4AYXBAQEAIAyAMCSN6QxrId9AtrXPfXxIkCBBggQJEgZ8KAJ3pT0W6wAAAABJRU5ErkJggg==",0),output.readBytes())
-        } finally {output.delete()}
+        if(android.os.Build.VERSION.SDK_INT>=29){
+            val resolver=context.contentResolver
+            val collection=android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            fun savedIds():Set<Long> = resolver.query(collection,arrayOf("_id"),"is_pending=0",null,null)?.use{cursor->
+                buildSet{while(cursor.moveToNext())add(cursor.getLong(0))}
+            }.orEmpty()
+            val previous=savedIds()
+            var saved:android.net.Uri?=null
+            try {
+                ui.onNodeWithContentDescription("保存图片").performClick()
+                ui.waitUntil(10000){
+                    saved=(savedIds()-previous).firstOrNull()?.let{android.content.ContentUris.withAppendedId(collection,it)}
+                    saved!=null
+                }
+                val bytes=resolver.openInputStream(saved!!)?.use{it.readBytes()}
+                Assert.assertArrayEquals(android.util.Base64.decode("iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAJUlEQVR4AYXBAQEAIAyAMCSN6QxrId9AtrXPfXxIkCBBggQJEgZ8KAJ3pT0W6wAAAABJRU5ErkJggg==",0),bytes)
+            } finally {saved?.let{resolver.delete(it,null,null)}}
+        }
         ui.onNodeWithContentDescription("图片预览").performTouchInput { swipeDown() }
         ui.waitUntil(5000){runCatching{ui.onNodeWithContentDescription("图片预览").assertDoesNotExist();true}.getOrDefault(false)}
     }

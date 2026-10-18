@@ -1,7 +1,5 @@
-export function isWriterOccupied(error:unknown):boolean {
-  const message=error instanceof Error?error.message:String(error);
-  return /active writer|正在桌面执行|当前任务仍在运行/i.test(message);
-}
+import {isWriterOccupied} from './submissionErrors.js';
+export {isWriterOccupied} from './submissionErrors.js';
 
 export function userFacingError(error:unknown):string {
   const message=error instanceof Error?error.message:String(error);

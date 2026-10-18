@@ -17,10 +17,12 @@ import {AgyUsageReader} from './agyUsage.js';
 import {AgyCliPool} from './agyCli.js';
 import {officialAcp,readOfficialAcpCatalog} from './claudeAcp.js';
 import {opencodeConfigStamp,refreshOpencodeModels} from './opencodeConfig.js';
+import {catalogReadBudget} from './catalogReadBudget.js';
 
 const commands={claude:'claude',antigravity:'agy',grok:'grok',deepseek:'dsh',hermes:'hermes',opencode:'opencode'};
 const agyEfforts=['low','medium','high','xhigh','max'];
 const agyVariant=/-(low|medium|high|xhigh|max)$/;
+const sortAgentModels=(models:PickerModel[])=>models.sort((a,b)=>modelAgent(a.model)==='opencode'&&modelAgent(b.model)==='opencode'?(a.providerId||'').localeCompare(b.providerId||'')||(a.model==='opencode::default'?-1:b.model==='opencode::default'?1:0)||(a.shortName||a.displayName).localeCompare(b.shortName||b.displayName):a.model.localeCompare(b.model));
 type Meta={session?:string;model?:string;effort?:string;actualModel?:string;transport?:'acp';tokens?:Record<string,number|null>};
 export class AgentSessions {
   onThreadCreated?:(requestId:string|undefined,threadId:string)=>Promise<void>;
@@ -28,6 +30,8 @@ export class AgentSessions {
   private starting=new Set<string>();
   private catalog?:{at:number;models:PickerModel[];deepseekStamp:string;opencodeStamp:string};
   private catalogRead?:Promise<PickerModel[]>;
+  private readonly pickerSources=new Map<CliAgent,PickerModel[]>();
+  private readonly pickerPending=new Set<CliAgent>();
   private permissions=new Map<string,{threadId:string;resolve:(accept:boolean)=>void}>();
   private questions=new Map<string,{threadId:string;questions:{id:string;question:string;header?:string;options?:any[]}[];resolve:(answers:Record<string,string>|null)=>void}>();
   private executables=new Map<CliAgent,AgentExecutable>();
@@ -61,6 +65,10 @@ export class AgentSessions {
   async backends(viaPublic=false){
     await this.models();
     return this.backendSnapshot(viaPublic);
+  }
+  async pickerCatalog(refresh=false,viaPublic=false){
+    await catalogReadBudget(this.models(refresh));
+    return {models:sortAgentModels([...this.pickerSources.values()].flat()),pending:[...this.pickerPending],backends:this.backendSnapshot(viaPublic)};
   }
   private backendSnapshot(viaPublic=false){
     return Object.keys(commands).map(key=>{
@@ -177,9 +185,13 @@ export class AgentSessions {
   private async discoverModels(refresh=false):Promise<PickerModel[]>{
     const deepseekStamp=deepseekConfigStamp();
     let opencodeStamp=opencodeConfigStamp();
-    const models:PickerModel[]=[];
+    const agents=(Object.keys(commands) as CliAgent[]).filter(agent=>!process.env.CODEX_MOBILE_CONTROL_AGENTS||process.env.CODEX_MOBILE_CONTROL_AGENTS.split(',').includes(agent));
+    for(const agent of Object.keys(commands) as CliAgent[]){
+      if(agents.includes(agent))this.pickerPending.add(agent);else this.pickerSources.delete(agent);
+    }
     await Promise.all(Object.entries(commands).map(async([engine])=>{
       if(process.env.CODEX_MOBILE_CONTROL_AGENTS&&!process.env.CODEX_MOBILE_CONTROL_AGENTS.split(',').includes(engine))return;
+      const models:PickerModel[]=[];
       try{
         const agent=engine as Exclude<Agent,'codex'>;
         const command=(await this.executable(agent)).command;
@@ -251,8 +263,15 @@ export class AgentSessions {
           }
         }
       }catch(error){this.executables.delete(engine as CliAgent);this.discoveryErrors.set(engine as CliAgent,String((error as Error).message));}
+      finally{
+        const agent=engine as CliAgent;
+        // A failed refresh preserves the last successful source and its model IDs.
+        if(models.length||!this.pickerSources.has(agent))this.pickerSources.set(agent,models);
+        this.pickerPending.delete(agent);
+      }
     }));
-    models.sort((a,b)=>modelAgent(a.model)==='opencode'&&modelAgent(b.model)==='opencode'?(a.providerId||'').localeCompare(b.providerId||'')||(a.model==='opencode::default'?-1:b.model==='opencode::default'?1:0)||(a.shortName||a.displayName).localeCompare(b.shortName||b.displayName):a.model.localeCompare(b.model));this.catalog={at:Date.now(),models,deepseekStamp,opencodeStamp};return models;
+    const models=[...this.pickerSources.values()].flat();
+    sortAgentModels(models);this.catalog={at:Date.now(),models,deepseekStamp,opencodeStamp};return models;
   }
   async validate(model?:string,id?:string){
     if(model?.startsWith('deepseek::'))model='deepseek::'+canonicalDeepseekModel(model.slice('deepseek::'.length));

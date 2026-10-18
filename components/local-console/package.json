@@ -1,0 +1,29 @@
+{
+  "name": "aimami-local",
+  "version": "0.12.3",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "status": "node src/cli.mjs status",
+    "sync": "node src/cli.mjs sync",
+    "build": "node build.mjs",
+    "start": "node src/server.mjs",
+    "test:gateway": "node gateway/scripts/smoke-test.mjs",
+    "test:isolated": "node test/isolated-system.mjs",
+    "test:sessions": "node test/native-session-integration.mjs"
+  },
+  "dependencies": {
+    "jsonc-parser": "^3.3.1",
+    "smol-toml": "^1.8.0",
+    "tiktoken": "^1.0.22",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "jsdom": "^29.1.1"
+  }
+}

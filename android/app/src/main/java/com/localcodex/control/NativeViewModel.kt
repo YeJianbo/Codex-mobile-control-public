@@ -17,57 +17,6 @@ import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
 import java.util.UUID
 
-data class NativeThreadSection(val id:String,val name:String)
-
-internal data class NativeLegacySubmission(val id:String,val address:String,val text:String,val attachmentNames:List<String>,val submittedAt:String)
-
-data class NativeQueued(val id:String,val text:String,val status:String,val error:String,val canSteer:Boolean,val images:List<NativeImage> = emptyList(),val uploads:List<NativeUploadedFile> = emptyList())
-data class NativePdf(val path:String,val name:String,val revision:Long=0)
-data class NativeReadableFile(val name:String,val sourcePath:String,val content:String,val eventId:String="",val threadId:String="",val mime:String="text/markdown",val encoding:NativeTextEncoding=NativeTextEncoding.UTF8,val hasBom:Boolean=false)
-data class NativeProjectThreads(val rows:List<ThreadRecord> = emptyList(),val limit:Int=10,val hasMore:Boolean=false,val loading:Boolean=false,val loaded:Boolean=false,val loadedAtMs:Long=0L)
-data class NativeOpenedImage(val endpoint:String,val bitmap:android.graphics.Bitmap,
-    val endpoints:List<String> = listOf(endpoint),val thumbnails:Map<String,Pair<android.graphics.Bitmap,String>> = emptyMap())
-data class NativeState(
-    val capabilities:List<String> = emptyList(),
-    val submissionNotice:String="",
-    val submissionNoticeRequestId:String="",
-    val harness:String="codex",
-    val backends:List<NativeBackend> = emptyList(),val actualModel:String="",
-    val backendStatusLoading:Boolean=false,val backendStatusError:String="",
-    val route:ConnectionRoute=ConnectionRoute.AUTO,val connected:Boolean=false,val connecting:Boolean=false,val error:String="",val address:String="",val publicUrl:String="",val remotePassword:String="",val certificateSha256:String="",val activeAddress:String="",
-    val publicTestRunning:Boolean=false,val publicTestMessage:String="",val publicTestPassed:Boolean=false,
-    val projects:List<Project> = emptyList(),val sidebarProjects:List<Project> = emptyList(),val threads:List<ThreadRecord> = emptyList(),
-    val projectThreads:Map<String,NativeProjectThreads> = emptyMap(),
-    val threadFilter:NativeThreadFilter=NativeThreadFilter.ALL,
-    val moreThreads:Boolean=false,val moreProjects:Boolean=false,val loadingSidebar:Boolean=false,
-    val cloudListError:String="",
-    val remoteSearch:NativeThreadSearch=NativeThreadSearch(),
-    val models:List<NativeModel> = emptyList(),val modelsFallback:Boolean=false,val model:String="",val effort:String="",val permission:String="full",
-    val nextMode:String="default",val fastMode:Boolean?=null,val sessionFast:Boolean?=null,val fastBusy:Boolean=false,
-    val threadId:String="",val projectId:String="",val events:List<ChatEvent> = emptyList(),
-    val draft:String="",val images:List<NativeImage> = emptyList(),val uploads:List<NativeUploadedFile> = emptyList(),val uploading:Boolean=false,val uploadMessage:String="",val uploadProgress:NativeUploadProgress?=null,val uploadError:String="",
-    val editingMessage:ChatEvent?=null,val messageEditText:String="",
-    val sending:Boolean=false,val running:Boolean=false,val stopping:Boolean=false,val stopError:String="",val loadingHistory:Boolean=false,val loadingOlderHistory:Boolean=false,val hasMoreHistory:Boolean=false,
-    val historySyncing:Boolean=false,val historyErrors:Map<String,String> = emptyMap(),
-    val queue:List<NativeQueued> = emptyList(),val queueDrafts:List<NativeQueued> = emptyList(),val canSteer:Boolean=false,val files:List<FileEntry> = emptyList(),val filePath:String="",
-    val file:FileContent?=null,val fileDraft:String="",val fileProjectId:String="",val fileRootPath:String="",val diff:String="",val terminal:String="",val terminalSession:String="",val terminalDraft:String="",val terminalError:String="",val terminalBusy:Boolean=false,
-    val fileBusy:Boolean=false,val fileMessage:String="",val fileError:String="",val fileFeedbackVisible:Boolean=false,val openedImage:NativeOpenedImage?=null,
-    val approvalResults:Map<String,String> = emptyMap(),
-    val approvals:Set<String> = emptySet(),val workBusy:Boolean=false,val pdf:NativePdf?=null,val markdown:NativeReadableFile?=null,val storagePermissionRequired:Boolean=false,
-    val pendingApprovals:List<ChatEvent> = emptyList(),
-    val desktopAutoApprove:Boolean=false,val remoteApprovalBusy:Boolean=false,val approvalBridgeConfigured:Boolean=false,val approvalBridgeConnected:Boolean=false,
-    val capacityAutoRetry:Boolean=false,val capacityRetryBusy:Boolean=false,val capacityRetryError:String="",
-    val usage:JSONObject?=null,val usageLoading:Boolean=false,val usageError:String="",val usageDays:Int=1,
-    val usageDataDays:Int=1,val activityLoading:Set<String> = emptySet(),val activityErrors:Map<String,String> = emptyMap(),
-    val recoveryVersion:Int=0,val sendingStage:String="",
-    val modelServiceNotice:ModelServiceNotice?=null,
-    val taskNotice:TaskNotification?=null,
-    val automationSaving:Boolean=false,val automationError:String="",val automations:List<NativeAutomation> = emptyList(),val automationsVisible:Boolean=false,val automationsLoading:Boolean=false,val automationFocus:String="",
-    val codexReady:Boolean=false,val codexStarting:Boolean=false,val codexStatusLoading:Boolean=false,val codexStatusError:String="",
-    val localConsole:LocalConsoleUiState=LocalConsoleUiState(),
-    val backendRestart:NativeBackendRestart=NativeBackendRestart()
-)
-data class NativeBackendRestart(val busy:Boolean=false,val planId:String="",val blockingCount:Int=0,val canRestart:Boolean=false,val error:String="",val done:Boolean=false,val desktopRunning:Boolean=false)
 private data class NativePending(val id:String,val threadId:String,val selection:Int,val text:String,val images:List<NativeImage>,val uploads:List<NativeUploadedFile>,val plan:Boolean=false,val restoreDraft:Boolean=true,
     val address:String="",val draftKey:String="",val projectId:String="",val model:String="",val effort:String="",val permission:String="full",val mode:String="",val fast:Boolean?=null,val submittedAt:String=java.time.Instant.now().toString(),val uncertain:Boolean=true,val failure:String="",val wireCommand:String="",val goal:Boolean=false,val certificateSha256:String?=null)
 class NativeViewModel(application:Application):AndroidViewModel(application) {
@@ -79,108 +28,37 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         if(epoch!=generation||client!==api)throw CancellationException("电脑连接已变化")
         return result
     }
-    var accountsState by mutableStateOf(NativeAccountsState());private set
-    private var accountsJob:Job?=null
-    private var accountsTicket=0L
-    fun loadAccounts(service:String){
-        val api=client?:return;if(!state.connected)return
-        accountsJob?.cancel();val ticket=++accountsTicket;val epoch=generation
-        accountsState=if(accountsState.service==service)accountsState.copy(loading=true,error="",message="",confirmation=null,result=null) else NativeAccountsState(service=service,loading=true)
-        accountsJob=viewModelScope.launch{try{
-            val result=api.accountsAsync(service)
-            if(epoch==generation&&client===api&&ticket==accountsTicket)accountsState=accountsState.copy(data=result,loading=false)
-        }catch(e:CancellationException){throw e}catch(e:Exception){if(epoch==generation&&ticket==accountsTicket)accountsState=accountsState.copy(loading=false,error=nativeError(e))}}
-    }
-    internal fun cancelAccountRead(service:String){
-        // Leaving a page stops reads, while an already submitted account operation keeps its owner.
-        if(accountsState.service!=service||accountsState.busy.isNotBlank())return
-        accountsTicket++;accountsJob?.cancel();accountsJob=null
-        accountsState=accountsState.copy(loading=false,confirmation=null)
-    }
-    fun accountAction(service:String,action:String,body:JSONObject){
-        val api=client?:return;if(!state.connected||accountsState.busy.isNotBlank())return
-        accountsJob?.cancel();val ticket=++accountsTicket;val epoch=generation
-        accountsState=accountsState.copy(busy=action,error="",message="",confirmation=null,result=null)
-        accountsJob=viewModelScope.launch{try{
-            val result=withContext(Dispatchers.IO){api.accountAction(service,action,body)}
-            if(epoch!=generation||client!==api||ticket!=accountsTicket)return@launch
-            if(action=="switch-preview")accountsState=accountsState.copy(busy="",confirmation=result)
-            else if(action in setOf("models","test","read","discover-models","routing-preview","profile","test-model","history","oauth-status","oauth-start","oauth-cancel"))accountsState=accountsState.copy(busy="",result=result,message=result.optString("message").ifBlank{when(action){"test"->"连接检查完成";"models","discover-models"->"模型列表已获取";"routing-preview"->"预览已获取";else->"已读取"}})
-            else{
-                accountsState=accountsState.copy(busy="",message=result.optString("message").ifBlank{"已保存"},result=result)
-                try{val data=api.accountsAsync(service);if(epoch==generation&&ticket==accountsTicket)accountsState=accountsState.copy(data=data)}
-                catch(e:CancellationException){throw e}catch(e:Exception){if(epoch==generation&&ticket==accountsTicket)accountsState=accountsState.copy(error="操作已完成，刷新失败：${nativeError(e)}")}
-            }
-        }catch(e:CancellationException){throw e}catch(e:Exception){if(epoch==generation&&ticket==accountsTicket)accountsState=accountsState.copy(busy="",error=nativeError(e))}}
-    }
-    fun dismissAccountConfirmation(){accountsState=accountsState.copy(confirmation=null)}
+    private val accounts=NativeAccountsController(viewModelScope,{
+        val api=client
+        if(api==null||!state.connected)null else {
+            val epoch=generation
+            NativeAccountConnection(api){client===api&&generation==epoch}
+        }
+    },::nativeError)
+    val accountsState:NativeAccountsState get()=accounts.state
+    fun loadAccounts(service:String)=accounts.load(service)
+    internal fun cancelAccountRead(service:String)=accounts.cancelRead(service)
+    fun accountAction(service:String,action:String,body:JSONObject)=accounts.action(service,action,body)
+    fun dismissAccountConfirmation()=accounts.dismissConfirmation()
     var subagentClose by mutableStateOf(NativeSubagentCloseState());private set
     fun dismissSubagentClose(){if(!subagentClose.busy)subagentClose=NativeSubagentCloseState()}
-    var agentHealth by mutableStateOf(NativeAgentHealthState());private set
-    fun setHarnessPublicAccess(agent:String,enabled:Boolean){
-        if(!state.connected||agentHealth.accessBusy.isNotBlank())return
-        val api=client?:return;val epoch=generation
-        agentHealth=agentHealth.copy(accessBusy=agent,error="")
-        viewModelScope.launch{
-            try{
-                withContext(Dispatchers.IO){api.nativeJson("PUT","/api/settings/harness-access",JSONObject().put("agents",JSONObject().put(agent,enabled)))}
-                if(epoch!=generation||client!==api)return@launch
-                agentHealth=agentHealth.copy(agents=agentHealth.agents.map{if(it.agent==agent)it.copy(publicAllowed=enabled) else it},accessBusy="")
-                loadAgentHealth()
-            }catch(e:CancellationException){throw e}catch(e:Exception){if(epoch==generation&&client===api)agentHealth=agentHealth.copy(accessBusy="",error=nativeError(e))}
-        }
+    private fun managementConnection():NativeManagementConnection?{
+        val api=client?:return null
+        if(!state.connected)return null
+        val epoch=generation
+        return NativeManagementConnection(api){client===api&&generation==epoch}
     }
-    fun loadAgentHealth(force:Boolean=false):Job?{
-        if(!state.connected||agentHealth.loading)return null
-        val api=client?:return null;val epoch=generation
-        agentHealth=agentHealth.copy(loading=true,error="")
-        return viewModelScope.launch{
-            try{
-                val result=withContext(Dispatchers.IO){api.agentHealth(force)}
-                if(epoch!=generation||client!==api)return@launch
-                val rows=result.optJSONArray("agents")?:org.json.JSONArray()
-                agentHealth=agentHealth.copy(agents=(0 until rows.length()).map{parseNativeAgentHealth(rows.getJSONObject(it))},loading=false,checkedAt=result.optString("checkedAt"),error=result.optString("error"),desktop=result.optJSONObject("desktop")?.let{parseNativeAgentHealth(it)})
-            }catch(e:CancellationException){throw e}
-            catch(e:Exception){if(epoch==generation&&client===api)agentHealth=agentHealth.copy(loading=false,error=nativeError(e))}
-        }
-    }
-    fun checkAgentUpdates():Job?{
-        if(!state.connected||agentHealth.checkingUpdates)return null
-        val api=client?:return null;val epoch=generation
-        agentHealth=agentHealth.copy(checkingUpdates=true,error="")
-        return viewModelScope.launch{
-            try{
-                val result=withContext(Dispatchers.IO){api.checkAgentUpdates();api.agentHealth()}
-                if(epoch!=generation||client!==api)return@launch
-                val rows=result.optJSONArray("agents")?:org.json.JSONArray()
-                agentHealth=agentHealth.copy(agents=(0 until rows.length()).map{parseNativeAgentHealth(rows.getJSONObject(it))},desktop=result.optJSONObject("desktop")?.let{parseNativeAgentHealth(it)},checkedAt=result.optString("checkedAt"),checkingUpdates=false,error=result.optString("error"))
-            }catch(e:CancellationException){throw e}
-            catch(e:Exception){if(epoch==generation&&client===api)agentHealth=agentHealth.copy(checkingUpdates=false,error=consoleError(e))}
-        }
-    }
-    internal var networkState by mutableStateOf(NativeNetworkState());private set
-    private var networkJob:Job?=null
-    private var networkTicket=0
-    private fun resetNetwork(){networkTicket++;networkJob?.cancel();networkState=NativeNetworkState()}
-    fun loadNetwork()=networkRequest("GET","/api/network/openai")
-    fun selectNetworkNode(group:String,node:String){if(!networkState.busy)networkRequest("PUT","/api/network/openai/node",JSONObject().put("group",group).put("node",node))}
-    fun testNetworkNode(group:String,node:String){if(!networkState.busy)networkRequest("POST","/api/network/openai/test",JSONObject().put("group",group).put("node",node),group to node)}
-    private fun networkRequest(method:String,route:String,body:JSONObject?=null,test:Pair<String,String>?=null){
-        if(!state.connected){networkState=NativeNetworkState(error="连接电脑后可管理 Clash 节点");return}
-        val api=client?:return;val epoch=generation;val ticket=++networkTicket
-        networkJob?.cancel();networkState=networkState.copy(loading=method=="GET",busy=true,error="",message="")
-        networkJob=viewModelScope.launch{
-            try{
-                val result=withContext(Dispatchers.IO){api.nativeJsonAsync(method,route,body)}
-                if(ticket==networkTicket&&epoch==generation&&client===api){
-                    networkState=if(test==null)networkState.copy(groups=result.toNativeProxyGroups(),message=if(method=="PUT")"节点已切换" else "")
-                    else networkState.copy(groups=networkState.groups.map{group->if(group.name==test.first)group.copy(nodes=group.nodes.map{node->if(node.name==test.second)node.copy(delay=result.optInt("delay").takeIf{it>0})else node})else group},message="延迟测试完成")
-                }
-            }catch(e:CancellationException){throw e}
-            catch(e:Exception){if(ticket==networkTicket&&epoch==generation&&client===api)networkState=networkState.copy(error=nativeError(e))}
-            finally{if(ticket==networkTicket&&epoch==generation&&client===api)networkState=networkState.copy(loading=false,busy=false)}
-        }
-    }
+    private val agentHealthController=NativeAgentHealthController(viewModelScope,::managementConnection,::nativeError,::consoleError)
+    val agentHealth:NativeAgentHealthState get()=agentHealthController.state
+    fun setHarnessPublicAccess(agent:String,enabled:Boolean)=agentHealthController.setPublicAccess(agent,enabled)
+    fun loadAgentHealth(force:Boolean=false):Job?=agentHealthController.load(force)
+    fun checkAgentUpdates():Job?=agentHealthController.checkUpdates()
+    private val networkController=NativeNetworkController(viewModelScope,::managementConnection,::nativeError)
+    internal val networkState:NativeNetworkState get()=networkController.state
+    private fun resetNetwork()=networkController.reset()
+    fun loadNetwork()=networkController.load()
+    fun selectNetworkNode(group:String,node:String)=networkController.selectNode(group,node)
+    fun testNetworkNode(group:String,node:String)=networkController.testNode(group,node)
     internal val readingPositions=NativeReadingPositions()
     internal val readingHistoryWindow get()=historyTurns
     private val store=ConnectionStore(application)
@@ -712,14 +590,16 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
     private var usageTicket=0
     private var lastUsageRefresh=0L
     private fun resetUsageRefresh(){usageJob?.cancel();usageRead=null;usageTicket++;lastUsageRefresh=0;state=state.copy(usageLoading=false)}
+    private var statusReadRevision=0L
     private fun resetStatusReads(){
+        statusReadRevision++
         // Read ownership ends with the connection. Pending saves retain their own jobs.
         fastTicket++;fastJob?.cancel();fastJob=null
         fastReadClient=null;fastReadContext=null;lastFastReadAt=0L
         recoveryQuery?.cancel();recoveryQuery=null
         submissionRetry?.cancel();submissionRetry=null
         resetUsageRefresh()
-        state=state.copy(fastBusy=client?.let{fastWrites[it to state.threadId]?.isActive}==true)
+        state=state.copy(fastBusy=client?.let{fastWrites[it to state.threadId]?.isActive}==true,remoteApprovalBusy=false,capacityRetryBusy=false)
     }
     private fun clearConversationModelServiceNotice(){if(state.modelServiceNotice?.quotaSnapshot!=true)dismissModelServiceNotice()}
     private var stopRequestId:String?=null
@@ -748,6 +628,17 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         state=state.copy(models=nativeModelsWithSelection(state.models,available),model=available.id,effort=if(pending.effort in available.efforts)pending.effort else available.defaultEffort)
         rememberThreadSettings()
         return true
+    }
+    private fun applyConnectedModelCatalog(api:GatewayClient,address:String,incoming:List<NativeModel>,pending:Set<String>){
+        val models=nativeMergeModelDirectory(incoming,state.models,pending)
+        if(models.isEmpty()&&state.harness in pending)return
+        val candidates=models.filter{it.harness==state.harness&&it.available}
+        val model=if(state.harness=="opencode"&&state.harness !in pending)nativeOpenCodeSelection(models,state.model.takeIf{it.startsWith("opencode::")}?:prefs.getString("model:opencode","").orEmpty(),state.models)
+            else candidates.firstOrNull{it.id==state.model}?:candidates.firstOrNull{it.id==prefs.getString("model:${state.harness}",prefs.getString("model",""))}?:candidates.firstOrNull{it.id.endsWith("::default")}?:candidates.find{it.id=="gpt-6-sol"}?:candidates.find{it.id=="gpt-6.1-sol"}?:candidates.firstOrNull()
+        val keepSelection=model==null&&state.harness in pending
+        val savedEffort=if(model?.id==state.model)state.effort else model?.let{prefs.getString("effort:${it.id}",nativeTaskDefaultEffort(it.id,it.defaultEffort)).orEmpty()}
+        state=state.copy(models=nativeModelsWithSelection(models,model),modelsFallback=false,backends=api.nativeBackendStatuses,backendStatusError="",model=if(keepSelection)state.model else model?.id.orEmpty(),effort=if(keepSelection)state.effort else if(model?.efforts?.contains(savedEffort)==true)savedEffort.orEmpty() else model?.defaultEffort.orEmpty(),activeAddress=address)
+        applyDesktopModel()
     }
     private fun key(value:NativeState=state)="native:"+(if(value.harness=="codex")"" else value.harness+":")+value.threadId.ifBlank { "new:${value.projectId}" }
     private fun attachmentScope(value:NativeState=state,draftKey:String=key(value))=org.json.JSONArray(listOf(value.address.trimEnd('/'),value.certificateSha256.lowercase(),draftKey)).toString()
@@ -781,8 +672,8 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
     }
     private fun restoreModels(address:String,preserveSelection:Boolean=false){
         val cached=store.models(address)
-        val models=nativeModelCatalogOrDefaults(cached).map{if(nativeAgent(it.id)=="opencode")it.copy(available=false,unavailableReason="正在确认 OpenCode 模型，请刷新模型目录") else it}
-        val candidates=models.filter{nativeAgent(it.id)==state.harness&&it.available}
+        val models=nativeModelCatalogOrDefaults(cached).map{if(it.harness=="opencode")it.copy(available=false,unavailableReason="正在确认 OpenCode 模型，请刷新模型目录") else it}
+        val candidates=models.filter{it.harness==state.harness&&it.available}
         val current=state.model.takeIf{preserveSelection}
         val model=if(state.harness=="opencode")nativeOpenCodeSelection(models,current?:prefs.getString("model:opencode","").orEmpty()) else candidates.find{it.id==current}?:candidates.find{it.id==prefs.getString("model:${state.harness}","")}?:candidates.find{it.id=="gpt-6-sol"}?:candidates.find{it.id=="gpt-6.1-sol"}?:candidates.firstOrNull()
         val saved=if(model!=null&&model.id==current)state.effort else if(cached.isEmpty())"high" else model?.let{prefs.getString("effort:${it.id}",nativeTaskDefaultEffort(it.id,it.defaultEffort)).orEmpty()}
@@ -1031,7 +922,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
                         else{
                             models.find{it.id==state.model}?.let{current->if(state.effort !in current.efforts)state=state.copy(effort=current.defaultEffort)}
                             if(state.threadId.isBlank()&&action=="default"&&state.harness=="codex")chooseModel(info.model)
-                            else if(models.none{it.id==state.model})(models.firstOrNull{it.id==info.model&&nativeAgent(it.id)==state.harness}?:models.firstOrNull{nativeAgent(it.id)==state.harness})?.let{chooseModel(it.id)}
+                            else if(models.none{it.id==state.model})(models.firstOrNull{it.id==info.model&&it.harness==state.harness}?:models.firstOrNull{it.harness==state.harness})?.let{chooseModel(it.id)}
                         }
                         }
                         store.saveModelsAsync(state.address,models){generation==epoch&&client===api}
@@ -1042,7 +933,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         }
     }
     private fun resetConsole(){
-        accountsTicket++;accountsJob?.cancel();accountsState=NativeAccountsState();subagentClose=NativeSubagentCloseState()
+        accounts.reset();subagentClose=NativeSubagentCloseState()
         consoleInfoTicket++;consoleStatisticsTicket++;consoleInfoJob?.cancel();consoleStatisticsJob?.cancel();consoleActionJob?.cancel()
         consoleStatisticsRequest=null;consoleStatisticsCache.clear()
         state=state.copy(localConsole=LocalConsoleUiState(source=state.localConsole.source,range=state.localConsole.range,pricing=state.localConsole.pricing))
@@ -1086,7 +977,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         if(computerChanged||code.isNotBlank()||retryToken!=store.token())client=null
         store.saveProfile(url,retryToken,remote,remotePassword,certificateSha256,route)
         restoreModels(url,preserveSelection=!computerChanged&&code.isBlank())
-        agentHealth=NativeAgentHealthState();state=state.copy(route=route,address=url,publicUrl=remote,remotePassword=remotePassword,certificateSha256=certificateSha256,connecting=true,connected=false,historySyncing=false,error="",codexReady=false,codexStarting=false,codexStatusLoading=false,codexStatusError="",backendRestart=NativeBackendRestart(),backendStatusLoading=false,backendStatusError="")
+        agentHealthController.reset();state=state.copy(route=route,address=url,publicUrl=remote,remotePassword=remotePassword,certificateSha256=certificateSha256,connecting=true,connected=false,historySyncing=false,error="",codexReady=false,codexStarting=false,codexStatusLoading=false,codexStatusError="",backendRestart=NativeBackendRestart(),backendStatusLoading=false,backendStatusError="")
             .let{next->if(!computerChanged)next else next.copy(approvals=emptySet(),approvalResults=emptyMap(),threadId="",projectId="",draft="",images=emptyList(),uploads=emptyList(),events=emptyList(),queue=emptyList(),queueDrafts=emptyList(),pendingApprovals=emptyList(),running=false,sending=false,sendingStage="",loadingHistory=false,loadingOlderHistory=false,historySyncing=false,historyErrors=emptyMap(),hasMoreHistory=false,actualModel="",usage=null,usageError="",submissionNotice="",submissionNoticeRequestId="")}
         if(computerChanged){
             if(!firstDraft.isNullOrBlank())store.saveChatDraft(attachmentScope(),firstDraft)
@@ -1151,13 +1042,12 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
                     launch{refreshLists(true,reportErrors=false)}
                     val modelJob=launch modelLoad@{
                     for(modelAttempt in 0..2){try{
-                    val models=connectedApi.nativeModelsAsync()
+                    val models=connectedApi.nativeModelUpdates(){partial,pending->
+                        if(generation!=epoch||client!==connectedApi)throw CancellationException("电脑连接已变化")
+                        applyConnectedModelCatalog(connectedApi,candidate,partial,pending)
+                    }
                     check(models.isNotEmpty()){"电脑没有返回可选模型，请重试"}
                     if(generation!=epoch||client!==connectedApi)return@modelLoad
-                    val candidates=models.filter{nativeAgent(it.id)==state.harness&&it.available};val model=if(state.harness=="opencode")nativeOpenCodeSelection(models,state.model.takeIf{it.startsWith("opencode::")}?:prefs.getString("model:opencode","").orEmpty(),state.models) else candidates.firstOrNull{it.id==state.model}?:candidates.firstOrNull{it.id==prefs.getString("model:${state.harness}",prefs.getString("model",""))}?:candidates.firstOrNull{it.id.endsWith("::default")}?:candidates.find{it.id=="gpt-6-sol"}?:candidates.find{it.id=="gpt-6.1-sol"}?:candidates.firstOrNull()
-                    val savedEffort=if(model!=null&&model.id==state.model)state.effort else model?.let{prefs.getString("effort:${it.id}",nativeTaskDefaultEffort(it.id,it.defaultEffort)).orEmpty()}
-                    state=state.copy(models=nativeModelsWithSelection(models,model),modelsFallback=false,backends=connectedApi.nativeBackendStatuses,backendStatusError="",model=model?.id.orEmpty(),effort=if(model?.efforts?.contains(savedEffort)==true)savedEffort.orEmpty() else model?.defaultEffort.orEmpty(),activeAddress=candidate)
-                    applyDesktopModel()
                     store.saveModelsAsync(url,models){generation==epoch&&client===connectedApi}
                     break
                     }catch(e:CancellationException){throw e}catch(e:Exception){
@@ -1206,20 +1096,33 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         if(!hasSavedPairing()){error("请先连接电脑并完成配对");return}
         connect(state.address,publicUrl=state.publicUrl,remotePassword=state.remotePassword,certificateSha256=state.certificateSha256,route=route)
     }
-    fun disconnect(){cancelActivityLoads();agentHealth=NativeAgentHealthState();localRouteProbe?.cancel();foregroundSocketCheck?.cancel();preferLocalReconnect=false;clearFileContext();clearStop();resetStatusReads();resetConsole();resetNetwork();resetArchivedThreads();searchJob?.cancel();searchTicket++;state=state.copy(remoteSearch=NativeThreadSearch());queueMutationVersions.clear();generation++;foregroundTasks=TaskNotificationTracker();completedGoalNotices.clear();state=state.copy(taskNotice=null,automationSaving=false,automationsLoading=false,automationError="");connection?.cancel();polling?.cancel();listJob?.cancel();historyJob?.cancel();historyTicket++;historyInFlightFor=null;hydration=null;clearImageLoads();recoverPending();state=state.copy(connected=false,connecting=false,historySyncing=false,loadingHistory=false,loadingOlderHistory=false,codexReady=false,codexStarting=false,codexStatusLoading=false,codexStatusError="",backendRestart=NativeBackendRestart(),backendStatusLoading=false,backendStatusError="")}
+    fun disconnect(){cancelActivityLoads();agentHealthController.reset();localRouteProbe?.cancel();foregroundSocketCheck?.cancel();preferLocalReconnect=false;clearFileContext();clearStop();resetStatusReads();resetConsole();resetNetwork();resetArchivedThreads();searchJob?.cancel();searchTicket++;state=state.copy(remoteSearch=NativeThreadSearch());queueMutationVersions.clear();generation++;foregroundTasks=TaskNotificationTracker();completedGoalNotices.clear();state=state.copy(taskNotice=null,automationSaving=false,automationsLoading=false,automationError="");connection?.cancel();polling?.cancel();listJob?.cancel();historyJob?.cancel();historyTicket++;historyInFlightFor=null;hydration=null;clearImageLoads();recoverPending();state=state.copy(connected=false,connecting=false,historySyncing=false,loadingHistory=false,loadingOlderHistory=false,codexReady=false,codexStarting=false,codexStatusLoading=false,codexStatusError="",backendRestart=NativeBackendRestart(),backendStatusLoading=false,backendStatusError="")}
     fun chooseModel(id:String){if(state.models.any{it.id==id&&!it.available}){error(state.models.find{it.id==id}?.unavailableReason.orEmpty());return};modelRevision++;if(nativeAgent(id)!=state.harness){error("请在新会话中切换助手");return};val m=state.models.find{it.id==id}?:return;val saved=prefs.getString("effort:$id",nativeTaskDefaultEffort(id,m.defaultEffort)).orEmpty();state=state.copy(model=id,effort=if(saved in m.efforts)saved else m.defaultEffort);prefs.edit().putString("model:${state.harness}",id).apply();rememberThreadSettings();if(state.harness=="antigravity"){resetUsageRefresh();state=state.copy(modelServiceNotice=state.modelServiceNotice?.takeUnless{it.quotaSnapshot});if(state.connected)loadUsage()}}
     fun effort(value:String){modelRevision++;if(state.models.find{it.id==state.model}?.efforts?.contains(value)==true){state=state.copy(effort=value);prefs.edit().putString("effort:${state.model}",value).apply();rememberThreadSettings()}}
     fun permission(value:String){if(value in setOf("ask","auto","full")||(value=="custom"&&state.harness=="codex")){state=state.copy(permission=value);prefs.edit().putString("permission:${state.harness}",value).apply();rememberThreadSettings()}}
-    fun loadRemoteApproval(){val api=client?:return;viewModelScope.launch{try{val result=withContext(Dispatchers.IO){api.nativeJson("GET","/api/settings/remote-approval")};state=state.copy(desktopAutoApprove=result.optBoolean("desktopAutoApprove"),approvalBridgeConfigured=result.optBoolean("bridgeConfigured"),approvalBridgeConnected=result.optBoolean("connected"))}catch(e:Exception){state=state.copy(error=nativeError(e))}}}
-    fun setRemoteAutoApproval(enabled:Boolean){val api=client?:return;viewModelScope.launch{state=state.copy(remoteApprovalBusy=true);try{val result=withContext(Dispatchers.IO){api.nativeJson("PUT","/api/settings/remote-approval",JSONObject().put("desktopAutoApprove",enabled))};state=state.copy(desktopAutoApprove=enabled,approvalBridgeConfigured=result.optBoolean("bridgeConfigured"),approvalBridgeConnected=result.optBoolean("connected"),error=if(result.optInt("failed")>0)"部分待处理审批未能自动完成，请手动处理" else state.error)}catch(e:Exception){state=state.copy(error=nativeError(e))}finally{state=state.copy(remoteApprovalBusy=false)}}}
+    fun loadRemoteApproval()=remoteApprovalSetting(null)
+    fun setRemoteAutoApproval(enabled:Boolean)=remoteApprovalSetting(enabled)
+    private fun remoteApprovalSetting(enabled:Boolean?){
+        val api=client?:return;val epoch=generation;val revision=statusReadRevision
+        if(state.remoteApprovalBusy)return
+        state=state.copy(remoteApprovalBusy=true)
+        viewModelScope.launch{
+            fun current()=api===client&&epoch==generation&&revision==statusReadRevision
+            try{
+                val result=withContext(Dispatchers.IO){api.nativeJson(if(enabled==null)"GET" else "PUT","/api/settings/remote-approval",enabled?.let{JSONObject().put("desktopAutoApprove",it)})}
+                if(current())state=state.copy(desktopAutoApprove=result.optBoolean("desktopAutoApprove"),approvalBridgeConfigured=result.optBoolean("bridgeConfigured"),approvalBridgeConnected=result.optBoolean("connected"),error=if(result.optInt("failed")>0)"部分待处理审批未能自动完成，请手动处理" else state.error)
+            }catch(e:CancellationException){throw e}catch(e:Exception){if(current())state=state.copy(error=nativeError(e))}
+            finally{if(current())state=state.copy(remoteApprovalBusy=false)}
+        }
+    }
     fun loadCapacityRetry()=capacityRetrySetting(null)
     fun setCapacityAutoRetry(enabled:Boolean)=capacityRetrySetting(enabled)
     private fun capacityRetrySetting(enabled:Boolean?){
-        val api=client?:return;val epoch=generation
+        val api=client?:return;val epoch=generation;val revision=statusReadRevision
         if(state.capacityRetryBusy)return
         state=state.copy(capacityRetryBusy=true,capacityRetryError="")
         viewModelScope.launch{
-            fun current()=api===client&&epoch==generation
+            fun current()=api===client&&epoch==generation&&revision==statusReadRevision
             try{
                 val result=withContext(Dispatchers.IO){api.nativeJson(if(enabled==null)"GET" else "PUT","/api/settings/capacity-retry",enabled?.let{JSONObject().put("enabled",it)})}
                 if(current())state=state.copy(capacityAutoRetry=result.optBoolean("enabled"))
@@ -1273,7 +1176,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         clearConversationModelServiceNotice()
         if(saveCurrent)store.saveChatDraft(attachmentScope(),state.draft);selection++;historyTicket++;historyInFlightFor=null;historyJob?.cancel()
         historyTurns=10
-        val candidates=state.models.filter{nativeAgent(it.id)==state.harness&&it.available}
+        val candidates=state.models.filter{it.harness==state.harness&&it.available}
         val preferred=if(state.harness=="opencode")nativeOpenCodeSelection(state.models,prefs.getString("model:opencode","").orEmpty()) else candidates.find{it.id==prefs.getString("model:"+state.harness,prefs.getString("model",""))}?:candidates.find{it.id=="gpt-6-sol"}?:candidates.find{it.id=="gpt-6.1-sol"}?:candidates.find{it.id.endsWith("::default")}?:candidates.firstOrNull()
         val effort=if(state.modelsFallback)"high" else prefs.getString("effort:"+preferred?.id,nativeTaskDefaultEffort(preferred?.id.orEmpty(),preferred?.defaultEffort.orEmpty())).orEmpty()
         state=state.copy(models=nativeModelsWithSelection(state.models,preferred),threadId="",submissionNotice="",submissionNoticeRequestId="",actualModel="",nextMode="default",fastMode=null,sessionFast=null,projectId=project?.id.orEmpty(),model=preferred?.id.orEmpty(),effort=if(effort in preferred?.efforts.orEmpty())effort else preferred?.defaultEffort.orEmpty(),permission=prefs.getString("permission:"+state.harness,"full")?:"full",events=emptyList(),pendingApprovals=emptyList(),queue=emptyList(),queueDrafts=emptyList(),canSteer=false,running=false,sending=false,loadingHistory=false,loadingOlderHistory=false,historySyncing=false,historyErrors=emptyMap(),hasMoreHistory=false,usage=null,usageError="")
@@ -1490,7 +1393,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
             else viewModelScope.launch{refreshLists(true)}
         }
     }
-    fun openThread(thread:ThreadRecord){cancelActivityLoads();if(state.taskNotice?.threadId==thread.id)state=state.copy(taskNotice=null);clearFileContext();rememberConversation();val cached=conversations.get(conversationKey(thread.id,nativeThreadAgent(thread.id)));recoverPending();clearStop();resetUsageRefresh();if(nativeThreadAgent(thread.id)!=state.harness)dismissModelServiceNotice() else clearConversationModelServiceNotice();state=state.copy(threads=(state.threads+thread).distinctBy{it.id});desktopModels.remove(thread.id);store.saveChatDraft(attachmentScope(),state.draft);state=state.copy(harness=nativeThreadAgent(thread.id));prefs.edit().putString("harness",state.harness).apply();selection++;historyTicket++;historyInFlightFor=null;historyJob?.cancel();historyTurns=(cached?.turns?:readingPositions.get(readingPositionKey(thread.id))?.historyTurns?:10).coerceIn(10,2000);val chosenModel=prefs.getString("thread:${thread.id}:model",state.model).orEmpty();val candidates=state.models.filter{nativeAgent(it.id)==nativeThreadAgent(thread.id)};val model=if(state.harness=="opencode")nativeOpenCodeSelection(state.models,chosenModel) else candidates.find{it.id==chosenModel}?:candidates.find{it.id=="gpt-6-sol"}?:candidates.find{it.id=="gpt-6.1-sol"}?:candidates.firstOrNull();val chosenEffort=if(state.modelsFallback)"high" else prefs.getString("thread:${thread.id}:effort",model?.let{nativeTaskDefaultEffort(it.id,it.defaultEffort)}).orEmpty();state=state.copy(models=nativeModelsWithSelection(state.models,model),threadId=thread.id,submissionNotice="",submissionNoticeRequestId="",actualModel=cached?.actualModel.orEmpty(),nextMode="default",fastMode=null,sessionFast=null,projectId=state.projects.find{nativePath(it.path)==nativePath(thread.projectPath)}?.id.orEmpty(),model=model?.id.orEmpty(),effort=if(chosenEffort in model?.efforts.orEmpty())chosenEffort else model?.defaultEffort.orEmpty(),permission=prefs.getString("thread:${thread.id}:permission",prefs.getString("permission:${state.harness}","full"))?:"full",events=cached?.events.orEmpty(),queue=emptyList(),queueDrafts=emptyList(),canSteer=false,running=thread.status=="running",sending=false,loadingHistory=cached==null,loadingOlderHistory=false,historySyncing=false,historyErrors=emptyMap(),hasMoreHistory=cached?.hasMore?:false,activityLoading=emptySet(),activityErrors=emptyMap(),usage=null,usageError="");state=state.copy(draft=store.chatDraft(attachmentScope()));restoreAttachmentDraft();viewModelScope.launch{refreshLists(true)};viewModelScope.launch{refreshHistory(force=true)}}
+    fun openThread(thread:ThreadRecord){cancelActivityLoads();if(state.taskNotice?.threadId==thread.id)state=state.copy(taskNotice=null);clearFileContext();rememberConversation();val cached=conversations.get(conversationKey(thread.id,nativeThreadAgent(thread.id)));recoverPending();clearStop();resetUsageRefresh();if(nativeThreadAgent(thread.id)!=state.harness)dismissModelServiceNotice() else clearConversationModelServiceNotice();state=state.copy(threads=(state.threads+thread).distinctBy{it.id});desktopModels.remove(thread.id);store.saveChatDraft(attachmentScope(),state.draft);state=state.copy(harness=nativeThreadAgent(thread.id));prefs.edit().putString("harness",state.harness).apply();selection++;historyTicket++;historyInFlightFor=null;historyJob?.cancel();historyTurns=(cached?.turns?:readingPositions.get(readingPositionKey(thread.id))?.historyTurns?:10).coerceIn(10,2000);val chosenModel=prefs.getString("thread:${thread.id}:model",state.model).orEmpty();val candidates=state.models.filter{it.harness==nativeThreadAgent(thread.id)};val model=if(state.harness=="opencode")nativeOpenCodeSelection(state.models,chosenModel) else candidates.find{it.id==chosenModel}?:candidates.find{it.id=="gpt-6-sol"}?:candidates.find{it.id=="gpt-6.1-sol"}?:candidates.firstOrNull();val chosenEffort=prefs.getString("thread:${thread.id}:effort",model?.let{nativeTaskDefaultEffort(it.id,it.defaultEffort)}).orEmpty();state=state.copy(models=nativeModelsWithSelection(state.models,model),threadId=thread.id,submissionNotice="",submissionNoticeRequestId="",actualModel=cached?.actualModel.orEmpty(),nextMode="default",fastMode=null,sessionFast=null,projectId=state.projects.find{nativePath(it.path)==nativePath(thread.projectPath)}?.id.orEmpty(),model=model?.id.orEmpty(),effort=if(chosenEffort in model?.efforts.orEmpty())chosenEffort else model?.defaultEffort.orEmpty(),permission=prefs.getString("thread:${thread.id}:permission",prefs.getString("permission:${state.harness}","full"))?:"full",events=cached?.events.orEmpty(),queue=emptyList(),queueDrafts=emptyList(),canSteer=false,running=thread.status=="running",sending=false,loadingHistory=cached==null,loadingOlderHistory=false,historySyncing=false,historyErrors=emptyMap(),hasMoreHistory=cached?.hasMore?:false,activityLoading=emptySet(),activityErrors=emptyMap(),usage=null,usageError="");state=state.copy(draft=store.chatDraft(attachmentScope()));restoreAttachmentDraft();viewModelScope.launch{refreshLists(true)};viewModelScope.launch{refreshHistory(force=true)}}
     fun loadOlderHistory(){if(state.threadId.isBlank()||!state.hasMoreHistory||state.loadingOlderHistory||historyInFlightFor!=null)return;historyTurns=(historyTurns+10).coerceAtMost(2000);state=state.copy(loadingOlderHistory=true);viewModelScope.launch{refreshHistory(force=true)}}
     suspend fun refresh(){refreshLists();refreshHistory()}
     private var lastListRefresh=0L
@@ -1794,7 +1697,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
                     if(state.harness=="opencode")state=state.copy(model=selected?.id.orEmpty(),effort=state.effort.takeIf{it in selected?.efforts.orEmpty()}?:selected?.defaultEffort.orEmpty())
                     else{
                         models.find{it.id==state.model}?.let{current->if(state.effort !in current.efforts)state=state.copy(effort=current.defaultEffort)}
-                        if(models.none{it.id==state.model&&it.available})models.firstOrNull{nativeAgent(it.id)==state.harness&&it.available}?.let{chooseModel(it.id)}
+                        if(models.none{it.id==state.model&&it.available})models.firstOrNull{it.harness==state.harness&&it.available}?.let{chooseModel(it.id)}
                     }
                     }
                     store.saveModelsAsync(state.address,models,::current)

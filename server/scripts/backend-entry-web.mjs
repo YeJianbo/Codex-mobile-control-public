@@ -72,8 +72,8 @@ export async function auditBackendEntry(page,artifacts,{base,token,metrics}){
  });
  await check('Disabled public access overrides cached Claude models',async()=>{
    await page.setViewportSize({width:390,height:844});
-   await page.route('**/api/models?agents=all',route=>route.fulfill({json:{...catalog,backends:catalog.backends.map(b=>b.agent==='claude'?{...b,available:false,publicAllowed:false,reason:'此助手的公网访问已关闭'}:b),models:catalog.models.map(m=>m.model.startsWith('claude::')?{...m,available:false,unavailableReason:'此助手的公网访问已关闭'}:m)}}));
-   await page.reload();await page.waitForFunction(()=>document.querySelector('#status').textContent==='已连接');await drawer();await page.locator('#harnessBtn').click();
+   await page.route('**/api/models?agents=all*',route=>route.fulfill({json:{...catalog,backends:catalog.backends.map(b=>b.agent==='claude'?{...b,available:false,publicAllowed:false,reason:'此助手的公网访问已关闭'}:b),models:catalog.models.map(m=>m.model.startsWith('claude::')?{...m,available:false,unavailableReason:'此助手的公网访问已关闭'}:m)}}));
+   await page.reload();await page.waitForFunction(()=>document.querySelector('#status').textContent==='已连接'&&document.querySelector('#settingModel').options.length>0);await drawer();await page.locator('#harnessBtn').click();
    const row=page.locator('.harness-option').filter({hasText:'Claude Code'});assert.equal(await row.isDisabled(),true);assert.match(await row.getAttribute('aria-label'),/公网访问已关闭/);assert.match(await page.locator('.harness-dialog .form-help').filter({hasText:'Claude Code'}).innerText(),/公网访问已关闭/);
    await page.screenshot({path:path.join(directory,'public-boundary-mobile.png')});await page.locator('.harness-dialog').getByRole('button',{name:'关闭',exact:true}).click();
  });

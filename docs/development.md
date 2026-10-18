@@ -2,31 +2,43 @@
 
 以下命令从仓库根目录执行。
 
-Windows发行包包含本仓库Gateway、Android APK和配套Local Console。打包前，使用conda环境中的Python，先完成Android Release与`server`的`npm run build`；并确认`%USERPROFILE%\.codex\tools\local-console`具有当前可用的`src`、`dist`、`package.json`、`package-lock.json`、生产依赖及`runtime/node.exe`。这里的`dist`是已经构建的Web管理前端，Gateway的`server/dist`是另一组产物。仓库不包含该配套组件的独立开发工程，打包器从已安装组件取材。
+Windows 发行包包含本仓库 Gateway、Android APK 和配套 Local Console。打包前使用 conda 环境中的 Python，完成 Android Release 与 `server` 的 `npm run build`。配套控制台的固定源码、Web 前端发行产物及依赖锁位于 `components/local-console`；其 `dist` 与 Gateway 的 `server/dist` 是两组不同产物。安装目录 `%USERPROFILE%\.codex\tools\local-console` 只提供匹配依赖锁的生产依赖与 Node 缓存，不再决定打包源码。组件当前不包含独立前端开发工程，说明见 [组件文档](../components/local-console/README.md)。
 
 ```powershell
 conda run -n base python installer/build-release.py `
-  --version 0.6.446 `
+  --version 0.6.447 `
   --android-build-dir D:\codex\build\Codex-mobile-control\android\app `
-  --android-apk D:\codex\deliverables\Codex-mobile-control\Codex-Control-0.6.446.apk `
+  --android-apk D:\codex\deliverables\Codex-mobile-control\Codex-Control-0.6.447.apk `
   --android-build-log D:\codex\build\Codex-mobile-control\harness446-build-final.log `
   --output-dir D:\codex\deliverables\Codex-mobile-control
 ```
 
-按实际位置调整路径和环境名。`--android-build-log`指定与APK对应的构建记录，避免为打包额外复制一份日志到项目盘。省略参数时沿用仓库内默认路径。打包会生成Setup、Windows发行ZIP及组件清单，检查生产依赖版本、Node身份和压缩包CRC；暂存文件及内嵌payload使用系统临时目录，完成后清理，不运行安装或修改本机账号。
+按实际位置调整路径和环境名。`--android-build-log` 指定与 APK 对应的构建记录；`--console-dir` 可显式指定配套组件目录，`--console-runtime-dir` 指定依赖和 Node 缓存目录。省略时沿用仓库组件和本机安装缓存。打包会生成 Setup、Windows 发行 ZIP 及组件清单，检查生产依赖版本、Node 身份和压缩包 CRC；暂存文件及内嵌 payload 使用系统临时目录，完成后清理，不运行安装或修改本机账号。
+
+## 提交记录迁移与回退
+
+提交记录保存于 `~/.codex-mobile-control/command-receipts.sqlite`，逐条写入，内存只保留近期工作集。旧 `command-receipts.json` 首次读取时事务导入并原位保留；未完成的提交恢复为结果待确认，不自动重发。取消一万条硬上限不意味着取消请求去重，旧请求身份仍保留在数据库中，不定时删除。
+
+需要回退到使用 JSON 的网关版本时，先停止网关，从 `server` 目录运行以下命令，再切换旧版本。此操作不需要重启共享 Codex 或修改会话。
+
+```powershell
+node scripts/export-command-receipts.mjs --output "$env:USERPROFILE\.codex-mobile-control\command-receipts.json"
+```
+
+自定义数据目录使用 `CODEX_MOBILE_CONTROL_HOME`，也可通过 `--file` 指定原 JSON 路径。重新升级时会合并旧版新增的记录，已有请求内容冲突则停止迁移并保留原文件；不会用旧快照覆盖较新的记录。备份或搬迁 SQLite 时先停止网关，并一并保留仍存在的 `-wal`、`-shm` 文件。
 
 验证实际Windows安装包时，可运行以下隔离检查。它使用单独的程序、用户和数据目录及随机端口，禁用自启动、快捷方式和桌面共享安装，不调用模型或修改正式后台；结束后清理临时安装，只保留检查报告及日志。这里验证的是本机隔离安装，不等同于另一台电脑或手机实测。
 
 ```powershell
 node installer/release-smoke.mjs `
-  --setup D:\codex\deliverables\Codex-mobile-control\Codex-Control-0.6.446-Setup-x64.exe `
+  --setup D:\codex\deliverables\Codex-mobile-control\Codex-Control-0.6.447-Setup-x64.exe `
   --work-root D:\codex\build\Codex-mobile-control\release-smoke `
   --report D:\codex\build\Codex-mobile-control\release-smoke\installation-verification.json
 ```
 
 ## 生成产物清理
 
-每次编译完成并确认结果可用、当前安装包交付成功后，清理较早的生成产物；不使用定时任务。`scripts/cleanup-workspace.ps1 -KeepVersion 0.6.322,0.6.307` 显式保留当前验证通过的 Android 与 Windows 版本，只删除更早的版本 APK/EXE/ZIP、发行清单和 `artifacts/portable-*` 展开目录；版本号随实际交付更新。`-Preview` 只列出目标，构建或发行验证运行中跳过清理。清理时保留当前构建输出、源码、Git、非发行参考文件和下载入口。D 盘的版本交付也在每次确认成功后清理旧版本，保留当前可用发行包。Windows 打包的编译临时文件、展开运行时和 payload 使用系统临时目录，打包后自动释放。
+每次编译完成并确认结果可用、当前安装包交付成功后，清理较早的生成产物；不使用定时任务。`scripts/cleanup-workspace.ps1 -KeepVersion 0.6.447,0.6.446,0.6.445` 显式保留当前验证通过的 Android 与 Windows 版本，只删除更早的版本 APK/EXE/ZIP、发行清单和 `artifacts/portable-*` 展开目录；版本号随实际交付更新。`-Preview` 只列出目标，构建或发行验证运行中跳过清理。清理时保留当前构建输出、源码、Git、非发行参考文件和下载入口。D 盘的版本交付也在每次确认成功后清理旧版本，保留当前可用发行包。Windows 打包的编译临时文件、展开运行时和 payload 使用系统临时目录，打包后自动释放。
 
 ## 电脑端 Gateway
 

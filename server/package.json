@@ -1,6 +1,6 @@
 {
   "name": "codex-mobile-control-server",
-  "version": "0.6.148",
+  "version": "0.6.149",
   "private": true,
   "type": "module",
   "scripts": {

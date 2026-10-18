@@ -524,7 +524,7 @@ try {
       db.exec('CREATE TABLE thread_goals(thread_id TEXT PRIMARY KEY,goal_id TEXT,objective TEXT,status TEXT,token_budget INTEGER,tokens_used INTEGER,created_at_ms INTEGER,updated_at_ms INTEGER,time_used_seconds INTEGER)');
       db.prepare('INSERT INTO thread_goals VALUES(?,?,?,?,?,?,?,?,?)').run(thread.id,'goal-1','检查图片并整理输出','active',null,120,Date.now(),Date.now(),15001);
       await openSidebar(page);await page.locator('#refreshThreads').click();
-      await page.locator('#activeGoals .goal-row').filter({hasText:'检查图片并整理输出'}).waitFor({state:'detached'});
+      await page.locator('#activeGoals .goal-row').filter({hasText:'UI_SMOKE'}).waitFor({state:'detached'});
       await page.locator('.composer-wrap #goalDock').waitFor();
       await page.locator('#goalChipStatus').getByText('已就绪',{exact:true}).waitFor();
       await page.locator('#threadGoal').getByText('目标：检查图片并整理输出',{exact:true}).waitFor();
@@ -543,7 +543,7 @@ try {
       const historySnapshot=await (await fetch(base+`/api/threads/${thread.id}/events`,{headers:{Authorization:'Bearer '+token}})).json();
       await page.route(historyRoute,route=>route.fulfill({json:{...historySnapshot,status:goalRunning?'running':'interrupted'}}));
       await page.locator('#refreshThreads').click();
-      await page.locator('#activeGoals .goal-row').filter({hasText:'检查图片并整理输出'}).waitFor();
+      await page.locator('#activeGoals .goal-row').filter({hasText:'UI_SMOKE'}).waitFor();
       await page.locator('#goalChipStatus').getByText('进行中',{exact:true}).waitFor();
       await page.route(`**/api/threads/${thread.id}/goal`,async route=>{
         const status=route.request().postDataJSON().status;pauseStatuses.push(status);
@@ -589,7 +589,7 @@ try {
       });
       await page.locator('#closeGoal').click();
       await page.waitForFunction(()=>document.querySelector('#goalDock').hidden);
-      await page.locator('#activeGoals .goal-row').filter({hasText:'检查图片并整理输出'}).waitFor({state:'detached'});
+      await page.locator('#activeGoals .goal-row').filter({hasText:'UI_SMOKE'}).waitFor({state:'detached'});
       await page.unroute(`**/api/threads/${thread.id}/goal`);
     }finally{db.close()}
   });

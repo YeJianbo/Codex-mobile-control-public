@@ -4,13 +4,13 @@
 
 ## 下载与安装
 
-当前配套发行版为 **0.6.446**，见 [GitHub Releases](https://github.com/YeJianbo/Codex-mobile-control/releases/tag/v0.6.446)。本版优化应用内通知圆角，修复新结果未读和桌面写入冲突排队；所有 Harness 默认允许公网连接，并可在助手管理中分别关闭。跨 Harness 能力及实际检查结果见 [功能对照](docs/feature-parity.md)。
+当前配套发行版为 **0.6.447**，见 [GitHub Releases](https://github.com/YeJianbo/Codex-mobile-control/releases/tag/v0.6.447)。本版统一模型身份与显示名称，模型目录分批加载；配置原子保存、提交记录逐条持久化，并限制慢连接积压。Android 与 Web 按领域整理，保留原有界面与操作。跨 Harness 能力及实际检查结果见 [功能对照](docs/feature-parity.md)。
 
 | 文件 | 适用情况 |
 | --- | --- |
-| `Codex-Control-0.6.446.apk` | 手机安装或覆盖升级；完整修复需配套新网关 |
-| `Codex-Control-0.6.446-Setup-x64.exe` | 新电脑安装，内含 Web 控制台、Gateway、Node 及生产依赖 |
-| `Codex-Control-0.6.446-Windows-x64-Release.zip` | Windows 安装程序、配套 APK、使用说明与组件清单 |
+| `Codex-Control-0.6.447.apk` | 手机安装或覆盖升级；完整修复需配套新网关 |
+| `Codex-Control-0.6.447-Setup-x64.exe` | 新电脑安装，内含 Web 控制台、Gateway、Node 及生产依赖 |
+| `Codex-Control-0.6.447-Windows-x64-Release.zip` | Windows 安装程序、配套 APK、使用说明与组件清单 |
 
 首次使用按 [安装与绑定说明](docs/installation.md) 完成电脑安装和手机扫码；日常操作见 [手机使用说明](docs/mobile-usage.md)。仓库为私有时，下载需要登录有访问权限的 GitHub 账号。
 

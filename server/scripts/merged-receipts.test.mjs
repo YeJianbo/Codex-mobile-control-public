@@ -1,25 +1,27 @@
-import test from 'node:test';
+import test,{after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {CommandReceipts} from '../src/services/commandReceipts.ts';
-import {MessageSubmissions} from '../src/services/messageSubmissions.ts';
+import {readSubmissionStatus} from '../src/services/messageSubmissions.ts';
 import {CloudSnapshots} from '../src/services/cloudSnapshots.ts';
 const home=await fs.mkdtemp(path.join(os.tmpdir(),'cmc-merged-receipts-'));
-const ledger=(name)=>new CommandReceipts(path.join(home,name+'.json'));
+const opened=[];
+const ledger=(name)=>{const value=new CommandReceipts(path.join(home,name+'.json'));opened.push(value);return value;};
+after(async()=>{for(const value of opened)value.close();await fs.rm(home,{recursive:true,force:true});});
 
 test('mobile confirmation uses the same durable receipt and blocks unknown timeout retry',async()=>{
- const receipts=ledger('facade'),submissions=new MessageSubmissions();
+ const receipts=ledger('facade');
  const command={type:'turn.start',requestId:'timeout',threadId:'t',text:'body',permission:'ask',files:[{id:'file',name:'x',mime:'text/plain',size:4}]};let calls=0;
  await assert.rejects(receipts.run(command,async()=>{calls++;throw Error('RPC timeout');},()=>{}));
- assert.equal((await submissions.persistentStatus('timeout',[],receipts,'t')).state,'uncertain');
+ assert.equal((await readSubmissionStatus('timeout',[],receipts,'t')).state,'uncertain');
  await assert.rejects(receipts.run({...command,permission:'full'},async()=>{calls++;},()=>{}),/不同内容/);
  await assert.rejects(receipts.run(command,async()=>{calls++;},()=>{}));assert.equal(calls,1);
- const restarted=new CommandReceipts(path.join(home,'facade.json'));
- assert.equal((await submissions.persistentStatus('timeout',[],restarted,'t')).state,'uncertain');
+ const restarted=ledger('facade');
+ assert.equal((await readSubmissionStatus('timeout',[],restarted,'t')).state,'uncertain');
  const accepted={type:'user.message',threadId:'t',requestId:'timeout',eventId:'a',text:'body'};
- assert.equal((await submissions.persistentStatus('timeout',[accepted],restarted,'t')).state,'accepted');
+ assert.equal((await readSubmissionStatus('timeout',[accepted],restarted,'t')).state,'accepted');
 });
 
 test('accepted queued receipt replays clicks but only its internal consumer executes it',async()=>{

@@ -1,18 +1,21 @@
+import {createManagementController} from '../public/management-controller.js';
+import {createSettingsController} from '../public/settings-controller.js';
+import {modelHarness} from '../public/model-identity.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
-import {mergeEvents,retainCompaction,errorMessage} from '../public/console-core.js';
+import {mergeEvents,retainCompaction,errorMessage,restoreActivityDetails} from '../public/console-core.js';
 
 // These delayed-promise regressions execute the shipped source, not alternate
 // implementations. DOM mocks cover state/ownership only: no layout, scroll
 // physics, animation-frame, or real-browser rendering QA is claimed here.
 const source=(await fs.readFile(process.env.CMC_CONSOLE_SOURCE||new URL('../public/console.js',import.meta.url),'utf8')).replaceAll('\r\n','\n');
 function section(start,end){const a=source.indexOf(start),b=source.indexOf(end,a+start.length);assert(a>=0&&b>a,`Missing shipped source section: ${start}`);return source.slice(a,b);}
-const codexServiceCode=section("let codexStatusTicket=0,",'async function refreshDevices()');
 const questionCode=source.slice(source.indexOf('const questionDrafts=new Map();'));
 const approvalCode=section('let approvalRefreshTicket=','function fileDirty()');
 const threadCode=section('function conversationThreadKey(','function renderThreads()');
+const selectionCode=section('function setConversationSelection(','async function selectProject(')+section('function sameConversationData(','let conversationThread =');
 const historyCode=section('function sameConversationEvents(','const slashCommands=');
 const navigationCode=section('async function newThread()','const desktopModelSettings=');
 const queueCode=section('async function refreshQueue(','async function queueAction(');
@@ -55,9 +58,9 @@ function fixture({initial='A',imports=false,restores=false,enqueues=false,saves=
   const el=(tag,className,text)=>{const node=new MockNode(tag,className||'',text);nodes.push(node);return node;};
   const button=(label,action,className)=>{const node=el('button',className,label);node.onclick=action;const list=buttons.get(label)||[];list.push(node);buttons.set(label,list);return node;};
   const body=new MockNode('body');body.connect(true);
-  const state={threadId:initial,selection:0,generation:1,approvals:[],threads:['A','B','C'].map(id=>({id,title:id,status:'idle',projectPath:'/project'})),projects:[],models:[],harness:'codex',hydrating:new Map(),historyLoading:new Set(),historyCount:new Map(),historyMore:new Map(),events:new Map(),writerLocked:new Set(),pending:null,connected:true,capabilities:['cloud-snapshot-readonly','queue-draft-recovery'],drafts:JSON.parse(storage.get('cmc.drafts')||'{}'),imageDrafts:JSON.parse(storage.get('cmc.imageDrafts')||'{}'),fileDrafts:JSON.parse(storage.get('cmc.fileDrafts')||'{}')};
+  const state={threadId:initial,selection:0,generation:1,approvals:[],threads:['A','B','C'].map(id=>({id,title:id,status:'idle',projectPath:'/project'})),projects:[],models:[],harness:'codex',hydrating:new Map(),historyLoading:new Set(),historyCount:new Map(),historyMore:new Map(),historyErrors:new Map(),events:new Map(),writerLocked:new Set(),pending:null,connected:true,capabilities:['cloud-snapshot-readonly','queue-draft-recovery'],drafts:JSON.parse(storage.get('cmc.drafts')||'{}'),imageDrafts:JSON.parse(storage.get('cmc.imageDrafts')||'{}'),fileDrafts:JSON.parse(storage.get('cmc.fileDrafts')||'{}')};
   $('chatModel').value='gpt-6.1-sol';$('chatModel').options=[{value:'gpt-6.1-sol',disabled:false}];$('chatEffort').value='high';$('chatEffort').options=[{value:'high'}];
-  const context={state,$,el,button,document:{body,activeElement:null},desktopModelSettings:new Map(),mergeEvents,retainCompaction,errorMessage,followConversation:true,
+  const context={state,$,el,button,AbortController,clearTimeout,setTimeout,modelHarness,restoreActivityDetails,conversationGeneration:-1,focusEventStream:()=>null,cancelActivityReads(){},syncDesktopModelSettings:()=>false,queuedMessageCopyButton:()=>button('复制',()=>{}),document:{body,activeElement:null},desktopModelSettings:new Map(),mergeEvents,retainCompaction,errorMessage,followConversation:true,
     api:(path,options)=>{const response=deferred();requests.push({path,options,...response,settled:false});return response.promise;},
     activeThread:()=>state.threads.find(thread=>thread.id===state.threadId),onlineRequired:()=>true,
     renderThreads(){},renderProjects(){},updateControls(){},updateContext(){},queueRender(){},storeDraft(){},restoreDraft(){},fillModelChoices(){},fillChatEfforts(){},showPage(){},closeDrawer(){},updateHarnessLabel(){},safeRead:key=>storage.get(key)||'',safeWrite:(key,value)=>storage.set(key,value),harnessForThread:()=> 'codex',comparablePath:value=>value,rememberReadingAnchor(){},
@@ -68,13 +71,31 @@ function fixture({initial='A',imports=false,restores=false,enqueues=false,saves=
   if(restores||enqueues){
     Object.assign(context,{draftKey:()=>`thread:${state.threadId}`,saveImageDrafts(){},saveFileDrafts(){},renderImageDrafts(){},renderFileDrafts(){},resizeComposer(){},slashOptions:()=>({mode:'default'}),requestId:()=> 'queued-id',commitComposerModes(){},run:action=>Promise.resolve(action()).catch(error=>toasts.push(error.message))});
   }
-  context.renderConversation=()=>{renders.push(state.threadId);vm.runInContext('updateConversationHistoryState();'+queueNavigationLine,context);};
-  vm.runInContext(threadCode+historyCode+navigationCode+queueCode+(imports?importCode:'')+restoreQueueCode+(enqueues?enqueueCode:'')+(saves?fileSaveCode:'')+(questions?approvalCode+questionCode:'')+(services?codexServiceCode:''),context);
+  context.renderConversation=()=>{renders.push(state.threadId);context.conversationGeneration=state.generation;vm.runInContext('updateConversationHistoryState();'+queueNavigationLine,context);};
+  vm.runInContext(threadCode+selectionCode+historyCode+navigationCode+queueCode+(imports?importCode:'')+restoreQueueCode+(enqueues?enqueueCode:'')+(saves?fileSaveCode:'')+(questions?approvalCode+questionCode:''),context);
   const call=(name,...args)=>{context.__args=args;return vm.runInContext(`${name}(...__args)`,context);};
   if(imports)context.openThread=async thread=>{opened.push(thread.id);state.threadId=thread.id;state.selection++;};
   const pending=fragment=>requests.filter(request=>!request.settled&&request.path.includes(fragment));
   const settle=(request,value,reject=false)=>{assert(request&&!request.settled,'Expected an outstanding API call');request.settled=true;request[reject?'reject':'resolve'](value);};
-  return{state,$,nodes,buttons,requests,context,storage,call,pending,settle,opened,toasts,renders,dialog:()=>nodes.find(node=>node.tag==='dialog'),input:()=>nodes.find(node=>node.tag==='textarea'),file:()=>nodes.find(node=>node.tag==='input')};
+  const result={state,$,nodes,buttons,requests,context,storage,call,pending,settle,opened,toasts,renders,dialog:()=>nodes.find(node=>node.tag==='dialog'),input:()=>nodes.find(node=>node.tag==='textarea'),file:()=>nodes.find(node=>node.tag==='input')};
+  if(services)installManagement(result);
+  return result;
+}
+
+function installManagement(f){
+  const context=f.context;
+  Object.assign(context,createManagementController({...context,
+    api:(...args)=>context.api(...args),confirmAction:(...args)=>context.confirmAction(...args),
+    renderProjects:(...args)=>context.renderProjects(...args),refreshProjects:(...args)=>context.refreshProjects(...args),
+  }));
+}
+function installSettings(f){
+  const context=f.context;
+  Object.assign(context,createSettingsController({...context,
+    api:(...args)=>context.api(...args),loadModels:(...args)=>context.loadModels(...args),
+    fillModelChoices:(...args)=>context.fillModelChoices(...args),fillChatEfforts:(...args)=>context.fillChatEfforts(...args),
+    refreshCodex:(...args)=>context.refreshCodex(...args),
+  }));
 }
 const history=(id,text,hasMore=false)=>({events:[{threadId:id,eventId:`${id}:message`,itemId:'message',type:'message.delta',text}],status:'idle',hasMore});
 const message=(text,error)=>({id:text,text,status:error?'failed':'queued',...(error?{error}:{})});
@@ -192,7 +213,7 @@ function queueText(f){const host=f.$('followupQueue');return host.hidden?'':host
 // Thread-list races must not resurrect removed metadata or clear a selection
 // based on a response older than the most recent request.
 test('overlapping thread refreshes retain the newest list and its active selection',async()=>{
-  const f=fixture(),first=f.call('refreshThreads'),second=f.call('refreshThreads');
+  const f=fixture(),first=f.call('readThreads'),second=f.call('readThreads');
   const [older,newer]=f.pending('/api/threads');
   f.settle(newer,{threads:[{id:'A',title:'new title',status:'running'}]});await second;
   f.settle(older,{threads:[{id:'B',title:'stale list',status:'idle'}]});await first;
@@ -201,7 +222,7 @@ test('overlapping thread refreshes retain the newest list and its active selecti
 });
 test('overlapping metadata refreshes cannot roll a completed snapshot back to running',async()=>{
   const f=fixture();f.state.threads=[{id:'A',readOnly:true,snapshotStatus:'running'}];
-  const first=f.call('refreshThreads'),second=f.call('refreshThreads');const [older,newer]=f.pending('/api/threads');
+  const first=f.call('readThreads'),second=f.call('readThreads');const [older,newer]=f.pending('/api/threads');
   f.settle(newer,{threads:[{id:'A',readOnly:true,snapshotStatus:'completed'}]});await second;
   f.settle(older,{threads:[{id:'A',readOnly:true,snapshotStatus:'running'}]});await first;
   assert.equal(f.state.threads[0].snapshotStatus,'completed');
@@ -260,7 +281,8 @@ test('a superseded same-generation pagination finally cannot release its newer s
 });
 
 test('a superseded history request failure is silent after a newer response succeeds',async()=>{
-  const f=fixture(),first=f.call('loadThread','A'),firstOutcome=first.then(()=>null,error=>error),second=f.call('loadThread','A');
+  const f=fixture(),first=f.call('loadThread','A'),firstOutcome=first.then(()=>null,error=>error);
+  f.call('setConversationSelection','A');const second=f.call('loadThread','A');
   const [older,newer]=f.pending('/A/events');f.settle(newer,history('A','newest'));await flush();f.settle(f.pending('/A/queue')[0],{messages:[]});await second;
   f.settle(older,Error('obsolete request offline'),true);const failure=await firstOutcome;
   assert.equal(failure,null,'an obsolete failure must not propagate a false current-conversation error');
@@ -584,7 +606,7 @@ test('diff actions identify completed unstaging when list refresh fails',async()
 function terminalActionFixture(){
   const f=fixture();Object.assign(f.state,{terminalProject:'p',terminalRequest:0,activeTerminal:'old',terminalCommands:[],terminalSubmitting:false});
   Object.assign(f.context,{isInteractive:record=>Boolean(record?.interactive),renderTerminalList(){},syncTerminalOutput(){},selectTerminal:id=>{f.state.activeTerminal=id;}});
-  vm.runInContext(section('async function refreshTerminals()', 'function renderTerminalList()')+section('async function newTerminal()', 'const terminalStops='),f.context);return f;
+  vm.runInContext(section('async function refreshTerminals(', 'function renderTerminalList()')+section('async function newTerminal()', 'const terminalStops='),f.context);return f;
 }
 test('terminal actions ignore old list replies and replaced connections',async()=>{
   const f=terminalActionFixture(),first=f.call('refreshTerminals'),second=f.call('refreshTerminals');f.settle(f.requests[1],{commands:[{commandId:'latest'}]});await second;
@@ -609,7 +631,7 @@ test('terminal actions serialize creation and report creation separately from re
 
 function terminalStopFixture(){
   const f=terminalActionFixture();f.state.terminalCommands=[{commandId:'old',status:'running',interactive:true},{commandId:'other',status:'running'}];
-  vm.runInContext(section('const terminalStops=', 'async function loadSettings('),f.context);f.context.refreshTerminals=async()=>{};return f;
+  vm.runInContext(section('const terminalStops=', 'const {loadSettings} ='),f.context);f.context.refreshTerminals=async()=>{};return f;
 }
 test('terminal stop blocks duplicate requests and restores the button on failure',async()=>{
   const f=terminalStopFixture(),stop=f.call('stopTerminal');await f.call('stopTerminal');assert.equal(f.requests.length,1);assert.equal(f.$('stopTerminalBtn').disabled,true);assert.equal(f.$('stopTerminalBtn').attributes['aria-busy'],'true');assert(f.requests[0].path.includes('/sessions/old/stop'));
@@ -626,10 +648,11 @@ test('terminal stop ignores old connection errors and does not stop completed re
   f.state.terminalCommands[0].status='completed';await f.call('stopTerminal');assert.equal(f.requests.length,1);f.call('updateTerminalStopControl');assert.equal(f.$('stopTerminalBtn').disabled,true);
 });
 
-function settingsSaveFixture(){
+function settingsSaveFixture({autoRead=true}={}){
   const f=fixture();Object.assign(f.state,{settingsLoaded:true,rawSettingsLoaded:true,settingsDirty:true,rawDirty:true,settings:{}});
-  f.context.loadSettings=async()=>{};
-  vm.runInContext(section('const settingsFields =', 'function fillSettings()')+section('function readSettingsForm()', 'let codexStatusTicket='),f.context);return f;
+  f.context.loadModels=async()=>{};f.context.refreshCodex=async()=>{};
+  if(autoRead){const api=f.context.api;f.context.api=(url,options)=>options?.method==='PUT'?api(url,options):f.context.settingsReadError?Promise.reject(f.context.settingsReadError):Promise.resolve(settingsReadValue(url));}
+  installSettings(f);return f;
 }
 test('settings save preserves edits made while the submitted version is pending',async()=>{
   const f=settingsSaveFixture();f.$('settingModel').value='first';const saving=f.call('saveSettings');f.$('settingModel').value='next';await f.call('saveSettings');await f.call('saveRawConfig');assert.equal(f.requests.length,1);
@@ -641,8 +664,8 @@ test('settings save raw content keeps ordinary settings and newer raw input dirt
 });
 test('settings save preserves failed drafts and separates post-save refresh failure',async()=>{
   const f=settingsSaveFixture(),first=f.call('saveSettings');f.settle(f.requests[0],Error('写入失败'),true);await assert.rejects(first,/写入失败/);assert.equal(f.state.settingsDirty,true);assert.equal(f.state.settingsSaving,false);
-  f.context.loadSettings=async()=>{throw Error('刷新失败');};const retry=f.call('saveSettings');f.settle(f.requests[1],{settings:{}});await retry;
-  assert.equal(f.state.settingsDirty,false);assert(f.toasts.some(args=>args[0]==='设置已保存，设置刷新失败：刷新失败'));
+  f.context.settingsReadError=Error('刷新失败');const retry=f.call('saveSettings');f.settle(f.requests[1],{settings:{}});await retry;
+  assert.equal(f.state.settingsDirty,false);assert(f.toasts.some(args=>args[0]==='设置已保存，部分设置读取失败，请在设置页重试。'));
 });
 test('settings save ignores a replaced connection',async()=>{
   const f=settingsSaveFixture(),saving=f.call('saveSettings');f.state.generation++;
@@ -651,7 +674,7 @@ test('settings save ignores a replaced connection',async()=>{
 
 function modelListFixture(){
   const f=fixture();f.context.Option=function(label,value){const node=new MockNode('option','',label);node.value=value;return node;};
-  vm.runInContext(section('async function loadModels()', 'function fillModelChoices()'),f.context);return f;
+  vm.runInContext(section('async function loadModels()', 'function fillModelChoices('),f.context);return f;
 }
 test('model listing ignores an older failure after new model choices arrive',async()=>{
   const f=modelListFixture(),first=f.call('loadModels'),second=f.call('loadModels');
@@ -661,9 +684,9 @@ test('model listing ignores an older failure after new model choices arrive',asy
 test('model listing preserves current failure state and ignores replaced connections',async()=>{
   const f=modelListFixture(),first=f.call('loadModels'),second=f.call('loadModels');f.state.backends=[{id:'old-backend'}];
   f.settle(f.requests[1],Error('当前读取失败'),true);await assert.rejects(second,/当前读取失败/);f.settle(f.requests[0],{models:[{model:'outdated'}]});await first;
-  assert.equal(f.state.models.length,0);assert.equal(f.state.backends.length,0);assert.equal(f.$('chatModel').disabled,true);assert.equal(f.toasts.length,1);
+  assert.equal(f.state.models.length,0);assert.equal(f.state.backends.length,0);assert.equal(f.$('chatModel').disabled,true);assert.equal(f.toasts.length,0);
   const third=f.call('loadModels');f.state.generation++;f.state.models=[{model:'new-connection'}];f.settle(f.requests[2],Error('断开的请求'),true);await third;
-  assert.equal(f.state.models[0].model,'new-connection');assert.equal(f.toasts.length,1);
+  assert.equal(f.state.models[0].model,'new-connection');assert.equal(f.toasts.length,0);
 });
 
 function localPreviewFixture(){
@@ -684,7 +707,7 @@ test('local preview failures preserve existing content and replaced connections'
 });
 
 function upgradeFixture(){
-  const f=fixture();vm.runInContext(section('let upgradeCheck=', 'let localPreviewTicket='),f.context);return f;
+  const f=fixture();installManagement(f);return f;
 }
 test('upgrade check distinguishes unknown versions from current versions',async()=>{
   const f=upgradeFixture(),unknown=f.call('checkUpgrade');await f.call('checkUpgrade');assert.equal(f.requests.length,1);assert.equal(f.$('checkUpgradeBtn').disabled,true);
@@ -698,43 +721,23 @@ test('upgrade check can retry failures and ignores old connection results',async
   f.settle(f.requests[2],{upgrade:{error:'升级检查已关闭'}});await current;assert.equal(f.$('upgradeStatus').textContent,'检查更新失败：升级检查已关闭');assert.equal(f.$('checkUpgradeBtn').disabled,false);
 });
 
-function deviceListFixture(){
-  const f=fixture();f.context.confirmAction=async()=>true;vm.runInContext(section('let devicesRequest=', 'function renderRoots()'),f.context);return f;
-}
-test('device listing ignores old replies and offers retry after failure',async()=>{
-  const f=deviceListFixture(),first=f.call('refreshDevices'),second=f.call('refreshDevices');f.settle(f.requests[1],{devices:[{id:'new',name:'新设备'}]});await second;
-  f.settle(f.requests[0],{devices:[]});await first;assert.equal(f.$('devices').children[0].children[0].children[0].textContent,'新设备');
-  const failed=f.call('refreshDevices');f.settle(f.requests[2],Error('读取失败'),true);await assert.rejects(failed,/读取失败/);assert.match(f.$('devices').children[0].textContent,/设备列表读取失败/);assert.equal(f.$('devices').children[1].textContent,'重试');
-});
-test('device listing revocation checks confirmation scope and prevents duplicate requests',async()=>{
-  const f=deviceListFixture(),load=f.call('refreshDevices');f.settle(f.requests[0],{devices:[{id:'device',name:'测试设备'}]});await load;
-  const confirm=deferred();f.context.confirmAction=()=>confirm.promise;const revoke=f.$('devices').children[0].children[1],pending=revoke.onclick();await revoke.onclick();assert.equal(revoke.disabled,true);assert.equal(f.requests.length,1);
-  f.state.generation++;confirm.resolve(true);await pending;assert.equal(f.requests.length,1);assert.equal(revoke.disabled,false);
-});
-test('device listing distinguishes successful revocation from failed refresh',async()=>{
-  const f=deviceListFixture(),load=f.call('refreshDevices');f.settle(f.requests[0],{devices:[{id:'device',name:'测试设备'}]});await load;
-  const revoke=f.$('devices').children[0].children[1],pending=revoke.onclick();await flush();assert.equal(f.requests[1].options.method,'DELETE');
-  f.settle(f.requests[1],{});await flush();f.settle(f.requests[2],Error('离线'),true);await pending;
-  assert(f.toasts.some(args=>args[0]==='设备已撤销，列表刷新失败：离线'));assert.match(f.$('devices').children[0].textContent,/设备列表读取失败/);
-});
-
 function projectListFixture(){
   const f=fixture();Object.assign(f.state,{projects:[{id:'old',path:'/old',trusted:true}],sidebarProjects:[{id:'old',path:'/old',trusted:true}],chatProject:'old'});
-  f.projectRenders=[];f.context.renderProjects=()=>f.projectRenders.push(f.state.projects.map(project=>project.id));vm.runInContext(section('async function refreshProjects()', 'function renderProjects()'),f.context);return f;
+  f.projectRenders=[];f.context.renderProjects=()=>f.projectRenders.push(f.state.projects.map(project=>project.id));vm.runInContext(section('let projectListRead=', 'function renderProjects()'),f.context);return f;
 }
 test('project listing applies allowed projects when the sidebar fails',async()=>{
-  const f=projectListFixture(),load=f.call('refreshProjects');f.settle(f.requests[0],{projects:[{id:'allowed',path:'/allowed',trusted:true}]});await flush();assert.equal(f.state.projects[0].id,'old');
+  const f=projectListFixture(),load=f.call('readProjects');f.settle(f.requests[0],{projects:[{id:'allowed',path:'/allowed',trusted:true}]});await flush();assert.equal(f.state.projects[0].id,'old');
   f.settle(f.requests[1],Error('侧边栏故障'),true);await load;assert.equal(f.state.projects[0].id,'allowed');assert.equal(f.state.sidebarProjects[0].id,'allowed');assert.equal(f.projectRenders.length,1);assert.equal(f.toasts.length,1);
-  const again=f.call('refreshProjects');f.settle(f.requests[2],{projects:f.state.projects});f.settle(f.requests[3],Error('侧边栏故障'),true);await again;assert.equal(f.toasts.length,1);
+  const again=f.call('readProjects');f.settle(f.requests[2],{projects:f.state.projects});f.settle(f.requests[3],Error('侧边栏故障'),true);await again;assert.equal(f.toasts.length,1);
 });
 test('project listing retains both old lists when the primary read fails',async()=>{
-  const f=projectListFixture(),load=f.call('refreshProjects');f.settle(f.requests[0],Error('项目读取失败'),true);f.settle(f.requests[1],{projects:[{id:'sidebar-new'}]});await assert.rejects(load,/项目读取失败/);
+  const f=projectListFixture(),load=f.call('readProjects');f.settle(f.requests[0],Error('项目读取失败'),true);f.settle(f.requests[1],{projects:[{id:'sidebar-new'}]});await assert.rejects(load,/项目读取失败/);
   assert.equal(f.state.projects[0].id,'old');assert.equal(f.state.sidebarProjects[0].id,'old');assert.equal(f.state.chatProject,'old');assert.equal(f.projectRenders.length,0);
 });
 test('project listing ignores older refreshes and replaced connections',async()=>{
-  const f=projectListFixture(),old=f.call('refreshProjects'),current=f.call('refreshProjects');f.settle(f.requests[2],{projects:[{id:'new'}]});f.settle(f.requests[3],{projects:[{id:'new'}]});await current;
+  const f=projectListFixture(),old=f.call('readProjects'),current=f.call('readProjects');f.settle(f.requests[2],{projects:[{id:'new'}]});f.settle(f.requests[3],{projects:[{id:'new'}]});await current;
   f.settle(f.requests[0],{projects:[]});f.settle(f.requests[1],{projects:[]});await old;assert.equal(f.state.projects[0].id,'new');
-  const disconnected=f.call('refreshProjects');f.state.generation++;f.settle(f.requests[4],Error('旧连接'),true);f.settle(f.requests[5],{projects:[]});await disconnected;assert.equal(f.state.projects[0].id,'new');assert.equal(f.projectRenders.length,1);
+  const disconnected=f.call('readProjects');f.state.generation++;f.settle(f.requests[4],Error('旧连接'),true);f.settle(f.requests[5],{projects:[]});await disconnected;assert.equal(f.state.projects[0].id,'new');assert.equal(f.projectRenders.length,1);
 });
 
 function projectSubmitFixture(){
@@ -761,7 +764,7 @@ test('project submit ignores an old connection and preserves later navigation',a
 
 function rootRemovalFixture(){
   const f=fixture();Object.assign(f.state,{projects:[{id:'project',name:'测试项目',path:'/work'}],sidebarProjects:[{id:'project',path:'/work'}]});Object.assign(f.context,{confirmAction:async()=>true,refreshProjects:async()=>{}});
-  vm.runInContext(section('const removingRoots=', 'async function pairStart()'),f.context);return f;
+  installManagement(f);return f;
 }
 test('root removal preserves cancellation and validates the confirmed connection',async()=>{
   const f=rootRemovalFixture(),project=f.state.projects[0];f.context.confirmAction=async()=>false;await f.call('removeProjectRoot',project,1);assert.equal(f.requests.length,0);assert.equal(f.state.projects.length,1);
@@ -774,27 +777,6 @@ test('root removal serializes duplicate actions and restores controls after fail
 test('root removal keeps committed state when the subsequent list refresh fails',async()=>{
   const f=rootRemovalFixture();f.context.refreshProjects=async()=>{throw Error('列表离线');};const remove=f.call('removeProjectRoot',f.state.projects[0],1);await flush();f.settle(f.requests[0],{});await remove;
   assert.equal(f.state.projects.length,0);assert.equal(f.state.sidebarProjects.length,0);assert(f.toasts.some(args=>args[0]==='项目访问权限已移除，列表刷新失败：列表离线'));assert.equal(f.$('projectRoots').children[0].textContent,'还没有添加项目目录。');
-});
-
-function pairingFixture(){
-  const f=fixture();f.context.openDialog=id=>{if(!f.$(id).open)f.$(id).showModal();};f.context.DOMPurify={sanitize:value=>value};f.context.Option=function(label,value){const node=new MockNode('option','',label);node.value=value;return node;};
-  vm.runInContext(section('let pairRequest=', 'let upgradeCheck='),f.context);return f;
-}
-const mockPair=baseUrl=>({addresses:[{name:'测试地址',url:baseUrl}],baseUrl,qrSvg:'<svg></svg>',code:'mock-code',expiresAt:'2030-01-01T00:00:00Z'});
-test('pairing request clears old details and ignores older address replies',async()=>{
-  const f=pairingFixture();f.$('pairCode').textContent='old';f.$('pairWebLink').setAttribute('href','old');f.$('pairAddress').value='http://first';
-  const first=f.call('pairStart');await f.call('pairStart');assert.equal(f.requests.length,1);assert.equal(f.$('pairCode').textContent,'');assert.equal(f.$('pairWebLink').attributes.href,undefined);assert.equal(f.$('refreshPair').disabled,true);
-  f.$('pairAddress').value='http://second';const second=f.call('pairStart');f.settle(f.requests[1],mockPair('http://second'));await second;f.settle(f.requests[0],mockPair('http://first'));await first;
-  assert.equal(f.$('pairAddress').value,'http://second');assert.equal(f.$('pairWebLink').href,'http://second/console');assert.equal(f.$('refreshPair').disabled,false);
-});
-test('pairing request cannot reopen a closed dialog',async()=>{
-  const f=pairingFixture(),pending=f.call('pairStart');assert.equal(f.$('pairDialog').open,true);f.$('pairDialog').close();f.settle(f.requests[0],mockPair('http://test'));await pending;
-  assert.equal(f.$('pairDialog').open,false);assert.equal(f.$('pairCode').textContent,'');assert.equal(f.$('refreshPair').disabled,false);
-});
-test('pairing request failure offers retry and old connections cannot replace details',async()=>{
-  const f=pairingFixture(),first=f.call('pairStart');f.settle(f.requests[0],Error('连接失败'),true);await first;assert.match(f.$('pairExpiry').textContent,/配对码生成失败.*刷新配对码重试/);assert.equal(f.$('refreshPair').disabled,false);
-  const retry=f.call('pairStart');f.state.generation++;f.settle(f.requests[1],mockPair('http://old'));await retry;assert.equal(f.$('pairCode').textContent,'');
-  const latest=f.call('pairStart');f.settle(f.requests[2],mockPair('http://current'));await latest;assert.equal(f.$('pairWebLink').href,'http://current/console');
 });
 
 function copyFixture(){
@@ -883,20 +865,6 @@ test('confirmation queue handles Escape, external close and obsolete connections
   const active=f.call('confirmAction','旧操作','说明'),queued=f.call('confirmAction','旧排队操作','说明');await flush();f.state.generation++;f.$('confirmAccept').onclick();f.deliverClose();assert.equal(await active,false);assert.equal(await queued,false);assert.equal(f.$('confirmDialog').open,false);
 });
 
-function passwordSaveFixture(){
-  const f=fixture();f.$('publicPassword').value='test-only-123';f.$('publicPasswordConfirm').value='test-only-123';vm.runInContext(section('let publicPasswordSaving=', '$("saveRawBtn").onclick'),f.context);return f;
-}
-test('password save blocks duplicates and preserves input typed after submission',async()=>{
-  const f=passwordSaveFixture(),first=f.call('savePublicPassword');await f.call('savePublicPassword');assert.equal(f.requests.length,1);assert.equal(f.$('savePublicPasswordBtn').disabled,true);
-  f.$('publicPassword').value='new-test-input';f.$('publicPasswordConfirm').value='new-test-input';f.settle(f.requests[0],{});await first;
-  assert.equal(f.$('publicPassword').value,'new-test-input');assert.equal(f.$('publicPasswordConfirm').value,'new-test-input');assert.equal(f.$('savePublicPasswordBtn').disabled,false);assert(f.toasts.some(args=>args[0].includes('后续输入尚未保存')));
-});
-test('password save retains failed input and clears only an unchanged successful submission',async()=>{
-  const f=passwordSaveFixture(),failed=f.call('savePublicPassword');f.settle(f.requests[0],Error('保存失败'),true);await assert.rejects(failed,/保存失败/);assert.equal(f.$('publicPassword').value,'test-only-123');assert.equal(f.$('savePublicPasswordBtn').attributes['aria-busy'],'false');
-  const retry=f.call('savePublicPassword');f.settle(f.requests[1],{});await retry;assert.equal(f.$('publicPassword').value,'');assert.equal(f.$('publicPasswordConfirm').value,'');
-  f.$('publicPassword').value=f.$('publicPasswordConfirm').value='test-only-456';const old=f.call('savePublicPassword');f.state.generation++;f.settle(f.requests[2],{});await old;assert.equal(f.$('publicPassword').value,'test-only-456');
-});
-
 function apiResponseFixture(){
   const f=fixture();f.cleared=0;Object.assign(f.context,{AbortController,setTimeout:()=>1,clearTimeout:()=>{f.cleared++;},fetch:async()=>f.response});
   vm.runInContext(section('async function api(', 'function onlineRequired()'),f.context);return f;
@@ -915,9 +883,9 @@ test('api response accepts explicit empty success and retains HTTP error status'
 test('control refresh updates terminal shortcuts without interrupting other controls',()=>{
   const f=fixture();Object.assign(f.state,{imageDrafts:{},fileDrafts:{},terminalProject:'p',activeTerminal:'terminal',terminalCommands:[{commandId:'terminal',interactive:true,status:'running'}]});
   const submit=new MockNode('button'),shortcut=new MockNode('button');f.$('commandForm').querySelector=()=>submit;f.$('terminalShortcuts').append(shortcut);f.context.document.querySelector=()=>new MockNode();
-  Object.assign(f.context,{changingGoals:new Set(),pendingStops:new Set(),queueSubmitting:false,isRunning:()=>false,draftKey:()=> 'draft',icon:()=>'',fileDirty:()=>false,isInteractive:record=>Boolean(record?.interactive),renderSlashCommands(){},renderCodexStatus(){}});
-  vm.runInContext(section('function updateGoalControls()', 'async function connect(')+section('const terminalStops=', 'async function stopTerminal()')+section('let pairRequest=', 'async function pairStart()')+section('let upgradeCheck=', 'async function checkUpgrade()'),f.context);
-  f.call('updateControls');assert.equal(shortcut.disabled,false);assert.equal(f.$('stopTerminalBtn').disabled,false);assert.equal(submit.disabled,false);
+  Object.assign(f.context,{changingGoals:new Set(),pendingStops:new Set(),queueSubmitting:false,isRunning:()=>false,draftKey:()=> 'draft',icon:()=>'',fileDirty:()=>false,isInteractive:record=>Boolean(record?.interactive),scheduleUploadDraftSync(){},renderSlashCommands(){},renderCodexStatus(){}});
+  vm.runInContext(section('function updateGoalControls()', 'const eventFocus=')+section('const terminalStops=', 'async function stopTerminal()'),f.context);
+  installManagement(f);f.call('updateControls');assert.equal(shortcut.disabled,false);assert.equal(f.$('stopTerminalBtn').disabled,false);assert.equal(submit.disabled,false);
   f.state.settingsLoaded=true;f.state.rawSettingsLoaded=false;f.call('updateControls');assert.equal(f.$('saveSettingsBtn').disabled,false);assert.equal(f.$('saveRawBtn').disabled,true);
   f.state.settingsLoaded=false;f.state.rawSettingsLoaded=true;f.call('updateControls');assert.equal(f.$('saveSettingsBtn').disabled,true);assert.equal(f.$('saveRawBtn').disabled,false);
   f.state.terminalCommands[0].status='completed';f.call('updateControls');assert.equal(shortcut.disabled,true);assert.equal(f.$('stopTerminalBtn').disabled,true);
@@ -925,16 +893,19 @@ test('control refresh updates terminal shortcuts without interrupting other cont
 });
 
 function settingsLoadFixture(){
-  const f=settingsSaveFixture();Object.assign(f.context,{loadModels:async()=>{},fillSettings(){},refreshCodex:async()=>{}});vm.runInContext(section('async function loadSettings(', 'const settingsFields ='),f.context);return f;
+  return settingsSaveFixture({autoRead:false});
+}
+function settingsReadValue(url){
+  return url==='/api/settings/user'?{settings:{model:'test-model'}}:url==='/api/settings/user/raw'?{config:{path:'/test',content:'saved'}}:url==='/api/settings/approval-summary'?{summary:{summary:'summary'}}:url==='/api/settings/remote-approval'?{desktopAutoApprove:false}:url==='/api/settings/capacity-retry'?{enabled:false}:{agents:[]};
 }
 function settleSettingsRead(f,start=0,failed=-1){
-  const values=[{settings:{model:'test-model'}},{config:{path:'/test',content:'saved'}},{summary:{summary:'summary'}},{desktopAutoApprove:false},{publicAccess:{configured:false}}];
-  values.forEach((value,index)=>f.settle(f.requests[start+index],index===failed?Error('读取失败'):value,index===failed));
+  for(let index=0;index<6;index++){const request=f.requests[start+index];f.settle(request,index===failed?Error('读取失败'):settingsReadValue(request.path),index===failed);}
 }
+
 test('settings load disables only the failed configuration and retry restores readiness',async()=>{
   const f=settingsLoadFixture();f.$('rawConfig').value='unsaved';const first=f.call('loadSettings');assert.equal(f.state.settingsLoaded,false);assert.equal(f.state.rawSettingsLoaded,false);settleSettingsRead(f,0,1);const result=await first;
   assert.equal(f.state.settingsLoaded,true);assert.equal(f.state.rawSettingsLoaded,false);assert.match(f.$('settingsLoadMessage').textContent,/完整配置/);assert.equal(f.$('retrySettings').hidden,false);assert.equal(result.errors.length,1);assert.equal(f.$('rawConfig').value,'unsaved');
-  const retry=f.call('loadSettings');settleSettingsRead(f,5);await retry;assert.equal(f.state.rawSettingsLoaded,true);assert.equal(f.$('settingsLoadStatus').hidden,true);assert.equal(f.$('rawConfig').value,'unsaved');
+  const retry=f.call('loadSettings');settleSettingsRead(f,6);await retry;assert.equal(f.state.rawSettingsLoaded,true);assert.equal(f.$('settingsLoadStatus').hidden,true);assert.equal(f.$('rawConfig').value,'unsaved');
 });
 test('settings load still reads raw configuration after model and ordinary settings failures',async()=>{
   const f=settingsLoadFixture();f.context.loadModels=async()=>{throw Error('模型失败');};const first=f.call('loadSettings');settleSettingsRead(f,0,0);const result=await first;

@@ -1,3 +1,6 @@
+import {registerWorkspaceRoutes} from "./routes/workspace.js";
+import {registerGatewaySettings} from './routes/gatewaySettings.js';
+import {registerModelDirectory} from './routes/modelDirectory.js';
 import {AssistantModelCatalog} from './services/assistantModelCatalog.js';
 import {readCodexActivityEventsByIds,readCodexHistoryImageSource,readCodexOutputSourceEventById} from './services/codexSessions.js';
 import {registerThreadFast} from './services/threadFast.js';
@@ -30,7 +33,7 @@ import QRCode from "qrcode";
 import { WebSocketServer } from "ws";
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
-import { loadServerConfig, saveServerConfig, rotateServerToken, serverConfigPath } from "./services/configStore.js";
+import { loadServerConfig, rotateServerToken, serverConfigPath } from "./services/configStore.js";
 import { addProject, addProjectRoot, listProjectRootsWithStatus, listProjects, removeProjectRoot, canonicalProjectPath } from "./services/projects.js";
 import { readApprovalPolicySummary, readUserSettings, readUserSettingsRaw, writeUserSettings, writeUserSettingsRaw } from "./services/codexSettings.js";
 import { EventHub } from "./services/eventHub.js";
@@ -38,7 +41,6 @@ import { CodexAppServerClient } from "./codex/appServerClient.js";
 import { bearerToken, isAuthorizedWithDevices } from "./routes/auth.js";
 import { SessionManager } from "./services/sessionManager.js";
 import { StateStore, stateStorePath } from "./services/stateStore.js";
-import { acceptFileDiff, acceptFileDiffHunk, acceptFileDiffs, listDirectory, listProjectDiffFiles, readFileDiff, readFileDiffHunks, readProjectDiff, readTextFile, resolveRawFile, revertFileDiff, revertFileDiffHunk, revertFileDiffs, writeTextFile } from "./services/workspaceFiles.js";
 import { LocalTerminal } from "./services/localTerminal.js";
 import { httpsListenOptions, readHttpsConfig, updateHttpsConfig } from "./services/httpsConfig.js";
 import { protocolMetadata } from "./protocol.js";
@@ -65,7 +67,6 @@ import {isWriterOccupied,userFacingError} from './services/userFacingError.js';
 import {UsageReader} from './services/usage.js';
 import {watchDeepSeekSessions,deepseekNativeSessions} from './services/deepseekNativeSessions.js';
 import {readCodexGoals} from './services/codexGoals.js';
-import {readRemoteAutoApproval,writeRemoteAutoApproval} from './services/remoteApprovalSettings.js';
 import {verifyDeviceProof} from './services/deviceProof.js';
 import {readPublicAccessSettings,updatePublicAccessPassword,updatePublicAccessSettings} from './services/publicAccessSettings.js';
 import {mergeMobileThreadEvents,mergeDeepSeekThreadEvents,latestMobileThreadLifecycle,recoverMobileUploadFiles,recoverMobileUploadImages} from './services/mobileHistory.js';
@@ -75,7 +76,7 @@ import {registerMobileMaintenance} from './services/mobileMaintenance.js';
 import {registerMobileStatistics} from './services/mobileStatistics.js';
 import {registerMobileSessionsChannels} from './services/mobileSessionsChannels.js';
 import {registerMobileAssistant} from './services/mobileAssistant.js';
-import {MessageSubmissions} from './services/messageSubmissions.js';
+import {readSubmissionStatus} from './services/messageSubmissions.js';
 import {MobileActivityHistory} from './services/mobileActivityHistory.js';
 import {deferLiveActivityDetails} from './services/mobileActivityDetails.js';
 import {historyCompression,registerHistoryCompression} from './services/historyCompression.js';
@@ -96,12 +97,6 @@ const settingsSchema = z.object({
 const rawSettingsSchema = z.object({
   content: z.string().max(256 * 1024),
 });
-const fileQuerySchema = z.object({
-  path: z.string().optional(),
-});
-const writeFileSchema = z.object({
-  content: z.string(),
-});
 const proxyQuerySchema = z.object({
   url: z.string().url(),
 });
@@ -119,41 +114,6 @@ const resumeThreadSchema = z.object({
 });
 const updateThreadSchema = z.object({
   title: z.string().trim().min(1).max(160),
-});
-const runCommandSchema = z.object({
-  command: z.string().min(1).max(2000),
-});
-const terminalSessionSchema = z.object({
-  cols: z.number().int().min(20).max(240).optional(),
-  rows: z.number().int().min(5).max(80).optional(),
-});
-const terminalInputSchema = z.object({
-  text: z.string().min(1).max(20000),
-  appendNewline: z.boolean().optional(),
-});
-const terminalResizeSchema = z.object({
-  cols: z.number().int().min(20).max(240),
-  rows: z.number().int().min(5).max(80),
-});
-const terminalHistoryQuerySchema = z.object({
-  limit: z.coerce.number().int().min(1).max(1000).optional(),
-});
-const terminalCommandsQuerySchema = z.object({
-  limit: z.coerce.number().int().min(1).max(200).optional(),
-  includeOutput: z.enum(["true", "false"]).optional(),
-  previewChars: z.coerce.number().int().min(0).max(100000).optional(),
-});
-const terminalOutputQuerySchema = z.object({
-  offset: z.coerce.number().int().min(0).optional(),
-  limit: z.coerce.number().int().min(1).max(100000).optional(),
-  stream: z.enum(["stdout", "stderr", "combined"]).optional(),
-});
-const diffBatchSchema = z.object({
-  paths: z.array(z.string().min(1)).min(1).max(200),
-});
-const diffHunkSchema = z.object({
-  source: z.enum(["worktree", "staged"]),
-  index: z.number().int().min(0),
 });
 const requestFields = { requestId: z.string().optional() };
 const projectFields = { projectPath: z.string().optional(), model: z.string().optional(), effort:z.string().optional(), mode:z.enum(["plan","default"]).optional(),fast:z.boolean().optional(), permission:z.enum(["ask","auto","full","custom"]).optional() };
@@ -197,7 +157,9 @@ const sessions = new SessionManager(codex, hub, store,undefined,async prompt=>{
 });
 sessions.setCapacityAutoRetry(config.capacityAutoRetry===true);
 app.addHook('onClose',async()=>sessions.closeCapacityRetries());
-const submissions=new MessageSubmissions();
+app.addHook('onClose',async()=>sessions.receipts.close());
+// Protect attachments during preflight, before the execution ledger owns the request.
+let preparingClientSubmissions=0;
 const activityHistory=new MobileActivityHistory();
 for(const thread of store.threads.filter(t=>threadAgent(t.id)!=='codex'&&t.status==='running')){
   await store.upsertThread({id:thread.id,status:'interrupted'});
@@ -242,6 +204,11 @@ const assets: Record<string, [string, string]> = {
   "console.js": ["public/console.js", "text/javascript"],
   "channels-ui.js": ["public/channels-ui.js", "text/javascript"],
   "console-core.js": ["public/console-core.js", "text/javascript"],
+  "model-identity.js": ["public/model-identity.js", "text/javascript"],
+  "model-controls.js": ["public/model-controls.js", "text/javascript"],
+  "settings-controller.js": ["public/settings-controller.js", "text/javascript"],
+  "management-controller.js": ["public/management-controller.js", "text/javascript"],
+  "attachments-controller.js": ["public/attachments-controller.js", "text/javascript"],
   "compaction-events.js": ["public/compaction-events.js", "text/javascript"],
   "thread-family.js": ["public/thread-family.js", "text/javascript"],
   "thread-cache.js": ["public/thread-cache.js", "text/javascript"],
@@ -284,6 +251,7 @@ app.setErrorHandler((error, _request, reply) => {
 app.get("/health", async () => ({
   ok: true,
   ...protocolMetadata(),
+  historyPersistence: {ok:hub.persistenceStatus().ok},
 }));
 
 app.get("/", async (_request, reply) => reply.redirect("/console"));
@@ -365,11 +333,11 @@ app.get('/api/sidebar',async(request)=>{
 
 registerPreviewProxy(app, config);
 const uploadStorage=new UploadStorage(store,async()=>{
-  if(submissions.hasProcessing()||sessions.receipts.hasProcessing())return '消息正在提交，完成后再清理';
+  if(preparingClientSubmissions||sessions.receipts.hasProcessing())return '消息正在提交，完成后再清理';
   const threads=await listThreadsWithCodexHistory(store.threads,false,store.threads.filter(thread=>sessions.ownsThread(thread.id)).map(thread=>thread.id));
   for(const thread of threads.filter(thread=>!thread.readOnly&&(thread.status==='running'||sessions.ownsThread(thread.id))))
     if(await currentThreadStatus(thread.id,await readCodexThreadEvents(thread.id))==='running')return '电脑有任务正在运行，结束后再清理附件';
-  return submissions.hasProcessing()||sessions.receipts.hasProcessing()?'消息正在提交，完成后再清理':'';
+  return preparingClientSubmissions||sessions.receipts.hasProcessing()?'消息正在提交，完成后再清理':'';
 });
 const closeDeepSeekWatcher=await watchDeepSeekSessions(store,hub,id=>sessions.agents.owns(id));
 app.addHook('onClose',async()=>closeDeepSeekWatcher());
@@ -896,7 +864,7 @@ app.get('/api/threads/:threadId/activity',{compress:historyCompression},async(re
 app.get('/api/threads/:threadId/submission',async request=>{
   const {threadId}=request.params as {threadId:string};
   const {requestId}=z.object({requestId:z.string().min(1).max(200)}).parse(request.query);
-  const submission=await submissions.persistentStatus(requestId,store.events,sessions.receipts,threadId==='_new'?undefined:threadId);
+  const submission=await readSubmissionStatus(requestId,store.events,sessions.receipts,threadId==='_new'?undefined:threadId);
   return {submission,...(submission.state==='accepted'&&submission.threadId?{status:await currentThreadStatus(submission.threadId,await readCodexThreadEvents(submission.threadId))}:{})};
 });
 
@@ -1203,148 +1171,7 @@ app.post("/api/projects", async (request) => {
   return { project };
 });
 
-app.get("/api/projects/:projectId/files", async (request) => {
-  const params = request.params as { projectId: string };
-  const query = fileQuerySchema.parse(request.query);
-  return { files: await listDirectory(config, params.projectId, query.path ?? "") };
-});
-
-app.get("/api/projects/:projectId/file", async (request) => {
-  const params = request.params as { projectId: string };
-  const query = fileQuerySchema.extend({ path: z.string().min(1) }).parse(request.query);
-  return await readTextFile(config, params.projectId, query.path);
-});
-
-app.put("/api/projects/:projectId/file", async (request) => {
-  const params = request.params as { projectId: string };
-  const query = fileQuerySchema.extend({ path: z.string().min(1) }).parse(request.query);
-  const body = writeFileSchema.parse(request.body);
-  return await writeTextFile(config, params.projectId, query.path, body.content);
-});
-
-app.get("/api/projects/:projectId/diff", async (request) => {
-  const params = request.params as { projectId: string };
-  return await readProjectDiff(config, params.projectId);
-});
-
-app.get("/api/projects/:projectId/diff/files", async (request) => {
-  const params = request.params as { projectId: string };
-  return await listProjectDiffFiles(config, params.projectId);
-});
-
-app.get("/api/projects/:projectId/diff/file", async (request) => {
-  const params = request.params as { projectId: string };
-  const query = fileQuerySchema.extend({ path: z.string().min(1) }).parse(request.query);
-  return await readFileDiff(config, params.projectId, query.path);
-});
-
-app.get("/api/projects/:projectId/diff/file/hunks", async (request) => {
-  const params = request.params as { projectId: string };
-  const query = fileQuerySchema.extend({ path: z.string().min(1) }).parse(request.query);
-  return await readFileDiffHunks(config, params.projectId, query.path);
-});
-
-app.post("/api/projects/:projectId/diff/file/accept", async (request) => {
-  const params = request.params as { projectId: string };
-  const query = fileQuerySchema.extend({ path: z.string().min(1) }).parse(request.query);
-  return await acceptFileDiff(config, params.projectId, query.path);
-});
-
-app.post("/api/projects/:projectId/diff/file/revert", async (request) => {
-  const params = request.params as { projectId: string };
-  const query = fileQuerySchema.extend({ path: z.string().min(1) }).parse(request.query);
-  return await revertFileDiff(config, params.projectId, query.path);
-});
-
-app.post("/api/projects/:projectId/diff/file/hunk/accept", async (request) => {
-  const params = request.params as { projectId: string };
-  const query = fileQuerySchema.extend({ path: z.string().min(1) }).parse(request.query);
-  const body = diffHunkSchema.parse(request.body);
-  return await acceptFileDiffHunk(config, params.projectId, query.path, body.source, body.index);
-});
-
-app.post("/api/projects/:projectId/diff/file/hunk/revert", async (request) => {
-  const params = request.params as { projectId: string };
-  const query = fileQuerySchema.extend({ path: z.string().min(1) }).parse(request.query);
-  const body = diffHunkSchema.parse(request.body);
-  return await revertFileDiffHunk(config, params.projectId, query.path, body.source, body.index);
-});
-
-app.post("/api/projects/:projectId/diff/files/accept", async (request) => {
-  const params = request.params as { projectId: string };
-  const body = diffBatchSchema.parse(request.body);
-  return await acceptFileDiffs(config, params.projectId, body.paths);
-});
-
-app.post("/api/projects/:projectId/diff/files/revert", async (request) => {
-  const params = request.params as { projectId: string };
-  const body = diffBatchSchema.parse(request.body);
-  return await revertFileDiffs(config, params.projectId, body.paths);
-});
-
-app.post("/api/projects/:projectId/terminal/run", async (request) => {
-  const params = request.params as { projectId: string };
-  const body = runCommandSchema.parse(request.body);
-  return await localTerminal.runCommand(params.projectId, body.command);
-});
-
-app.post("/api/projects/:projectId/terminal/session", async (request) => {
-  const params = request.params as { projectId: string };
-  const body = terminalSessionSchema.parse(request.body ?? {});
-  return await localTerminal.startInteractiveSession(params.projectId, body);
-});
-
-app.get("/api/terminal/history", async (request) => {
-  const query = terminalHistoryQuerySchema.parse(request.query);
-  return { events: store.terminalEvents(query.limit) };
-});
-
-app.get("/api/terminal/commands", async (request) => {
-  const query = terminalCommandsQuerySchema.parse(request.query);
-  return {
-    commands: store.terminalCommands(query.limit, {
-      includeOutput: query.includeOutput === undefined ? true : query.includeOutput === "true",
-      previewChars: query.previewChars,
-    }),
-  };
-});
-
-app.get("/api/terminal/commands/:commandId/output", async (request) => {
-  const params = request.params as { commandId: string };
-  const query = terminalOutputQuerySchema.parse(request.query);
-  return {
-    output: store.terminalCommandOutput(params.commandId, query),
-  };
-});
-
-app.post("/api/terminal/:commandId/stop", async (request) => {
-  const params = request.params as { commandId: string };
-  return localTerminal.stopCommand(params.commandId);
-});
-
-app.post("/api/terminal/sessions/:sessionId/input", async (request) => {
-  const params = request.params as { sessionId: string };
-  const body = terminalInputSchema.parse(request.body);
-  return localTerminal.writeInteractiveSession(params.sessionId, body.text, body.appendNewline !== false);
-});
-
-app.post("/api/terminal/sessions/:sessionId/resize", async (request) => {
-  const params = request.params as { sessionId: string };
-  const body = terminalResizeSchema.parse(request.body);
-  return localTerminal.resizeInteractiveSession(params.sessionId, body);
-});
-
-app.post("/api/terminal/sessions/:sessionId/stop", async (request) => {
-  const params = request.params as { sessionId: string };
-  return localTerminal.stopInteractiveSession(params.sessionId);
-});
-
-app.get("/raw/projects/:projectId/file", async (request, reply) => {
-  const params = request.params as { projectId: string };
-  const query = fileQuerySchema.extend({ path: z.string().min(1) }).parse(request.query);
-  const file = await resolveRawFile(config, params.projectId, query.path);
-  return reply.type(contentTypeFor(file.fileName)).send(await fs.readFile(file.absolutePath));
-});
+registerWorkspaceRoutes(app,{config,localTerminal,store,contentTypeFor});
 
 app.get("/preview/proxy", async (request, reply) => {
   const query = proxyQuerySchema.parse(request.query);
@@ -1378,15 +1205,7 @@ app.get('/api/usage',async request=>{
   const agent=query.threadId?threadAgent(query.threadId):query.agent||'codex';
   return agent!=='codex'?sessions.agents.usage(query.threadId||'',agent,query.model):usageReader.read(query.threadId,query.days);
 });
-app.get('/api/models',async request=>{
-  const refresh=(request.query as any).refresh==='1';
-  if((request.query as any).agents!=='all')return readModelCatalog(codex,refresh);
-  const [codexModels,otherModels]=await Promise.allSettled([readModelCatalog(codex,refresh),sessions.agents.models(refresh)]);
-  const viaPublic=request.headers['x-public-proxy-secret']===publicProxySecret&&publicProxySecret!=null;
-  const backends=await sessions.agents.backends(viaPublic);
-  const models=[...(codexModels.status==='fulfilled'?codexModels.value.models:[]),...(otherModels.status==='fulfilled'?otherModels.value:[])];
-  return {models:models.map(model=>{const agent=modelAgent(model.model),backend=backends.find(b=>b.agent===agent);if(viaPublic&&!publicAgentAllowed(agent))return {...model,available:false,unavailableReason:'此助手的公网访问已关闭'};return backend?{...model,available:backend.available,unavailableReason:backend.reason}:model;}),backends,source:'local-agents'};
-});
+registerModelDirectory(app,codex,sessions.agents,publicProxySecret);
 const agentHealthMonitor=new AgentHealthMonitor();
 app.get('/api/agents/updates',async request=>agentHealthMonitor.checkUpdates((request.query as any).refresh==='1'));
 app.get('/api/agents/health',async request=>{
@@ -1405,33 +1224,7 @@ app.get("/api/settings/approval-summary", async () => ({
   summary: await readApprovalPolicySummary(),
 }));
 
-app.get('/api/settings/remote-approval',async()=>({desktopAutoApprove:await readRemoteAutoApproval(),...codex.desktopApprovalStatus()}));
-const harnessAccess=()=>({agents:Object.entries(agentNames).map(([agent,name])=>({agent,name,enabled:publicAgentAllowed(agent as keyof typeof agentNames)}))});
-let harnessAccessWrite=Promise.resolve();
-app.get('/api/settings/harness-access',async()=>harnessAccess());
-app.put('/api/settings/harness-access',async request=>{
-  const agents=z.object({codex:z.boolean().optional(),claude:z.boolean().optional(),antigravity:z.boolean().optional(),grok:z.boolean().optional(),deepseek:z.boolean().optional(),hermes:z.boolean().optional(),opencode:z.boolean().optional()}).strict().parse(z.object({agents:z.unknown()}).strict().parse(request.body).agents);
-  const operation=harnessAccessWrite.then(async()=>{
-    const publicAgents={...config.publicAgents,...agents};
-    await saveServerConfig({...config,publicAgents});
-    config.publicAgents=publicAgents;configurePublicAgentAccess(publicAgents);
-    return harnessAccess();
-  });
-  harnessAccessWrite=operation.then(()=>{},()=>{});
-  return operation;
-});
-app.get('/api/settings/capacity-retry',async()=>({enabled:config.capacityAutoRetry===true,maxAttempts:null,...sessions.capacityRetryStatus()}));
-app.put('/api/settings/capacity-retry',async request=>{
-  const {enabled}=z.object({enabled:z.boolean()}).parse(request.body);
-  await saveServerConfig({...config,capacityAutoRetry:enabled});
-  config.capacityAutoRetry=enabled;sessions.setCapacityAutoRetry(enabled);
-  return {enabled,maxAttempts:null};
-});
-app.put('/api/settings/remote-approval',async request=>{
-  const {desktopAutoApprove}=z.object({desktopAutoApprove:z.boolean()}).parse(request.body);
-  await writeRemoteAutoApproval(desktopAutoApprove);
-  return {desktopAutoApprove,...(desktopAutoApprove?await sessions.approvePendingAutomatically():{accepted:0,failed:0}),...codex.desktopApprovalStatus()};
-});
+registerGatewaySettings(app,config,codex,sessions);
 
 app.put("/api/settings/user", async (request) => {
   const body = settingsSchema.parse(request.body);
@@ -1516,7 +1309,7 @@ wss.on("connection", (socket, request) => {
   hub.add(socket, authorized,url.searchParams.get('activityDetails')==='deferred',streamThread??undefined,viaPublic?'public':'local');
   socket.on("message", (raw) => {
     if (!authorized()) { socket.close(1008, "unauthorized"); return; }
-    let submissionId:string|undefined;
+    let preparing=false;
     void (async () => {
       const identity=JSON.parse(raw.toString()) as ClientCommand|{type:'connection.ping';requestId?:unknown}|{type:'thread.focus';threadId?:unknown;requestId?:unknown};
       if(identity.type==='connection.ping'){
@@ -1530,20 +1323,9 @@ wss.on("connection", (socket, request) => {
         return;
       }
       const message = clientCommandSchema.parse(identity);
+      if(message.type==='thread.start'||message.type==='turn.start'){preparing=true;preparingClientSubmissions++;}
       if('threadId' in message)assertControllableThread(message.threadId||'');
       if(viaPublic&&(message.type==='debug.echo'||(message.type==='thread.start'&&!publicAgentAllowed(modelAgent(message.model)))||((message.type==='turn.start'||message.type==='thread.resume')&&!publicAgentAllowed(threadAgent(message.threadId)))))throw new Error('此助手的公网访问已关闭');
-      if((message.type==='thread.start'||message.type==='turn.start')&&message.requestId&&(message.type==='thread.start'?modelAgent(message.model):threadAgent(message.threadId))!=='codex'){
-        const threadId='threadId' in message?message.threadId:undefined;
-        const receipt=submissions.status(message.requestId,store.events,threadId);
-        const begin=submissions.begin(message.requestId,message,threadId);
-        if(receipt.state==='accepted'||!begin){
-          if(receipt.state==='accepted'&&begin)submissions.finish(message.requestId,{state:'accepted',threadId:receipt.threadId});
-          const current=submissions.status(message.requestId,store.events,threadId);
-          socket.send(JSON.stringify({type:current.state==='accepted'?'message.confirmed':current.state==='failed'?'error':'message.received',requestId:message.requestId,threadId:current.threadId,message:current.error}));
-          return;
-        }
-        submissionId=message.requestId;
-      }
 
       if (message.type === "thread.start" || message.type === "thread.resume" || message.type === "turn.start") {
         await validateAgentModel(message.model,'threadId' in message?message.threadId:undefined);
@@ -1558,7 +1340,6 @@ wss.on("connection", (socket, request) => {
           return;
         }
       }else await sessions.handleClientCommand(message,viaPublic,false,identity);
-      if(submissionId){const receipt=submissions.status(submissionId,store.events);submissions.finish(submissionId,{state:'accepted',threadId:receipt.threadId??('threadId' in message?message.threadId:undefined)});}
     })().catch(async(error) => {
       const message = (() => {
         try {
@@ -1571,19 +1352,17 @@ wss.on("connection", (socket, request) => {
         try {
           const queued=followups.add({id:message.requestId||randomUUID(),threadId:message.threadId,text:message.text||'',images:message.images||[],files:message.files||[],model:message.model,effort:message.effort,mode:message.mode,fast:message.fast,permission:message.permission,sourcePublic:viaPublic,resume:true,error:userFacingError(error)});
           if(message.requestId)await sessions.receipts.markQueued(message.requestId,message.threadId);
-          if(submissionId)submissions.finish(submissionId,{state:'accepted',threadId:message.threadId});
           socket.send(JSON.stringify({type:'message.queued',threadId:message.threadId,requestId:message.requestId,queueId:queued.id,message:queued.error}));
           return;
         }catch(queueError){error=queueError;}
       }
-      if(submissionId)submissions.finish(submissionId,{state:'failed',threadId:message.threadId,error:userFacingError(error)});
       socket.send(JSON.stringify({
         type: "error",
         threadId: message.threadId,
         requestId: message.requestId,
         message: userFacingError(error),
       }));
-    });
+    }).finally(()=>{if(preparing)preparingClientSubmissions--;});
   });
 });
 

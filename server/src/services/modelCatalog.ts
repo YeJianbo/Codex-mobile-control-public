@@ -4,11 +4,13 @@ import TOML from '@iarna/toml';
 import {userCodexConfigPath} from './paths.js';
 import type {CodexAppServerClient} from '../codex/appServerClient.js';
 import {desktopThreadSettings} from './desktopSidebar.js';
+import {modelAgent,type Agent} from './agentProtocol.js';
+import {catalogReadBudget} from './catalogReadBudget.js';
 
-export type PickerModel = {model:string; displayName:string; modelProvider?:string; providerId?:string; providerName?:string; shortName?:string; supportedReasoningEfforts:{reasoningEffort:string}[]; defaultReasoningEffort?:string};
+export type PickerModel = {model:string; displayName:string; harness?:Agent; modelProvider?:string; providerId?:string; providerName?:string; shortName?:string; supportedReasoningEfforts:{reasoningEffort:string}[]; defaultReasoningEffort?:string};
 type ModelCatalog={models:PickerModel[];source:string};
 type ModelRpc=Pick<CodexAppServerClient,'request'>;
-const catalogs=new WeakMap<ModelRpc,{value?:ModelCatalog;expiresAt:number;pending?:Promise<ModelCatalog>}>();
+const catalogs=new WeakMap<ModelRpc,{value?:ModelCatalog;expiresAt:number;pending?:Promise<ModelCatalog>;error?:string;failedAt?:number}>();
 export async function readModelCatalog(codex: ModelRpc,refresh=false): Promise<ModelCatalog> {
   let entry=catalogs.get(codex);
   if(!entry){entry={expiresAt:0};catalogs.set(codex,entry);}
@@ -17,9 +19,28 @@ export async function readModelCatalog(codex: ModelRpc,refresh=false): Promise<M
   if(!refresh&&entry.value&&entry.expiresAt>Date.now())return entry.value;
   const current=entry;
   current.pending=loadModelCatalog(codex).then(value=>{
-    current.value=value;current.expiresAt=Date.now()+5000;return value;
-  }).finally(()=>{current.pending=undefined;});
+    value={...value,models:value.models.map(model=>({...model,harness:modelAgent(model.model)}))};
+    current.value=value;current.expiresAt=Date.now()+5000;current.error=undefined;current.failedAt=undefined;return value;
+  }).catch(error=>{current.error=error instanceof Error?error.message:String(error);current.failedAt=Date.now();throw error;}).finally(()=>{current.pending=undefined;});
   return current.pending;
+}
+
+// Pickers keep the last successful directory while refreshing. Execution validation
+// still awaits readModelCatalog, so UI responsiveness does not weaken model checks.
+export async function readPickerModelCatalog(codex:ModelRpc,refresh=false):Promise<ModelCatalog>{
+  const previous=catalogs.get(codex)?.value;
+  const current=readModelCatalog(codex,refresh);
+  if(previous&&!refresh){void current.catch(()=>{});return previous;}
+  return current;
+}
+
+export async function readPartialPickerCatalog(codex:ModelRpc,refresh=false){
+  const previous=catalogs.get(codex);
+  if(previous?.error&&!previous.pending&&!refresh&&Date.now()-(previous.failedAt??0)<5000)return {models:previous.value?.models??[],pending:false,error:previous.error};
+  const read=readModelCatalog(codex,refresh);
+  await catalogReadBudget(read);
+  const entry=catalogs.get(codex)!;
+  return {models:entry.value?.models??[],pending:Boolean(entry.pending),error:entry.error};
 }
 
 async function loadModelCatalog(codex: ModelRpc): Promise<ModelCatalog> {

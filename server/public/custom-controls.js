@@ -158,7 +158,7 @@ function mountModelSettings() {
   const effort = document.getElementById('chatEffort');
   const trigger = document.getElementById('modelSettingsBtn');
   const order = ['none','minimal','low','medium','high','xhigh','max','ultra'];
-  const compact = option => (option?.dataset.compactLabel || option?.textContent || '').replace(/^(Claude Code|Antigravity|Grok Build) · /,'');
+  const compact = option => option?.dataset.compactLabel || option?.textContent || '';
   const modelOptions = () => visibleSelectOptions(model).filter(option => option.value);
   const levels = () => visibleSelectOptions(effort).filter(enabledOption)
     .sort((a,b) => (order.indexOf(a.value) < 0 ? 99 : order.indexOf(a.value)) - (order.indexOf(b.value) < 0 ? 99 : order.indexOf(b.value)));
@@ -307,7 +307,7 @@ function mountModelSettings() {
           const item=document.createElement('button');item.type='button';item.className='choice-option';
           item.dataset.value=option.value;item.dataset.search=`${option.textContent} ${option.value} ${option.dataset.groupLabel||''}`.toLowerCase();item.disabled=!enabledOption(option);
           item.dataset.agent=agent;
-          const label=document.createElement('span');label.className='choice-label';label.textContent=option.textContent.replace(/^(Claude Code|Antigravity|Grok Build) · /,'');
+          const label=document.createElement('span');label.className='choice-label';label.textContent=compact(option);
           if(option.disabled)item.title=option.dataset.unavailableReason||'请在新会话中切换助手';
           const check=document.createElement('span');check.className='choice-check';check.setAttribute('aria-hidden','true');
           check.innerHTML='<svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg>';

@@ -1,3 +1,4 @@
+import {renderModelChoices,renderModelEfforts} from '../public/model-controls.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -187,7 +188,7 @@ test('an explicit gpt-6.1-sol choice remains high without changing global settin
   const elements=new Map(),saved=new Map([['cmc.model.codex','gpt-6.1-sol']]);
   const $=id=>{if(!elements.has(id))elements.set(id,{value:'',options:[],dataset:{},replaceChildren(...options){this.options=options;this.value='';},add(option){this.options.push(option);}});return elements.get(id);};
   class Option{constructor(text,value){this.text=text;this.value=value;this.dataset={};}}
-  const settings={model:'gpt-6-sol',reasoningEffort:'medium'},c={state:{models,harness:'codex',connected:true,settings},$,Option,safeRead:key=>saved.get(key)||'',fillEfforts(){},updateBackendNotice(){}};
+  const settings={model:'gpt-6-sol',reasoningEffort:'medium'},c={renderModelChoices,renderModelEfforts,state:{models,harness:'codex',connected:true,settings},$,Option,safeRead:key=>saved.get(key)||'',fillEfforts(){},updateBackendNotice(){}};
   vm.createContext(c);vm.runInContext(section('function fillModelChoices(',"$('chatModel').addEventListener('change'"),c);vm.runInContext('fillModelChoices()',c);
   assert.equal($('chatModel').value,'gpt-6.1-sol');assert.equal($('chatEffort').value,'high');assert.deepEqual(settings,{model:'gpt-6-sol',reasoningEffort:'medium'});
   $('chatModel').value='gpt-6-astra';vm.runInContext('fillChatEfforts()',c);assert.equal($('chatEffort').value,'medium');

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
-import {mergeEvents,retainCompaction,errorMessage} from '../public/console-core.js';
+import {mergeEvents,retainCompaction,errorMessage,restoreActivityDetails} from '../public/console-core.js';
 
 // Execute the shipped implementations with deterministic delayed HTTP results.
 // DOM doubles model state and request ownership only. These checks are not
@@ -14,9 +14,11 @@ const shipped={
   disconnect:section('function disconnect()','function sendCommand('),
   threads:section('function conversationThreadKey(','function renderThreads()'),
   navigation:section('async function newThread()','const desktopModelSettings='),
+  selection:section('function setConversationSelection(','async function selectProject('),
   history:section('function sameConversationEvents(','const slashCommands='),
+  equality:section('function sameConversationData(','let conversationThread ='),
   queue:section('async function refreshQueue(','async function queueAction('),
-  drafts:section('function draftKey(','function attachmentUrl('),
+  drafts:section('function draftKey(','const {trackFilePreview,'),
   recovery:section('function readPendingSubmission()','function showCloudSnapshotImport('),
   restorePending:section('function restorePendingDraft()','function updateContext()'),
   anchor:section('function rememberReadingAnchor()','const conversationResize'),
@@ -51,8 +53,8 @@ function fixture({initial='A',cached,saved}={}){
   $('chatEffort').value='high';$('chatEffort').options=[{value:'high'}];
   const messageNode=new Node();messageNode.dataset.messageKey='cached-reader-anchor';messageNode.top=80;
   $('events').append(messageNode);
-  const context={state,$,el,desktopModelSettings:new Map(),mergeEvents,retainCompaction,errorMessage,comparablePath:value=>value,followConversation:true,readingAnchor:null,jumpScrolling:false,
-    api:(path,options)=>{const response=deferred();requests.push({path,options,...response,settled:false});return response.promise;},
+  const context={state,$,el,AbortController,eventFocus:{reset(){}},focusEventStream:()=>null,cancelActivityReads(){},syncDesktopModelSettings:()=>false,desktopModelSettings:new Map(),mergeEvents,retainCompaction,errorMessage,restoreActivityDetails,comparablePath:value=>value,conversationGeneration:-1,followConversation:true,readingAnchor:null,jumpScrolling:false,
+    api:(path,options)=>{const response=deferred();requests.push({path,options,...response,settled:false});options?.signal?.addEventListener('abort',()=>response.reject(new DOMException('Aborted','AbortError')),{once:true});return response.promise;},
     button:(label,action,cls)=>{const node=el('button',cls,label);node.onclick=action;return node;},
     activeThread:()=>state.threads.find(thread=>thread.id===state.threadId),onlineRequired:()=>state.connected,
     safeRead:key=>storage.get(key)||'',safeWrite:(key,value)=>storage.set(key,value),harnessForThread:()=> 'codex',
@@ -67,10 +69,10 @@ function fixture({initial='A',cached,saved}={}){
     setTimeout:(action,delay)=>{const timer={action,delay};timers.push(timer);return timer;},clearTimeout(){},
   };
   vm.createContext(context);
-  context.renderConversation=()=>{renders.push(state.threadId);vm.runInContext('updateConversationHistoryState();restoreReadingAnchor()',context);};
+  context.renderConversation=()=>{renders.push(state.threadId);context.conversationGeneration=state.generation;vm.runInContext('updateConversationHistoryState();restoreReadingAnchor()',context);};
   vm.runInContext(Object.values(shipped).join('\n')+'\n'+retryClick,context);
   const call=(name,...args)=>{context.__args=args;return vm.runInContext(`${name}(...__args)`,context);};
-  const pending=fragment=>requests.filter(request=>!request.settled&&request.path.includes(fragment));
+  const pending=fragment=>requests.filter(request=>!request.settled&&!request.options?.signal?.aborted&&request.path.includes(fragment));
   const settle=(request,value,reject=false)=>{assert(request&&!request.settled,'Expected an outstanding API request');request.settled=true;request[reject?'reject':'resolve'](value);};
   const input=value=>{$('prompt').value=value;return $('prompt').oninput();};
   const seedHistory=(id='A',text='cached body',hasMore=true)=>{state.events.set(id,history(id,text,hasMore).events);state.historyCount.set(id,180);state.historyMore.set(id,hasMore);call('updateConversationHistoryState');};
@@ -179,13 +181,13 @@ test('repeated first-load errors retry to an explicitly empty conversation witho
 test('pagination failure and retry preserve count, cached body, and reader anchor until success',async()=>{
   const f=fixture();f.seedHistory();const cached=f.state.events.get('A'),top=f.$('conversationScroll').scrollTop;
   const pagination=outcome(f.call('loadOlderMessages')),first=f.pending('/A/events')[0];
-  assert.match(first.path,/count=360$/);const anchor={...f.context.readingAnchor};
+  assert.match(first.path,/[?&]count=360(?:&|$)/);const anchor={...f.context.readingAnchor};
   f.settle(first,Error('older page unavailable'),true);await pagination;
   assert.equal(f.state.historyCount.get('A'),180);assert.equal(f.state.historyMore.get('A'),true);assert.equal(f.state.events.get('A'),cached);
   assert.deepEqual({...f.context.readingAnchor},anchor);assert.equal(f.$('conversationScroll').scrollTop,top);assert.equal(f.context.followConversation,false);
   assert.equal(f.state.historyErrors.get('A').older,true);assert.match(f.$('historyErrorText').textContent,/更早消息加载失败/);
   assert.equal(f.$('loadOlder').disabled,false);assert.equal(f.$('historyRetry').disabled,false);
-  const retry=f.$('historyRetry').onclick(),second=f.pending('/A/events')[0];assert.match(second.path,/count=360$/);
+  const retry=f.$('historyRetry').onclick(),second=f.pending('/A/events')[0];assert.match(second.path,/[?&]count=360(?:&|$)/);
   assert.equal(f.$('loadOlder').disabled,true);assert.equal(f.state.historyCount.get('A'),180);
   await completeHistory(f,second,history('A','expanded body',false));await retry;
   assert.equal(f.state.historyCount.get('A'),360);assert.equal(f.state.historyMore.get('A'),false);assert.equal(f.$('loadOlder').hidden,true);

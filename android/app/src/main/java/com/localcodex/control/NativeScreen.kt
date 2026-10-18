@@ -1,9 +1,18 @@
 @file:OptIn(androidx.compose.animation.ExperimentalAnimationApi::class, androidx.compose.foundation.ExperimentalFoundationApi::class, androidx.compose.ui.ExperimentalComposeUiApi::class)
 package com.localcodex.control
 import com.localcodex.control.NativeThemeSurface as Surface
+import com.localcodex.control.NativeInk as Ink
+import com.localcodex.control.NativeMuted as Muted
+import com.localcodex.control.NativeWash as Wash
+import com.localcodex.control.NativeAccent as Accent
+import com.localcodex.control.NativeGlassEdge as GlassEdge
+import com.localcodex.control.NativeControlEase as ControlEase
+import com.localcodex.control.nativeDisclosureEnter as disclosureEnter
+import com.localcodex.control.nativeDisclosureExit as disclosureExit
+import com.localcodex.control.nativeChevronMotion as chevronMotion
+import com.localcodex.control.NativePrimaryButton as Button
+import com.localcodex.control.NativeTextEntry as Entry
 
-import android.widget.TextView
-import android.graphics.BitmapFactory
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -25,8 +34,6 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateFloat
@@ -50,21 +57,13 @@ import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.text.selection.LocalTextSelectionColors
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.gestures.Orientation
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.calculateCentroid
-import androidx.compose.foundation.gestures.calculatePan
-import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
@@ -89,29 +88,23 @@ import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.invisibleToUser
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.material.*
-import androidx.compose.material.Button as MaterialButton
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.TransformOrigin
-import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
@@ -129,7 +122,6 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntRect
@@ -144,55 +136,17 @@ import androidx.compose.ui.window.DialogWindowProvider
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupPositionProvider
 import androidx.compose.ui.window.PopupProperties
-import io.noties.markwon.Markwon
-import io.noties.markwon.ext.tables.TablePlugin
-import io.noties.markwon.ext.latex.JLatexMathPlugin
-import io.noties.markwon.inlineparser.MarkwonInlineParserPlugin
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
-import kotlin.math.abs
 import kotlin.math.min
 
-private val Ink:Color @Composable get()=MaterialTheme.colors.onSurface
-private val Muted:Color @Composable get()=MaterialTheme.colors.onSurface.copy(alpha=0.64f)
-private val Wash:Color @Composable get()=LocalNativeTheme.current.palette.wash
-private val Accent:Color @Composable get()=MaterialTheme.colors.primary
-private val GlassEdge:Color @Composable get()=MaterialTheme.colors.onSurface.copy(alpha=.09f)
-@Composable private fun Button(onClick:()->Unit,modifier:Modifier=Modifier,enabled:Boolean=true,interactionSource:MutableInteractionSource=remember{MutableInteractionSource()},content:@Composable RowScope.()->Unit){
-    MaterialButton(onClick=onClick,modifier=modifier.heightIn(min=48.dp),enabled=enabled,interactionSource=interactionSource,shape=Radius.Button,elevation=null,contentPadding=PaddingValues(horizontal=24.dp,vertical=12.dp)){
-        ProvideTextStyle(TextStyle(fontSize=16.sp,fontWeight=FontWeight.Medium)){content()}
-    }
-}
-private val ControlEase=CubicBezierEasing(0.23f,1f,0.32f,1f)
-private fun disclosureEnter()=expandVertically(animationSpec=spring(dampingRatio=1f,stiffness=900f))+fadeIn(tween(120,easing=ControlEase))
-private fun disclosureExit()=shrinkVertically(animationSpec=spring(dampingRatio=1f,stiffness=1200f))+fadeOut(tween(100,easing=ControlEase))
-private fun chevronMotion()=spring<Float>(dampingRatio=1f,stiffness=1000f,visibilityThreshold=0.1f)
-private fun pressMotion(pressed:Boolean)=tween<Float>(if(pressed)80 else 120,easing=ControlEase)
 private enum class ComposerAction { Send, Stop, Progress }
 private val sidebarModuleKeys=listOf("projects","goals","pinned","recent","agents")
-@Composable private fun ChromeControl(click:()->Unit,emphasized:Boolean,modifier:Modifier=Modifier,enabled:Boolean=true,content:@Composable ()->Unit){
-    val interaction=remember{MutableInteractionSource()}
-    val pressed by interaction.collectIsPressedAsState()
-    val scale=animateFloatAsState(if(pressed)0.97f else 1f,pressMotion(pressed),label="chromePress")
-    val floating=LocalNativeFloatingChrome.current
-    val touch: @Composable ()->Unit={Box(Modifier.fillMaxSize().clip(if(floating)CircleShape else Radius.Button)
-        .background(if(emphasized)Wash else Color.Transparent)
-        .clickable(enabled=enabled,interactionSource=interaction,indication=LocalIndication.current,role=Role.Button,onClick=click),contentAlignment=Alignment.Center){content()}}
-    val frame=modifier.size(48.dp).graphicsLayer{scaleX=scale.value;scaleY=scale.value}
-    if(floating)NativeGlassSurface(frame,shape=CircleShape,content=touch) else Box(frame){touch()}
-}
-@Composable private fun ModernIcon(icon:Int,label:String?=null,modifier:Modifier=Modifier.size(20.dp),tint:Color=Ink){
-    Icon(painterResource(icon),label,modifier=modifier,tint=tint)
-}
-@Composable private fun ChromeButton(icon:Int,label:String,click:()->Unit,emphasized:Boolean=false,enabled:Boolean=true){
-    ChromeControl(click,emphasized,enabled=enabled){ModernIcon(icon,label,Modifier.size(21.dp),if(enabled)Ink else Muted)}
-}
 @Composable private fun PopupMenuRow(icon:Int,label:String,danger:Boolean=false,compact:Boolean=false,action:()->Unit){
     val color=if(danger)AppColor.Danger else Ink
     val feedback=rememberHaptics()
@@ -440,12 +394,6 @@ private fun nativeCommandIcon(name:String)=when(name){
 @Composable private fun ActionRow(icon:Int,label:String,danger:Boolean=false,modifier:Modifier=Modifier,action:()->Unit){
     val color=if(danger)AppColor.Danger else Ink
     Row(modifier.fillMaxWidth().clip(Radius.Button).clickable(onClick=action).padding(vertical=7.dp,horizontal=8.dp),verticalAlignment=Alignment.CenterVertically){Box(Modifier.size(38.dp).clip(Radius.MenuItem).background(Wash),contentAlignment=Alignment.Center){ModernIcon(icon,null,Modifier.size(19.dp),color)};Text(label,color=color,fontSize=15.sp,modifier=Modifier.padding(start=12.dp))}
-}
-@Composable private fun Entry(value:String,change:(String)->Unit,hint:String,modifier:Modifier=Modifier,surface:Color=Wash,label:String=hint,enabled:Boolean=true){
-    Box(modifier.clip(Radius.Field).background(surface).padding(14.dp)) {
-        if(value.isEmpty())Text(hint,color=Muted,fontSize=16.sp)
-        BasicTextField(value,change,enabled=enabled,textStyle=TextStyle(color=Ink,fontSize=16.sp),modifier=Modifier.fillMaxWidth().semantics{if(label.isNotBlank())contentDescription=label})
-    }
 }
 @Composable internal fun Sheet(title:String,close:()->Unit,stableHeight:Boolean=false,inPlace:Boolean=false,dismissEnabled:Boolean=true,bodyScrollState:ScrollState?=rememberScrollState(),onBack:(()->Boolean)?=null,onEntered:()->Unit={},contentHorizontalPadding:androidx.compose.ui.unit.Dp=20.dp,body:@Composable ColumnScope.()->Unit){
     val height=LocalConfiguration.current.screenHeightDp.dp*0.85f
@@ -1072,7 +1020,7 @@ private fun nativeCommandIcon(name:String)=when(name){
                                     TextButton(onClick={vm.refreshBackends(force=true)},enabled=!s.backendStatusLoading){Text("重新读取模型")}
                                 }
                                 NativeModelControls(
-                                    models=s.models.filter{it.available&&nativeAgent(it.id)==s.harness},model=model,effort=s.effort,
+                                    models=s.models.filter{it.available&&it.harness==s.harness},model=model,effort=s.effort,
                                     fast=s.fastMode?:s.sessionFast,showFast=s.harness=="codex",fastEnabled=s.connected&&!s.fastBusy,
                                     showModels=showModelList,onShowModels={showModelList=it},
                                     onModel={vm.chooseModel(it);showModelList=false},onEffort=vm::effort,onFast=vm::toggleFast,
@@ -1084,7 +1032,7 @@ private fun nativeCommandIcon(name:String)=when(name){
                         val enabled=s.connected&&!s.sending&&!s.uploading&&!s.stopping&&(hasInput||stop)&&(stop||nativeModelSelectionError(s.harness,s.model,s.models).isBlank())
                         val sendInteraction=remember{MutableInteractionSource()}
                         val actionPressed by sendInteraction.collectIsPressedAsState()
-                        val actionScale=animateFloatAsState(if(actionPressed)0.94f else 1f,pressMotion(actionPressed),label="composerPress")
+                        val actionScale=animateFloatAsState(if(actionPressed)0.94f else 1f,nativePressMotion(actionPressed),label="composerPress")
                         val action=when {s.sending||s.uploading||s.stopping->ComposerAction.Progress;stop->ComposerAction.Stop;else->ComposerAction.Send}
                         val actionFill=animateColorAsState(if(enabled)Accent else Ink.copy(alpha=0.15f),tween(140,easing=ControlEase),label="composerActionFill")
                         Box(Modifier.padding(start=4.dp).size(48.dp).semantics{contentDescription=if(s.stopping)"正在停止任务" else if(stop)"停止任务" else if(s.running)"加入队列" else "发送消息"}.clickable(interactionSource=sendInteraction,indication=null,enabled=enabled){if(stop)vm.stop() else{haptics.virtualKey();val command=if(s.harness=="codex")nativeExactCommand(s.draft) else null;if(command!=null)executeCommand(command.name,true) else {val jumpToLatest=!s.running;vm.send();if(jumpToLatest)sendScrollRequest++}}},contentAlignment=Alignment.Center){
@@ -1546,7 +1494,7 @@ private fun nativeCommandIcon(name:String)=when(name){
         }
         AnimatedVisibility(expanded,enter=disclosureEnter(),exit=disclosureExit()){Column{
             Spacer(Modifier.height(8.dp));Entry(search,{search=it},"搜索模型")
-            val matches=s.models.filter{it.available&&nativeAgent(it.id)==s.harness&&listOf(it.name,it.id,it.providerName,it.providerId,nativeModelDisplayName(it)).any{name->name.contains(search,true)}}
+            val matches=s.models.filter{it.available&&it.harness==s.harness&&listOf(it.name,it.id,it.providerName,it.providerId,nativeModelDisplayName(it)).any{name->name.contains(search,true)}}
             if(matches.isEmpty())Text("没有匹配的模型",color=Muted,modifier=Modifier.padding(12.dp))
             Column(Modifier.heightIn(max=220.dp).verticalScroll(rememberScrollState()).padding(top=4.dp)){
                 nativeModelGroups(matches).forEach{group->
@@ -1734,7 +1682,7 @@ private fun nativeCommandIcon(name:String)=when(name){
     val background=animateColorAsState(if(pressed)Ink.copy(alpha=0.12f) else if(selected)selection else Color.Transparent,tween(if(pressed)80 else 180,easing=ControlEase),label="goalRowSelection")
     Row(Modifier.fillMaxWidth().testTag("runningThread:${t.id}").clip(Radius.Field).drawBehind{drawRect(background.value)}.combinedClickable(interactionSource=interaction,indication=null,onClick=open,onLongClick=onLongClick).padding(vertical=10.dp,horizontal=12.dp),verticalAlignment=Alignment.CenterVertically){
         Column(Modifier.weight(1f)){
-            NativeRunningTitle(if(t.goal?.status=="active")t.goal.objective else nativeDisplayThreadTitle(t.title),pulse,fontSize=14.sp,maxLines=2)
+            NativeRunningTitle(nativeDisplayThreadTitle(t.title),pulse,fontSize=14.sp,maxLines=2)
             if(t.projectPath.isNotBlank())Text(t.projectPath.replace('\\','/').trimEnd('/').substringAfterLast('/'),fontSize=12.sp,color=Muted,maxLines=1,overflow=TextOverflow.Ellipsis)
         }
     }
@@ -1790,8 +1738,6 @@ internal fun effortName(s:String)=mapOf("default" to "默认","__default" to "�
 @Composable private fun rememberCaretColor():Color{val transition=rememberInfiniteTransition(label="caret");val alpha by transition.animateFloat(0.15f,1f,infiniteRepeatable(tween(600,easing=androidx.compose.animation.core.LinearEasing),RepeatMode.Reverse),label="caretAlpha");return Muted.copy(alpha=alpha)}
 private fun streamingText(text:String,caretColor:Color)=buildAnnotatedString{append(text);withStyle(SpanStyle(color=caretColor)){append(" ▍")}}
 
-private val LocalChatMarkwon=staticCompositionLocalOf<Markwon?>{null}
-private val LocalChatMarkdownCache=staticCompositionLocalOf<NativeMarkdownRenderCache?>{null}
 private data class NativeVisibleRow(val block:NativeBlock,val header:Boolean=false,val activity:NativeActivityItem?=null){
     val key:String get()=activity?.let{"${block.key}:activity:${it.key}"}?:block.key
 }
@@ -2253,40 +2199,6 @@ private data class NativeMessageViewState(
         }
     }
 }
-@Composable private fun NativeImageGallery(vm:NativeViewModel,endpoints:List<String>,remove:((String)->Unit)?=null){
-    if(endpoints.isEmpty())return
-    val draft=remove!=null
-    val columns=minOf(3,endpoints.size)
-    val gap=6.dp
-    val preferredTile=if(endpoints.size==1&&!draft)156.dp else 110.dp
-    // Uploads arrive one at a time. Keep loaded thumbnails when the list grows;
-    // an existing image loader does not run again merely because a sibling was added.
-    val previewImages=remember(vm,vm.imageRevision){mutableStateMapOf<String,Pair<android.graphics.Bitmap,String>>()}
-    LaunchedEffect(endpoints){
-        previewImages.keys.filter{it !in endpoints}.forEach{previewImages.remove(it)}
-    }
-    BoxWithConstraints(Modifier.testTag(if(draft)"draftImageGallery" else "sentImageGallery")
-        .widthIn(max=if(draft)Dp.Unspecified else preferredTile*columns+gap*(columns-1)).fillMaxWidth().padding(bottom=7.dp)){
-        val tileSize=minOf(preferredTile,((maxWidth-gap*(columns-1))/columns).coerceAtLeast(1.dp))
-        val tile:@Composable (String)->Unit={endpoint->key(endpoint){
-            Box(Modifier.size(tileSize).testTag("imageTile:$endpoint")){
-                NativeImageView(vm,endpoint,Modifier.fillMaxSize(),thumbnail=true,shape=Radius.Card,
-                    onOpen={image->previewImages[endpoint]=image to "";vm.showImage(endpoint,image,endpoints,previewImages)},
-                    onLoaded={image,mime->previewImages[endpoint]=image to mime})
-                if(remove!=null)IconButton(onClick={remove(endpoint)},modifier=Modifier.align(Alignment.TopEnd).size(48.dp)){
-                    Box(Modifier.size(24.dp).clip(CircleShape).background(Color.Black.copy(alpha=.55f)),contentAlignment=Alignment.Center){
-                        ModernIcon(R.drawable.ic_lucide_x,"移除图片",Modifier.size(14.dp),Color.White)
-                    }
-                }
-            }
-        }}
-        if(draft)Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),horizontalArrangement=Arrangement.spacedBy(gap)){
-            endpoints.forEach{tile(it)}
-        }else Column(verticalArrangement=Arrangement.spacedBy(gap)){
-            endpoints.chunked(columns).forEach{row->Row(horizontalArrangement=Arrangement.spacedBy(gap)){row.forEach{tile(it)}}}
-        }
-    }
-}
 @Composable private fun NativeMemoryReferenceAction(references:List<NativeMemoryReference>,modifier:Modifier=Modifier){
     var open by remember{mutableStateOf(false)}
     Box(modifier){
@@ -2364,72 +2276,6 @@ private data class NativeMessageViewState(
     if(running)NativeRunningTitle(text,rememberNativeRunningPulse(true),modifier,fontSize=13.sp)
     else Text(text,modifier,fontSize=13.sp,color=Muted,maxLines=1,overflow=TextOverflow.Ellipsis)
 }
-@Composable internal fun NativeFileChangeCard(vm:NativeViewModel,block:NativeBlock,modifier:Modifier=Modifier,onRead:()->Unit={}){
-    val summaryFiles=remember(block.event.fileChanges,block.activities){block.event.fileChanges.ifEmpty{nativeFileChanges(block.activities,includeLineCounts=false)}}
-    val addedColor=if(MaterialTheme.colors.isLight)Color(0xFF27843C) else Color(0xFF81C995)
-    val removedColor=MaterialTheme.colors.error
-    var filesExpanded by remember(block.key){mutableStateOf(false)}
-    var detailedFiles by remember(block.activities){mutableStateOf<List<NativeFileChange>?>(null)}
-    LaunchedEffect(filesExpanded,block.activities){
-        if(filesExpanded&&detailedFiles==null)detailedFiles=withContext(Dispatchers.Default){nativeFileChanges(block.activities)}
-    }
-    val changedFiles=detailedFiles?:summaryFiles
-    val expansion=updateTransition(filesExpanded,label="fileExpansion")
-    val chevronAngle=expansion.animateFloat(transitionSpec={chevronMotion()},label="fileChevron"){if(it)90f else 0f}
-    var selectedFile by remember(block.key){mutableStateOf<String?>(null)}
-    val selectedPatch=rememberNativeSelectedFilePatch(selectedFile,block.activities)
-    val selectedEvents=selectedPatch?.events.orEmpty()
-    LaunchedEffect(selectedFile,selectedEvents,vm.state.connected,vm.activityLoadEpoch){if(selectedFile!=null&&vm.state.connected){
-        vm.loadActivityGroups(selectedEvents)
-        vm.loadActivityDetails(block.event.threadId,selectedEvents.filter{it.activityGroupId.isBlank()&&it.detailsDeferred}.map{it.eventId})
-    }}
-        if(changedFiles.isNotEmpty())Surface(modifier.fillMaxWidth().padding(vertical=3.dp),shape=Radius.Composer,color=Wash){Column{
-            val summary=buildAnnotatedString{
-                append("已更改 ${changedFiles.size} 个文件")
-                if(changedFiles.any{it.added!=null}){
-                    append("  ")
-                    withStyle(SpanStyle(color=addedColor)){append("+${changedFiles.sumOf{it.added?:0}}")}
-                }
-                if(changedFiles.any{it.removed!=null}){
-                    append(if(changedFiles.any{it.added!=null})" " else "  ")
-                    withStyle(SpanStyle(color=removedColor)){append("−${changedFiles.sumOf{it.removed?:0}}")}
-                }
-            }
-            Row(Modifier.fillMaxWidth().heightIn(min=44.dp).clip(Radius.Composer).clickable{onRead();filesExpanded=!filesExpanded}.padding(horizontal=16.dp,vertical=2.dp),verticalAlignment=Alignment.CenterVertically){
-                Text(summary,fontSize=13.sp,modifier=Modifier.weight(1f))
-                ModernIcon(R.drawable.ic_lucide_chevron_right,if(filesExpanded)"收起更改记录" else "展开更改记录",Modifier.size(16.dp).graphicsLayer{rotationZ=chevronAngle.value},Muted)
-            }
-            expansion.AnimatedVisibility(visible={it},enter=disclosureEnter(),exit=disclosureExit()){Column(Modifier.padding(horizontal=16.dp,vertical=2.dp)){changedFiles.forEach{file->key(file.path){Row(Modifier.fillMaxWidth().heightIn(min=36.dp).clip(Radius.Control).clickable{selectedFile=file.path}.padding(vertical=4.dp)){
-                Text(nativeDisplayPath(file.path),Modifier.weight(1f),fontSize=13.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
-                file.added?.let{Text(" +$it",color=addedColor,fontSize=13.sp)}
-                file.removed?.let{Text(" −$it",color=removedColor,fontSize=13.sp)}
-            }}}}}
-        }}
-        selectedFile?.let{file->
-            val preparing=selectedPatch==null
-            val patch=selectedPatch?.detail.orEmpty()
-            val deferred=selectedEvents.any{it.detailsDeferred||it.activityGroupId.isNotBlank()}
-            val failure=selectedEvents.firstNotNullOfOrNull{vm.state.activityErrors[it.activityGroupId]?:vm.state.activityErrors[it.eventId]}
-            val feedback:(@Composable ()->Unit)?=if(preparing||deferred)({
-                Column(Modifier.testTag("changeFeedback")){
-                    when{
-                        preparing->NativeRunningTitle("正在整理改动…",rememberNativeRunningPulse(true),Modifier.testTag("changePreparing"),fontSize=14.sp)
-                        !vm.state.connected->Text("连接电脑后继续读取",fontSize=14.sp,color=Muted)
-                        failure!=null->{
-                            Text("改动详情读取失败",fontSize=14.sp,color=MaterialTheme.colors.error)
-                            Text(failure,Modifier.padding(top=6.dp),fontSize=13.sp,color=Muted)
-                            TextButton(onClick={
-                                vm.loadActivityGroups(selectedEvents)
-                                vm.loadActivityDetails(block.event.threadId,selectedEvents.filter{it.activityGroupId.isBlank()&&it.detailsDeferred}.map{it.eventId})
-                            },modifier=Modifier.testTag("changeRetry")){Text("重试")}
-                        }
-                        else->NativeRunningTitle("正在读取改动详情…",rememberNativeRunningPulse(true),Modifier.testTag("changeLoading"),fontSize=14.sp)
-                    }
-                }
-            })else null
-            NativeChangeDetail(file,listOf(file),patch.ifBlank{if(preparing||deferred)"" else "此记录未保存该文件的补丁"},statusContent=feedback){selectedFile=null}
-        }
-}
 @Composable private fun NativeToolGroup(vm:NativeViewModel,block:NativeBlock,onRead:()->Unit={},inlineDetails:Boolean=true){
     var expanded by vm.timelineDisclosure(block.event.threadId,"tools",block.key)
     LaunchedEffect(expanded,block.activities,vm.state.connected,vm.activityLoadEpoch){if(expanded&&vm.state.connected)vm.loadActivityGroups(block.activities)}
@@ -2497,566 +2343,6 @@ private data class NativeMessageViewState(
         NativeRunningTitle("正在整理改动…",rememberNativeRunningPulse(true),fontSize=14.sp)
     })else null){changeOpen=false;detailOpen=false}
 }
-@Composable private fun rememberNativeSelectedFilePatch(file:String?,events:List<ChatEvent>):NativeSelectedFilePatch?{
-    // Keep this file's last prepared version during refresh; another file owns a fresh state.
-    val result=remember(file){mutableStateOf<NativeSelectedFilePatch?>(null)}
-    LaunchedEffect(file,events){
-        if(file!=null)result.value=withContext(Dispatchers.Default){prepareNativeFilePatch(events,file)}
-    }
-    return result.value
-}
-@Composable private fun rememberNativePreparedPatch(detail:String,textSize:Float):NativePreparedPatch?{
-    // A new input owns a fresh state, so an old preparation cannot appear under a new title/source.
-    val result=remember(detail,textSize){mutableStateOf<NativePreparedPatch?>(null)}
-    LaunchedEffect(detail,textSize){result.value=withContext(Dispatchers.Default){prepareNativePatch(detail,textSize)}}
-    return result.value
-}
-private fun LazyListScope.nativePatchRows(rows:List<PatchLine>,start:Int,end:Int){
-    items(end-start,key={offset->"line:${start+offset}"},contentType={"patchLine"}){offset->
-        val line=rows[start+offset]
-        val tint=when(line.kind){"add"->AppColor.StatusOk;"del"->AppColor.StatusError;else->Ink}
-        val fill=when(line.kind){"add"->AppColor.StatusOk.copy(alpha=0.10f);"del"->AppColor.StatusError.copy(alpha=0.10f);else->Color.Transparent}
-        Row(Modifier.fillMaxWidth().background(fill).padding(vertical=1.dp)){
-            Text((line.oldLine?.toString()?:"")+" "+(line.newLine?.toString()?:""),Modifier.width(66.dp).padding(horizontal=4.dp),fontSize=10.sp,color=Muted,fontFamily=FontFamily.Monospace)
-            Text(line.text.ifEmpty{" "},Modifier.weight(1f),softWrap=false,fontFamily=FontFamily.Monospace,fontSize=12.sp,lineHeight=17.sp,color=tint)
-        }
-    }
-}
-@Composable private fun NativeChangeDetail(title:String,files:List<String>,detail:String,statusContent:(@Composable ()->Unit)?=null,close:()->Unit){
-    val clipboard=LocalClipboardManager.current
-    val density=LocalDensity.current
-    val hasPatch=remember(detail){detail.contains("*** ")||detail.contains("diff --git ")||detail.contains("@@ ")}
-    val prepared=if(detail.isNotEmpty())rememberNativePreparedPatch(detail,with(density){12.sp.toPx()}) else null
-    val rows=prepared?.rows.orEmpty()
-    val codeWidth=prepared?.codeWidth?:0f
-    val expandedContext=remember(detail){mutableStateMapOf<Int,Boolean>()}
-    val horizontal=rememberScrollState()
-    Dialog(onDismissRequest=close,properties=DialogProperties(usePlatformDefaultWidth=false)){
-        NativeDialogSystemBars()
-        Column(Modifier.fillMaxSize().background(MaterialTheme.colors.background).testTag("changeDetail")){
-            Row(Modifier.fillMaxWidth().height(58.dp).padding(horizontal=10.dp),verticalAlignment=Alignment.CenterVertically){
-                ChromeButton(R.drawable.ic_lucide_x,"关闭改动",close)
-                Text(title,Modifier.weight(1f).padding(start=8.dp),fontSize=16.sp,fontWeight=FontWeight.Medium)
-                if(hasPatch)TextButton(onClick={clipboard.setText(AnnotatedString(detail))}){Text("复制补丁",fontSize=13.sp)}
-            }
-            Divider(color=Ink.copy(alpha=0.08f))
-            if(files.isNotEmpty())Text(files.joinToString("\n"),Modifier.fillMaxWidth().padding(horizontal=18.dp,vertical=10.dp),fontSize=12.sp,fontFamily=FontFamily.Monospace,color=Muted)
-            statusContent?.let{content->Box(Modifier.fillMaxWidth().padding(horizontal=18.dp,vertical=8.dp)){content()}}
-            if(hasPatch)prepared?.let{Text("+${it.additions}  −${it.deletions}",Modifier.padding(horizontal=18.dp,vertical=8.dp),fontSize=12.sp,color=Muted)}
-            if(detail.isNotEmpty()&&prepared==null){
-                NativeRunningTitle("正在整理改动…",rememberNativeRunningPulse(true),Modifier.padding(18.dp).testTag("patchPreparing"),fontSize=14.sp)
-            }else if(prepared?.tooLarge==true||codeWidth>60000f){
-                Text("改动过大或包含超长行，请复制补丁到编辑器查看。",Modifier.padding(18.dp),fontSize=14.sp,color=Muted)
-            }else if(!hasPatch){
-                if(detail.isNotBlank())Text(detail,Modifier.padding(18.dp),fontSize=14.sp,color=Muted)
-            }else BoxWithConstraints(Modifier.fillMaxWidth().weight(1f)){
-                val contentWidth=maxOf(maxWidth,with(density){codeWidth.toDp()}+78.dp)
-                Box(Modifier.horizontalScroll(horizontal)){
-                LazyColumn(Modifier.width(contentWidth).fillMaxHeight().testTag("changeLines"),contentPadding=PaddingValues(vertical=4.dp)){
-                prepared?.sections.orEmpty().forEach{section->
-                    val start=section.start;val end=section.end
-                    if(section.foldable&&expandedContext[start]!=true){
-                        nativePatchRows(rows,start,start+3)
-                        item("fold:$start",contentType="patchFold"){
-                            Text("${end-start-6} 行未修改 · 展开",Modifier.fillMaxWidth().clickable{expandedContext[start]=true}.background(Wash).padding(horizontal=14.dp,vertical=6.dp),fontSize=12.sp,color=Muted)
-                        }
-                        nativePatchRows(rows,end-3,end)
-                    }else{
-                        nativePatchRows(rows,start,end)
-                    }
-                }
-                }
-                }
-            }
-        }
-    }
-}
-@Composable private fun NativeRichText(vm:NativeViewModel,text:String,event:ChatEvent?=null){
-    val open:(String)->Unit={href->vm.openOutput(href,event?.eventId.orEmpty(),event?.threadId?:vm.state.threadId)}
-    val cacheOwner=event?.let{row->row.displayKey.ifBlank{row.itemId.ifBlank{row.eventId}}.takeIf{it.isNotBlank()}?.let{row.threadId+"\u0000"+row.type+"\u0000"+it}}
-    val matches=remember(text){Regex("!\\[([^]]*)\\]\\((?:<[^>\\n]+>|\\\\.|[^()\\n]|\\([^()\\n]*\\))+\\)").findAll(text).mapNotNull{match->nativeMarkdownImageDestination(match.value)?.let{match to it}}.toList()}
-    Column(verticalArrangement=Arrangement.spacedBy(8.dp)){
-        var start=0
-        matches.forEachIndexed{index,(match,destination)->
-            if(match.range.first>start)NativeDocument(text.substring(start,match.range.first),open,cacheOwner?.let{"$it/segment:$index"})
-            val href=destination
-            val endpoint=runCatching{nativeFileEndpoint(vm.state,href)}.getOrNull()
-                ?:event?.takeIf{it.eventId.isNotBlank()&&"local-thread-output-files" in vm.state.capabilities}?.let{nativeThreadOutputEndpoint(it.threadId,it.eventId,href)}
-            if(endpoint!=null)NativeImageView(vm,endpoint,Modifier.fillMaxWidth(),adaptive=true)
-            else TextButton(onClick={open(destination)}){Text(match.groupValues[1].ifBlank{"打开图片"})}
-            start=match.range.last+1
-        }
-        if(start<text.length)NativeDocument(text.substring(start),open,cacheOwner?.let{"$it/segment:${matches.size}"})
-    }
-}
-@Composable private fun NativeDocument(text:String,open:(String)->Unit,cacheOwner:String?=null){
-    val parts=remember(text){nativeDocumentParts(text)}
-    val clipboard=LocalClipboardManager.current
-    Column(verticalArrangement=Arrangement.spacedBy(10.dp)){
-        parts.forEachIndexed{index,part->when(part.kind){
-            "code"->Surface(color=Wash,shape=Radius.Button,modifier=Modifier.fillMaxWidth()){
-                Column{
-                    Row(Modifier.padding(start=14.dp,end=4.dp),verticalAlignment=Alignment.CenterVertically){Text(part.language.ifBlank{"代码"},fontSize=12.sp,color=Muted,modifier=Modifier.weight(1f));var copied by remember(part.text){mutableStateOf(false)};IconButton(onClick={clipboard.setText(AnnotatedString(part.text));copied=true}){ModernIcon(if(copied)R.drawable.ic_lucide_check else R.drawable.ic_lucide_copy,"复制代码",Modifier.size(17.dp),Muted)}}
-                    SelectionContainer{Text(part.text,fontSize=13.sp,lineHeight=21.sp,fontFamily=FontFamily.Monospace,color=Ink,softWrap=false,modifier=Modifier.horizontalScroll(rememberScrollState()).padding(start=14.dp,end=14.dp,bottom=16.dp))}
-                }
-            }
-            "math","table"->NativeWideMarkdown(part.text,part.kind=="table",open,cacheOwner?.let{"$it/part:$index:${part.kind}"})
-            else->NativeMarkdown(part.text,open,cacheOwner?.let{"$it/part:$index:${part.kind}"})
-        }}
-    }
-}
-@Composable private fun NativeWideMarkdown(text:String,table:Boolean,open:(String)->Unit,cacheOwner:String?=null){
-    val selectionColors=LocalTextSelectionColors.current
-    val context=LocalContext.current
-    val ink=Ink.toArgb();val wash=Wash.toArgb();val surface=MaterialTheme.colors.surface.toArgb()
-    val markwon=LocalChatMarkwon.current?:remember(ink,wash,surface,open){nativeMarkwon(context,open,ink,wash,surface)}
-    val markdownCache=LocalChatMarkdownCache.current?:remember(markwon){NativeMarkdownRenderCache(markwon,background={nativeMarkwon(context,open,ink,wash,surface)})}
-    if(table){
-        val tableScroll=rememberScrollState()
-        val thumbColor=Muted.copy(alpha=0.45f)
-        val rows=remember(text){text.lineSequence().filter{it.contains('|')&&!Regex("^[| :\\-]+$").matches(it.trim())}
-            .map{line->line.trim().trim('|').split('|').map{it.trim().replace("\\|","|")}}.toList()}
-        val columns=rows.firstOrNull()?.size?:1
-        BoxWithConstraints(Modifier.fillMaxWidth()){
-            // Three-column tables should wrap in the phone viewport instead of
-            // presenting only a horizontal scroller. Wider tables keep scrolling.
-            val contentWidth=maxOf(maxWidth,(columns*(if(columns<=3)96 else 132)).dp)
-            val cellWidth=contentWidth/columns
-            Box(Modifier.testTag("markdownTable").fillMaxWidth().padding(bottom=8.dp).horizontalScroll(tableScroll)){
-                Column(Modifier.width(contentWidth).border(1.dp,Muted.copy(alpha=0.25f),Radius.Field).clip(Radius.Field)){
-                    rows.forEachIndexed{index,cells->
-                        Row(Modifier.fillMaxWidth().background(if(index==0)Wash else MaterialTheme.colors.surface)){
-                            repeat(columns){column->
-                                Text(cells.getOrNull(column).orEmpty(),Modifier.width(cellWidth).padding(horizontal=10.dp,vertical=9.dp),
-                                    fontSize=14.sp,lineHeight=20.sp,color=Ink,fontWeight=if(index==0)FontWeight.SemiBold else FontWeight.Normal)
-                            }
-                        }
-                        if(index<rows.lastIndex)Divider(color=Muted.copy(alpha=0.22f),thickness=1.dp)
-                    }
-                }
-            }
-            if(tableScroll.maxValue>0)Canvas(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(3.dp)){
-                val fraction=size.width/(size.width+tableScroll.maxValue)
-                val thumb=(size.width*fraction).coerceAtLeast(24.dp.toPx())
-                val x=(size.width-thumb)*tableScroll.value/tableScroll.maxValue
-                drawRoundRect(thumbColor.copy(alpha=0.10f),cornerRadius=androidx.compose.ui.geometry.CornerRadius(size.height,size.height))
-                drawRoundRect(thumbColor,topLeft=Offset(x,0f),size=androidx.compose.ui.geometry.Size(thumb,size.height),cornerRadius=androidx.compose.ui.geometry.CornerRadius(size.height,size.height))
-            }
-        }
-        return
-    }
-    val prepared by rememberNativeRenderedMarkdown(markdownCache,text,cacheOwner)
-    AndroidView(factory={android.widget.HorizontalScrollView(it).apply{
-        isFillViewport=true;isHorizontalScrollBarEnabled=true
-        addView(NativeSelectableTextView(it).apply{setTextColor(android.graphics.Color.rgb(32,33,36));textSize=16f;setTextIsSelectable(true);setPadding(0,12,0,16)},android.widget.FrameLayout.LayoutParams(-2,-2))
-    }},modifier=Modifier.fillMaxWidth(),onReset={scroll->val view=scroll.getChildAt(0) as TextView;view.text="";view.tag=null;scroll.scrollTo(0,0)},onRelease={scroll->(scroll.getChildAt(0) as TextView).text=""},update={scroll->val view=scroll.getChildAt(0) as NativeSelectableTextView;view.applySelectionColors(selectionColors);view.minWidth=if(table)(520*context.resources.displayMetrics.density).toInt() else 0;view.setTextColor(ink);if(view.tag!=Pair(prepared.source,ink)){markwon.setParsedMarkdown(view,prepared.rendered);view.tag=Pair(prepared.source,ink)};view.movementMethod=android.text.method.ArrowKeyMovementMethod.getInstance()})
-}
-private class NativeMarkdownLinkHandler(val open:(String)->Unit)
-private fun nativeMarkwon(context:android.content.Context,open:((String)->Unit)?,ink:Int,wash:Int,surface:Int):Markwon=Markwon.builder(context)
-    .usePlugin(object:io.noties.markwon.AbstractMarkwonPlugin(){
-        override fun configureConfiguration(builder:io.noties.markwon.MarkwonConfiguration.Builder){if(open!=null)builder.linkResolver { view,link ->
-            // Cached spans are shared, but the owning message supplies the event
-            // needed to resolve local image/file links outside listed projects.
-            val handler=view.getTag(R.id.markdown_link_handler) as? NativeMarkdownLinkHandler
-            if(handler!=null)handler.open(link) else open?.invoke(link)
-        }}
-        override fun configureTheme(builder:io.noties.markwon.core.MarkwonTheme.Builder){builder.headingBreakHeight(0).headingTextSizeMultipliers(floatArrayOf(1.5f,1.25f,1.12f,1.05f,1f,1f)).linkColor(android.graphics.Color.rgb(45,96,156)).codeBackgroundColor(wash)}
-    })
-    .usePlugin(TablePlugin.create{it.tableBorderColor(android.graphics.Color.rgb(224,227,230)).tableBorderWidth(1).tableCellPadding((10*context.resources.displayMetrics.density).toInt()).tableHeaderRowBackgroundColor(wash).tableEvenRowBackgroundColor(surface).tableOddRowBackgroundColor(surface)})
-    .usePlugin(MarkwonInlineParserPlugin.create())
-    .usePlugin(JLatexMathPlugin.create(16f*context.resources.displayMetrics.scaledDensity){it.inlinesEnabled(true);it.executorService(nativeMathExecutor);it.theme().textColor(ink)}).build()
-@Composable private fun NativeMarkdown(text:String,open:((String)->Unit)?=null,cacheOwner:String?=null){
-    val selectionColors=LocalTextSelectionColors.current
-    val context=LocalContext.current
-    val ink=Ink.toArgb();val wash=Wash.toArgb();val surface=MaterialTheme.colors.surface.toArgb()
-    val markwon=LocalChatMarkwon.current?:remember(ink,wash,surface,open){nativeMarkwon(context,open,ink,wash,surface)}
-    val markdownCache=LocalChatMarkdownCache.current?:remember(markwon){NativeMarkdownRenderCache(markwon,background={nativeMarkwon(context,open,ink,wash,surface)})}
-    val prepared by rememberNativeRenderedMarkdown(markdownCache,text,cacheOwner)
-    val selectAcross by rememberUpdatedState(LocalNativeTextSelection.current)
-    AndroidView(factory={NativeSelectableTextView(it).apply{setTextColor(android.graphics.Color.rgb(36,36,36));textSize=16f;setLineSpacing(2f,1.12f);setTextIsSelectable(true)}},modifier=Modifier.fillMaxWidth(),onReset={it.text="";it.tag=null},onRelease={it.text=""},update={it.applySelectionColors(selectionColors);it.setTextColor(ink);if(it.tag!=Pair(prepared.source,ink)){
-        // Hidden trailing HTML can leave paragraph breaks in Markwon's output.
-        // Trim the rendered tail, preserving spans and all spacing inside the answer.
-        val rendered=prepared.rendered
-        val end=rendered.indexOfLast{char->!char.isWhitespace()}+1
-        markwon.setParsedMarkdown(it,android.text.SpannableStringBuilder(rendered,0,end))
-        it.tag=Pair(prepared.source,ink)
-    };it.setTag(R.id.markdown_link_handler,open?.let(::NativeMarkdownLinkHandler));val selectionView=it;it.customSelectionActionModeCallback=if(selectAcross==null)null else object:android.view.ActionMode.Callback{
-        private val fullScreenId=android.view.View.generateViewId()
-        override fun onCreateActionMode(mode:android.view.ActionMode,menu:android.view.Menu):Boolean{
-            menu.add(0,fullScreenId,10,"整屏选文").setShowAsAction(android.view.MenuItem.SHOW_AS_ACTION_ALWAYS)
-            return true
-        }
-        override fun onPrepareActionMode(mode:android.view.ActionMode,menu:android.view.Menu):Boolean{
-            var changed=false
-            for(index in menu.size()-1 downTo 0){val item=menu.getItem(index);if(item.itemId !in setOf(android.R.id.copy,android.R.id.selectAll,fullScreenId)){menu.removeItem(item.itemId);changed=true}}
-            return changed
-        }
-        override fun onActionItemClicked(mode:android.view.ActionMode,item:android.view.MenuItem):Boolean{
-            if(item.itemId!=fullScreenId)return false
-            val start=minOf(selectionView.selectionStart,selectionView.selectionEnd).coerceAtLeast(0)
-            val end=maxOf(selectionView.selectionStart,selectionView.selectionEnd).coerceIn(start,selectionView.text.length)
-            selectAcross?.invoke(selectionView.text.subSequence(start,end).toString().ifBlank{text});mode.finish();return true
-        }
-        override fun onDestroyActionMode(mode:android.view.ActionMode){}
-    };it.movementMethod=android.text.method.ArrowKeyMovementMethod.getInstance()})
-}
-@Composable private fun NativeMarkdownReader(vm:NativeViewModel,document:NativeReadableFile,modifier:Modifier=Modifier,listState:LazyListState=rememberLazyListState()){
-    val selectionColors=LocalTextSelectionColors.current
-    val context=LocalContext.current
-    val ink=Ink.toArgb();val wash=Wash.toArgb();val surface=MaterialTheme.colors.surface.toArgb()
-    val open:(String)->Unit=remember(vm,document){ {href->
-        if(!href.startsWith("#"))vm.openOutput(nativeMarkdownTarget(document.sourcePath,href),document.eventId,document.threadId.ifBlank{vm.state.threadId})
-    } }
-    // Reader links have the document's base directory, independently of chat link handlers.
-    val markwon=remember(context,ink,wash,surface,open){nativeMarkwon(context,open,ink,wash,surface)}
-    val parts=remember(markwon,document.content){nativeReaderParts(markwon,document.content)}
-    LazyColumn(modifier,state=listState,contentPadding=PaddingValues(horizontal=20.dp,vertical=18.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){
-        items(parts,contentType={if(it.code!=null)"code" else if(it.rendered!=null)"text" else "image"}){part->
-            when{
-                part.code!=null->{
-                    val fence="`".repeat(maxOf(3,(Regex("`+").findAll(part.code).maxOfOrNull{it.value.length}?:0)+1))
-                    NativeDocument("$fence${part.language}\n${part.code}\n$fence",open)
-                }
-                part.rendered!=null->AndroidView(factory={NativeSelectableTextView(it).apply{textSize=16f;setLineSpacing(2f,1.12f)}},modifier=Modifier.fillMaxWidth(),
-                    onReset={it.text="";it.tag=null},onRelease={it.text=""},update={view->
-                        view.applySelectionColors(selectionColors)
-                        view.setTextColor(ink)
-                        if(view.tag!==part){
-                            val end=part.rendered.indexOfLast{!it.isWhitespace()}+1
-                            markwon.setParsedMarkdown(view,android.text.SpannableStringBuilder(part.rendered,0,end));view.tag=part
-                        }
-                        view.movementMethod=android.text.method.ArrowKeyMovementMethod.getInstance()
-                    })
-                part.image.isNotBlank()->{
-                    val target=nativeMarkdownTarget(document.sourcePath,part.image)
-                    val endpoint=runCatching{nativeFileEndpoint(vm.state,target)}.getOrNull()
-                        ?:document.takeIf{it.eventId.isNotBlank()&&it.threadId.isNotBlank()&&"local-thread-output-files" in vm.state.capabilities}?.let{nativeThreadOutputEndpoint(it.threadId,it.eventId,target,it.sourcePath)}
-                    if(endpoint!=null)NativeImageView(vm,endpoint,Modifier.fillMaxWidth(),adaptive=true)
-                    else TextButton(onClick={open(part.image)}){Text(part.label.ifBlank{"打开图片"})}
-                }
-            }
-        }
-    }
-}
-@Composable private fun NativeDocumentPreview(vm:NativeViewModel,document:NativeReadableFile,close:()->Unit){
-    val context=LocalContext.current
-    val markdown=nativeIsMarkdownFile(document.name,document.mime)
-    var source by remember(document.sourcePath){mutableStateOf(false)}
-    val readingPosition=key(document.sourcePath){rememberLazyListState()}
-    val sourcePosition=key(document.sourcePath){rememberScrollState()}
-    val save=rememberNativeSaveAction{
-        nativeSavePublicFile(context,document.name,document.mime){it.write(document.encoding.encode(document.content,document.hasBom))}
-        "已保存到下载/Codex"
-    }
-    Dialog(onDismissRequest=close,properties=DialogProperties(usePlatformDefaultWidth=false)){
-        NativeDialogSystemBars()
-        Column(Modifier.fillMaxSize().background(MaterialTheme.colors.background)){
-            Row(Modifier.fillMaxWidth().height(58.dp).padding(horizontal=10.dp),verticalAlignment=Alignment.CenterVertically){
-                ChromeButton(R.drawable.ic_lucide_x,"关闭阅读器",close)
-                Text(document.name,Modifier.weight(1f).padding(start=6.dp),fontSize=16.sp,fontWeight=FontWeight.Medium,maxLines=1,overflow=TextOverflow.Ellipsis)
-                if(markdown)TextButton(onClick={source=!source}){Text(if(source)"阅读" else "源码",fontSize=13.sp)}
-                TextButton(enabled=!save.saving,onClick=save.save){Text(if(save.saving)"保存中" else "保存",fontSize=13.sp)}
-            }
-            Divider(color=Ink.copy(alpha=0.08f))
-            if(source||!markdown)Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(sourcePosition).padding(horizontal=20.dp,vertical=18.dp)){
-                SelectionContainer{Text(document.content,fontFamily=FontFamily.Monospace,fontSize=13.sp,lineHeight=20.sp)}
-            }else NativeMarkdownReader(vm,document,Modifier.fillMaxWidth().weight(1f),readingPosition)
-            val feedback=vm.state
-            if(feedback.fileFeedbackVisible)NativeFileFeedback(feedback.fileBusy,feedback.fileMessage,feedback.fileError,
-                vm::retryFile,vm::hideFileFeedback,Modifier.padding(12.dp).navigationBarsPadding())
-        }
-    }
-}
-@Composable private fun NativeImageView(vm:NativeViewModel,endpoint:String,modifier:Modifier,thumbnail:Boolean=false,onOpen:((android.graphics.Bitmap)->Unit)?=null,onLoaded:((android.graphics.Bitmap,String)->Unit)?=null,adaptive:Boolean=false,shape:androidx.compose.ui.graphics.Shape=Radius.Field){
-    if(endpoint.startsWith("missing-image:")){
-        Box(modifier.clip(shape).background(Wash),contentAlignment=Alignment.Center){Text("图片暂不可用",fontSize=12.sp,color=Muted)}
-        return
-    }
-    val maxSide=if(thumbnail)512 else 2048
-    val cached=remember(vm,endpoint,thumbnail,vm.imageRevision){vm.cachedImage(endpoint,maxSide)}
-    val dimensions=remember(vm,endpoint,vm.imageRevision){vm.cachedImageDimensions(endpoint)}
-    var bitmap by remember(vm,endpoint,thumbnail,vm.imageRevision){mutableStateOf(cached?.first)}
-    var failure by remember(endpoint,vm.imageRevision){mutableStateOf(false)}
-    var failureReason by remember(endpoint,vm.imageRevision){mutableStateOf("")}
-    var attempt by remember(endpoint,vm.imageRevision){mutableIntStateOf(0)}
-    val loadedAction by rememberUpdatedState(onLoaded)
-    val openAction by rememberUpdatedState(onOpen)
-    LaunchedEffect(endpoint,cached,vm.imageRevision){cached?.let{loadedAction?.invoke(it.first,it.second)}}
-    suspend fun load(maxSide:Int)=vm.loadImage(endpoint,maxSide)
-    LaunchedEffect(endpoint,attempt,vm.imageRevision,vm.state.connected){
-        if(bitmap!=null)return@LaunchedEffect
-        failure=false;failureReason=""
-        repeat(3){tryIndex->
-            try{
-                val revision=vm.imageRevision
-                val(loaded,type)=load(maxSide)
-                if(revision!=vm.imageRevision)return@LaunchedEffect
-                bitmap=loaded;loadedAction?.invoke(loaded,type)
-                return@LaunchedEffect
-            }catch(error:kotlinx.coroutines.CancellationException){throw error
-            }catch(error:Exception){
-                val message=error.message.orEmpty()
-                val retryable=error is java.io.IOException||message.contains("连接",true)||message.contains("读取失败 (5")
-                if(!retryable||tryIndex==2){
-                    failure=true
-                    val status=Regex("读取失败 \\((\\d{3})\\)").find(message)?.groupValues?.get(1)
-                    failureReason=if(status!=null)"图片读取失败（HTTP $status）" else if(message in setOf("图片格式无法解码","图片超过本机预览大小限制","连接已断开"))message else "网络读取失败"
-                    return@LaunchedEffect
-                }
-                delay(if(tryIndex==0)400 else 1000)
-            }
-        }
-    }
-    val imageFrame:@Composable (Modifier)->Unit={frame->
-        Box(frame.clip(shape).background(Wash).clickable(enabled=bitmap!=null||failure){
-            if(failure){failure=false;attempt++}else bitmap?.let{image->if(openAction!=null)openAction?.invoke(image) else vm.showImage(endpoint,image)}
-        },contentAlignment=Alignment.Center){bitmap?.let{Image(it.asImageBitmap(),"图片",modifier=Modifier.fillMaxSize(),contentScale=if(thumbnail)ContentScale.Crop else ContentScale.Fit)}?:if(failure)Text("${failureReason.ifBlank{"加载失败"}}，点击重试",fontSize=12.sp,color=Muted,textAlign=TextAlign.Center,modifier=Modifier.padding(12.dp)) else CircularProgressIndicator(Modifier.size(18.dp),strokeWidth=2.dp,color=Muted)}
-    }
-    if(adaptive){
-        val heightLimit=minOf(320.dp,LocalConfiguration.current.screenHeightDp.dp*0.5f)
-        BoxWithConstraints(modifier,contentAlignment=Alignment.CenterStart){
-            val loaded=bitmap
-            val widthPixels=loaded?.width?:dimensions?.width
-            val heightPixels=loaded?.height?:dimensions?.height
-            if(widthPixels!=null&&heightPixels!=null){
-                val ratio=widthPixels.toFloat()/heightPixels.coerceAtLeast(1)
-                val width=minOf(maxWidth,heightLimit*ratio)
-                imageFrame(Modifier.size(width,width/ratio))
-            }else imageFrame(Modifier.fillMaxWidth().height(minOf(96.dp,heightLimit)))
-        }
-    }else imageFrame(modifier)
-}
-@Composable internal fun NativeImagePreview(initialBitmap:android.graphics.Bitmap,vm:NativeViewModel,endpoint:String,close:()->Unit,endpoints:List<String> = listOf(endpoint),startIndex:Int=0,thumbnails:Map<String,Pair<android.graphics.Bitmap,String>> = emptyMap()){
-    val context=LocalContext.current;val scope=rememberCoroutineScope()
-    var currentIndex by remember(endpoints,endpoint){mutableIntStateOf(startIndex)}
-    val currentEndpoint=endpoints[currentIndex]
-    val fullImages=remember(endpoints){mutableStateMapOf<String,Pair<android.graphics.Bitmap,String>>()}
-    val thumb=thumbnails[currentEndpoint]
-    val full=fullImages[currentEndpoint]
-    val bitmap=thumb?.first?:initialBitmap.takeIf{currentEndpoint==endpoint}?:full?.first
-    var fullFailure by remember(currentEndpoint){mutableStateOf(false)}
-    var fullAttempt by remember(currentEndpoint){mutableIntStateOf(0)}
-    LaunchedEffect(currentEndpoint,fullAttempt){
-        fullImages.keys.filter{key->key!=currentEndpoint&&key!=endpoints.getOrNull(currentIndex-1)&&key!=endpoints.getOrNull(currentIndex+1)}.forEach{fullImages.remove(it)}
-        if(fullImages.containsKey(currentEndpoint))return@LaunchedEffect
-        fullFailure=false
-        try{fullImages[currentEndpoint]=vm.loadImage(currentEndpoint,2048)}
-        catch(error:kotlinx.coroutines.CancellationException){throw error}
-        catch(_:Exception){fullFailure=true}
-    }
-    val save=rememberNativeSaveAction{
-        val bytes=vm.originalImageBytes(currentEndpoint)
-        val mime=nativeEncodedImageMime(bytes)
-        nativeSavePublicFile(context,nativeImageName(currentEndpoint,mime),mime){it.write(bytes)}
-        "图片已保存到相册/Codex"
-    }
-    var scale by remember{mutableFloatStateOf(1f)}
-    var pan by remember{mutableStateOf(Offset.Zero)}
-    var dismissY by remember{mutableFloatStateOf(0f)}
-    var swipeX by remember{mutableFloatStateOf(0f)}
-    var swipeDirection by remember{mutableIntStateOf(0)}
-    var toolbarVisible by remember{mutableStateOf(true)}
-    var motion by remember{mutableStateOf<kotlinx.coroutines.Job?>(null)}
-    val resolutionAlpha=animateFloatAsState(if(full==null)0f else 1f,tween(140,easing=ControlEase),label="imageResolution")
-    // Compose 1.7's custom-width Dialog measures against screenHeightDp, which
-    // excludes the bars. Use native window constraints and size that window in
-    // NativeDialogSystemBars instead of accepting that shorter measurement.
-    Dialog(onDismissRequest=close,properties=DialogProperties(dismissOnClickOutside=false,usePlatformDefaultWidth=true,decorFitsSystemWindows=false)){
-        NativeDialogSystemBars(Color.Black,lightIcons=true,immersive=true)
-        BoxWithConstraints(Modifier.fillMaxSize()){
-                val density=LocalDensity.current
-                val width=with(density){maxWidth.toPx()};val height=with(density){maxHeight.toPx()}
-                val fitted=min(width/(bitmap?.width?:1),height/(bitmap?.height?:1))
-                val imageWidth=(bitmap?.width?:1)*fitted;val imageHeight=(bitmap?.height?:1)*fitted
-                val currentImageSize by rememberUpdatedState(Size(imageWidth,imageHeight))
-                fun clampPan(target:Offset,atScale:Float):Offset{
-                    val limitX=((currentImageSize.width*atScale-width)/2f).coerceAtLeast(0f)
-                    val limitY=((currentImageSize.height*atScale-height)/2f).coerceAtLeast(0f)
-                    return Offset(target.x.coerceIn(-limitX,limitX),target.y.coerceIn(-limitY,limitY))
-                }
-                fun animateZoom(target:Float){
-                    motion?.cancel()
-                    val initial=scale
-                    val initialPan=pan
-                    motion=scope.launch{animate(initial,target,animationSpec=tween(220,easing=ControlEase)){value,_->
-                        scale=value;pan=clampPan(initialPan,value)
-                    };if(target==1f)pan=Offset.Zero}
-                }
-                val showToolbar by remember{derivedStateOf{abs(dismissY)<20f}}
-                Box(Modifier.fillMaxSize().clipToBounds().testTag("imagePreviewGestureSurface").drawBehind{
-                    val fade=(1f-abs(dismissY)/(size.height*.7f)).coerceIn(.25f,1f)
-                    drawRect(AppColor.PreviewBackdrop.copy(alpha=fade))
-                }
-                    .pointerInput(width,height){detectTapGestures(onTap={toolbarVisible=!toolbarVisible},onDoubleTap={animateZoom(if(scale>1.01f)1f else 2.5f)})}
-                    .pointerInput(width,height){
-                        awaitEachGesture{
-                            val down=awaitFirstDown(requireUnconsumed=false)
-                            motion?.cancel();motion=null
-                            var velocity=VelocityTracker().apply{addPosition(down.uptimeMillis,down.position)}
-                            var total=Offset.Zero
-                            var dismissing=false
-                            var swiping=false
-                            var transformed=false
-                            while(true){
-                                val event=awaitPointerEvent()
-                                val active=event.changes.count{it.pressed}
-                                if(active<=1)(event.changes.firstOrNull{it.pressed}?:event.changes.firstOrNull())?.let{velocity.addPosition(it.uptimeMillis,it.position)}
-                                if(active==0)break
-                                val zoomChange=event.calculateZoom()
-                                val movement=event.calculatePan()
-                                if(active>1)transformed=true
-                                if(transformed||scale>1.01f||zoomChange!=1f){
-                                    motion?.cancel()
-                                    dismissing=false;swiping=false;total=Offset.Zero;velocity=VelocityTracker();swipeX=0f;swipeDirection=0
-                                    val next=(scale*zoomChange).coerceIn(1f,5f)
-                                    val center=event.calculateCentroid()-Offset(width/2f,height/2f)
-                                    val factor=next/scale
-                                    scale=next
-                                    pan=clampPan(pan+movement+(center-pan)*(1f-factor),next)
-                                    dismissY=0f
-                                    event.changes.forEach{it.consume()}
-                                }else{
-                                    total+=movement
-                                    if(!dismissing&&!swiping&&abs(total.y)>viewConfiguration.touchSlop&&abs(total.y)>abs(total.x)*1.25f)dismissing=true
-                                    if(!dismissing&&!swiping&&endpoints.size>1&&abs(total.x)>viewConfiguration.touchSlop&&abs(total.x)>abs(total.y)*1.25f)swiping=true
-                                    if(dismissing){
-                                        motion?.cancel()
-                                        dismissY=(dismissY+movement.y).coerceIn(-height,height)
-                                        event.changes.forEach{it.consume()}
-                                    }else if(swiping){
-                                        motion?.cancel()
-                                        val next=swipeX+movement.x
-                                        val direction=if(next<0f)1 else if(next>0f)-1 else 0
-                                        swipeDirection=direction.takeIf{currentIndex+it in endpoints.indices}?:0
-                                        swipeX=if(swipeDirection==0)next.coerceIn(-width*.12f,width*.12f) else next.coerceIn(-width,width)
-                                        event.changes.forEach{it.consume()}
-                                    }
-                                }
-                            }
-                            if(swiping){
-                                val direction=if(swipeX<0)1 else -1
-                                val target=currentIndex+direction
-                                val shouldChange=abs(swipeX)>width*.18f||abs(velocity.calculateVelocity().x)>with(density){800.dp.toPx()}
-                                val start=swipeX
-                                if(shouldChange&&target in endpoints.indices){
-                                    motion=scope.launch{
-                                        animate(start,-direction*width,animationSpec=tween(220,easing=ControlEase)){value,_->swipeX=value}
-                                        currentIndex=target;scale=1f;pan=Offset.Zero;dismissY=0f;swipeX=0f;swipeDirection=0
-                                    }
-                                }else{
-                                    motion=scope.launch{
-                                        animate(start,0f,animationSpec=tween(220,easing=ControlEase)){value,_->swipeX=value}
-                                        swipeDirection=0
-                                    }
-                                }
-                                return@awaitEachGesture
-                            }
-                            if(!dismissing&&swipeX!=0f){
-                                val start=swipeX
-                                motion=scope.launch{animate(start,0f,animationSpec=tween(220,easing=ControlEase)){value,_->swipeX=value};swipeDirection=0}
-                                return@awaitEachGesture
-                            }
-                            val velocityY=velocity.calculateVelocity().y
-                            val quickDismiss=dismissing&&abs(dismissY)>with(density){24.dp.toPx()}&&velocityY*dismissY>0f&&abs(velocityY)>with(density){800.dp.toPx()}
-                            if(dismissing&&(abs(dismissY)>min(height*.18f,with(density){112.dp.toPx()})||quickDismiss)){
-                                val start=dismissY
-                                val target=if(start<0f)-height else height
-                                motion=scope.launch{animate(start,target,animationSpec=tween(160,easing=ControlEase)){value,_->dismissY=value};close()}
-                            }
-                            else if(dismissY!=0f){
-                                val start=dismissY
-                                motion=scope.launch{animate(start,0f,animationSpec=spring(stiffness=Spring.StiffnessMedium,dampingRatio=Spring.DampingRatioNoBouncy)){value,_->dismissY=value}}
-                            }
-                        }
-                    },contentAlignment=Alignment.Center){
-                    val adjacentIndex=currentIndex+swipeDirection
-                    if(swipeDirection!=0&&adjacentIndex in endpoints.indices){
-                        val adjacentEndpoint=endpoints[adjacentIndex]
-                        val adjacentBitmap=fullImages[adjacentEndpoint]?.first?:thumbnails[adjacentEndpoint]?.first
-                        if(adjacentBitmap!=null){
-                            val adjacentFit=min(width/adjacentBitmap.width,height/adjacentBitmap.height)
-                            Box(Modifier.size(with(density){(adjacentBitmap.width*adjacentFit).toDp()},with(density){(adjacentBitmap.height*adjacentFit).toDp()})
-                                .testTag("imagePreviewNeighbor")
-                                .graphicsLayer{translationX=swipeX+swipeDirection*width;translationY=dismissY}){
-                                Image(adjacentBitmap.asImageBitmap(),null,Modifier.fillMaxSize(),contentScale=ContentScale.Fit)
-                            }
-                        }
-                    }
-                    if(bitmap!=null)Box(modifier=Modifier
-                        .size(with(density){imageWidth.toDp()},with(density){imageHeight.toDp()})
-                        .semantics(mergeDescendants=true){contentDescription="图片预览";stateDescription="${(scale*100).toInt()}% · ${currentIndex+1}/${endpoints.size}"}
-                        .graphicsLayer{scaleX=scale;scaleY=scale;translationX=pan.x+swipeX;translationY=pan.y+dismissY}){
-                        Image(bitmap.asImageBitmap(),null,Modifier.fillMaxSize(),contentScale=ContentScale.Fit)
-                        if(full!=null)Image(full.first.asImageBitmap(),null,Modifier.fillMaxSize().testTag("fullImageLayer").graphicsLayer{alpha=resolutionAlpha.value},contentScale=ContentScale.Fit)
-                    } else CircularProgressIndicator(Modifier.size(28.dp),color=Color.White,strokeWidth=2.dp)
-                }
-            if(fullFailure)TextButton(onClick={fullAttempt++},modifier=Modifier.align(Alignment.BottomCenter).padding(bottom=24.dp).background(AppColor.PreviewToolbarScrim,Radius.Button).testTag("imagePreviewRetry")){
-                Text("原图加载失败，点击重试",color=Color.White)
-            }
-            AnimatedVisibility(toolbarVisible&&showToolbar,Modifier.align(Alignment.TopEnd).windowInsetsPadding(WindowInsets.displayCutout).padding(8.dp)){
-                Row(Modifier.background(AppColor.PreviewToolbarScrim,Radius.Panel)){
-                IconButton(enabled=!save.saving,onClick=save.save){ModernIcon(R.drawable.ic_lucide_arrow_down_to_line,if(save.saving)"正在保存图片" else "保存图片",Modifier.size(22.dp),Color.White)}
-                IconButton(onClick={animateZoom((scale+1f).coerceAtMost(5f))}){ModernIcon(R.drawable.ic_lucide_zoom_in,"放大图片",Modifier.size(22.dp),Color.White)}
-                IconButton(onClick={animateZoom(1f)}){ModernIcon(R.drawable.ic_lucide_scan,"复位图片",Modifier.size(22.dp),Color.White)}
-                IconButton(onClick=close){ModernIcon(R.drawable.ic_lucide_x,"关闭图片预览",Modifier.size(22.dp),Color.White)}
-                }
-            }
-        }
-    }
-}
-@Composable private fun NativeWorkspace(vm:NativeViewModel,panel:String,modifier:Modifier=Modifier){
-    val s=vm.state
-    val fileList=rememberLazyListState()
-    LaunchedEffect(s.fileProjectId,s.filePath){fileList.scrollToItem(0)}
-    Column(modifier){
-    when(panel){
-        "文件"->{
-            val file=s.file
-            if(file!=null){
-                if(s.fileBusy)StatusPulseText(s.fileMessage,true,Modifier.padding(vertical=8.dp))
-                if(s.fileError.isNotBlank()){Text(s.fileError,color=MaterialTheme.colors.error,fontSize=13.sp);TextButton(onClick=vm::retryFile,enabled=!s.fileBusy){Text("重试")}}
-                NativeFileEditor(file,s.fileDraft,s.fileBusy,vm::editFile,vm::saveFile,vm::backToFiles)
-            }
-            else{
-                val files=remember(s.files,s.filePath,s.fileRootPath,s.fileBusy,s.fileMessage,s.fileError){
-                    NativeWorkspaceFilesState(s.files,s.filePath,s.fileRootPath,s.fileBusy,s.fileMessage,s.fileError)
-                }
-                val path=s.filePath
-                NativeWorkspaceFiles(files,fileList,vm::readFile,{vm.files(path)},
-                    {nativeWorkspaceParentPath(path,s.fileRootPath)?.let(vm::files)},vm::retryFile,Modifier.weight(1f).fillMaxWidth())
-            }
-        }
-        "改动"->NativeMarkdown("```diff\n${s.diff}\n```")
-        "终端"->{
-            s.projects.find{it.id==s.projectId}?.let{Text(nativeDisplayPath(it.path),fontSize=13.sp,color=Muted)}
-            if(s.projectId.isBlank())Text("请先选择项目",color=Muted)
-            if(s.terminal.isNotBlank())NativeMarkdown("```\n${s.terminal}\n```")
-            Entry(s.terminalDraft,vm::editTerminal,"输入命令",Modifier.testTag("terminalEditor"))
-            if(s.terminalError.isNotBlank())Text(s.terminalError,color=MaterialTheme.colors.error,fontSize=12.sp)
-            Row{
-                Button(onClick=vm::terminal,enabled=s.connected&&!s.terminalBusy&&s.projectId.isNotBlank()&&s.terminalDraft.isNotBlank(),modifier=Modifier.testTag("terminalExecute")){Text(if(s.terminalBusy)"处理中…" else "执行")}
-                TextButton(onClick=vm::stopTerminal,enabled=!s.terminalBusy&&s.terminalSession.isNotBlank()){Text("停止终端")}
-            }
-        }
-    }
-    if(vm.currentWorkBusy())LinearProgressIndicator(Modifier.fillMaxWidth())
-    }
-}
-@Composable internal fun NativeFileEditor(file:FileContent,draft:String,busy:Boolean,onEdit:(String)->Unit,onSave:()->Unit,onBack:()->Unit){
-    Column(Modifier.fillMaxWidth(),verticalArrangement=Arrangement.spacedBy(10.dp)){
-        TextButton(onClick=onBack,enabled=!busy){Text("返回目录")}
-        Text(nativeDisplayPath(file.path),fontSize=13.sp)
-        if(file.editable){
-            Entry(draft,onEdit,"",Modifier.fillMaxWidth().testTag("fileEditor"),label="文件内容")
-            Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.SpaceBetween){
-                Text(if(draft!=file.content)"有未保存的修改" else "内容已保存",fontSize=12.sp,color=Muted,modifier=Modifier.testTag("fileSaveState"))
-                Button(onClick=onSave,enabled=!busy&&draft!=file.content,modifier=Modifier.testTag("fileSaveButton")){Text("保存")}
-            }
-        }else SelectionContainer{Text(file.content)}
-    }
-}
-
-
 @Composable private fun NativeQuestions(vm:NativeViewModel,event:ChatEvent){
     val questions=remember(event.detail){runCatching{val a=org.json.JSONObject(event.detail).getJSONArray("questions");(0 until a.length()).map{a.getJSONObject(it)}}.getOrDefault(emptyList())}
     val draftKey=vm.questionDraftKey(event.threadId,event.approvalId)

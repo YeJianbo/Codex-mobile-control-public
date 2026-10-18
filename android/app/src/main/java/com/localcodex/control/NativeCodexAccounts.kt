@@ -18,7 +18,6 @@ import androidx.compose.ui.unit.sp
 import org.json.JSONArray
 import org.json.JSONObject
 
-data class NativeAccountsState(val service:String="",val data:JSONObject?=null,val loading:Boolean=false,val busy:String="",val error:String="",val message:String="",val confirmation:JSONObject?=null,val result:JSONObject?=null)
 data class NativeSubagentCloseState(val thread:ThreadRecord?=null,val busy:Boolean=false,val confirmStop:Boolean=false,val message:String="",val error:String="")
 internal fun JSONObject.accountText(key:String)=if(isNull(key))"" else optString(key)
 internal fun JSONObject.accountRows(key:String):List<JSONObject>{val a=optJSONArray(key)?:return emptyList();return (0 until a.length()).mapNotNull{a.optJSONObject(it)}}

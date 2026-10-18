@@ -1,5 +1,8 @@
 node_modules/
 dist/
+!components/local-console/dist/
+!components/local-console/dist/*
+__pycache__/
 .gradle/
 build/
 local.properties

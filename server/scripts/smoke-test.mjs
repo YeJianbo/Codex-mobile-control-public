@@ -551,7 +551,13 @@ try {
   });
 
   await check('desktop crash history reconciles, survives gateway restart and can continue',async()=>{
-    const response=await json(`/api/threads/${staleDesktopId}/events`,{headers:admin});
+    // History returns immediately; backend status reconciliation runs in the background.
+    let response;const deadline=Date.now()+10000;
+    do{
+      response=await json(`/api/threads/${staleDesktopId}/events`,{headers:admin});
+      if(response.status==='interrupted')break;
+      await sleep(100);
+    }while(Date.now()<deadline);
     assert(response.status==='interrupted','stale desktop turn should be interrupted');
     assert(response.events.some(e=>e.type==='message.delta'&&e.text==='preserved before desktop crash'),'answer must be retained');
     assert(response.events.some(e=>e.type==='turn.completed'&&e.status==='interrupted'),'recovery event must reach history');

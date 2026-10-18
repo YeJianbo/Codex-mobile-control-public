@@ -8,6 +8,8 @@ parser.add_argument('--output-dir',type=Path,default=root/'deliverables',help='D
 parser.add_argument('--android-build-dir',type=Path,default=root/'android/app/build',help='Android app build directory containing release output metadata')
 parser.add_argument('--android-apk',type=Path,help='Release APK to package; defaults to the versioned APK in artifacts')
 parser.add_argument('--android-build-log',type=Path,help='Build log belonging to the provided Android APK')
+parser.add_argument('--console-dir',type=Path,default=root/'components/local-console',help='Versioned Local Console component source and frontend')
+parser.add_argument('--console-runtime-dir',type=Path,default=Path.home()/'.codex/tools/local-console',help='Installed dependency and Node cache matching the component lockfiles')
 args=parser.parse_args();version=args.version
 assert re.fullmatch(r'\d+\.\d+\.\d+',version),'Invalid desktop release version'
 gateway_version=json.loads((root/'server/package.json').read_text(encoding='utf-8'))['version']
@@ -16,16 +18,14 @@ gateway_version=json.loads((root/'server/package.json').read_text(encoding='utf-
 scratch=tempfile.TemporaryDirectory(prefix=f'cmc-release-{version}-')
 scratch_root=Path(scratch.name).resolve();stage=scratch_root/'stage/local-console'
 work=scratch_root/'build';work.mkdir(parents=True,exist_ok=True)
-console=Path.home()/'.codex/tools/local-console'
+console=args.console_dir.expanduser().resolve()
+console_runtime=args.console_runtime_dir.expanduser().resolve()
 console_version=json.loads((console/'package.json').read_text(encoding='utf-8'))['version']
 apk=args.android_apk.expanduser().resolve() if args.android_apk else root/f'artifacts/Codex-Control-{android_version}.apk'
 android_log=args.android_build_log.expanduser().resolve() if args.android_build_log else root/f'artifacts/android-{android_version}-build.log'
 assert android_log.is_file(),'Provide the Android build log with --android-build-log'
 metadata=json.loads((args.android_build_dir.expanduser().resolve()/'outputs/apk/release/output-metadata.json').read_text(encoding='utf-8'))
 assert metadata['elements'][0]['versionName']==android_version and apk.is_file(),'Build and provide the current Release APK first'
-assert work.resolve()==scratch_root/'build'
-assert stage.resolve()==scratch_root/'stage/local-console'
-if stage.exists():shutil.rmtree(stage)
 stage.mkdir(parents=True,exist_ok=True)
 version_source=work/'version.cs'
 version_source.write_text(f'using System.Reflection;\n[assembly: AssemblyVersion("{version}.0")]\n[assembly: AssemblyFileVersion("{version}.0")]\n')
@@ -48,7 +48,7 @@ for source,destination in [(console,stage),(root/'server',stage/'gateway')]:
     lock=json.loads((source/'package-lock.json').read_text(encoding='utf-8'))
     for relative,meta in lock['packages'].items():
         if not relative or meta.get('dev') or meta.get('link'):continue
-        original=source/relative
+        original=(console_runtime if source==console else source)/relative
         if not original.exists():
             if meta.get('optional'):continue
             raise RuntimeError(f'Runtime dependency missing: {relative}')
@@ -57,7 +57,7 @@ for source,destination in [(console,stage),(root/'server',stage/'gateway')]:
         shutil.copytree(original,destination/relative,dirs_exist_ok=True)
         packages.append({'component':destination.name,'name':actual['name'],'version':actual['version']})
 runtime=stage/'runtime';runtime.mkdir(exist_ok=True)
-node=console/'runtime/node.exe'
+node=console_runtime/'runtime/node.exe'
 node_version=subprocess.check_output([str(node),'--version'],text=True).strip().removeprefix('v')
 expected=next(line.split()[0] for line in (console/'runtime/SHASUMS256.txt').read_text(encoding='utf-8').splitlines() if line.endswith('win-x64/node.exe'))
 assert hashlib.sha256(node.read_bytes()).hexdigest()==expected

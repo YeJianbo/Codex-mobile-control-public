@@ -5,13 +5,35 @@ import type { ServerConfig } from "../types.js";
 import { appHome } from "./paths.js";
 
 const configPath = path.join(appHome(), "server.json");
+let pendingWrite: Promise<unknown> = Promise.resolve();
+
+function serialize<T>(operation: () => Promise<T>): Promise<T> {
+  const result = pendingWrite.then(operation);
+  pendingWrite = result.catch(() => {});
+  return result;
+}
+
+async function writeConfig(config: ServerConfig): Promise<void> {
+  await fs.mkdir(path.dirname(configPath), { recursive: true });
+  const temporary = `${configPath}.${process.pid}.tmp`;
+  try {
+    await fs.writeFile(temporary, `${JSON.stringify(config, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+    await fs.rename(temporary, configPath);
+  } finally {
+    await fs.rm(temporary, { force: true }).catch(() => {});
+  }
+}
 
 export async function loadServerConfig(): Promise<ServerConfig> {
-  await fs.mkdir(appHome(), { recursive: true });
-  try {
-    const raw = await fs.readFile(configPath, "utf8");
-    const parsed = JSON.parse(raw) as Partial<ServerConfig>;
-    return {
+  return serialize(async () => {
+    let parsed: Partial<ServerConfig>;
+    try {
+      parsed = JSON.parse(await fs.readFile(configPath, "utf8")) as Partial<ServerConfig>;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      parsed = {};
+    }
+    const config: ServerConfig = {
       host: parsed.host ?? "0.0.0.0",
       port: parsed.port ?? 38457,
       token: parsed.token ?? nanoid(32),
@@ -20,27 +42,23 @@ export async function loadServerConfig(): Promise<ServerConfig> {
       publicAgents: parsed.publicAgents&&typeof parsed.publicAgents==='object'?Object.fromEntries(Object.entries(parsed.publicAgents).filter(([agent,enabled])=>['codex','claude','antigravity','grok','deepseek','hermes','opencode'].includes(agent)&&typeof enabled==='boolean')):{},
       https: parsed.https ?? { enabled: false },
     };
-  } catch {
-    const created: ServerConfig = {
-      host: "0.0.0.0",
-      port: 38457,
-      token: nanoid(32),
-      projectRoots: [],
-      https: { enabled: false },
-    };
-    await saveServerConfig(created);
-    return created;
-  }
+    if (parsed.token == null) await writeConfig(config);
+    return config;
+  });
 }
 
-export async function saveServerConfig(config: ServerConfig): Promise<void> {
-  await fs.mkdir(path.dirname(configPath), { recursive: true });
-  await fs.writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+// All settings edit the latest committed value. Failed writes leave the live config intact.
+export function updateServerConfig(config: ServerConfig, update: (draft: ServerConfig) => void): Promise<void> {
+  return serialize(async () => {
+    const draft = structuredClone(config);
+    update(draft);
+    await writeConfig(draft);
+    Object.assign(config, draft);
+  });
 }
 
 export async function rotateServerToken(config: ServerConfig): Promise<string> {
-  config.token = nanoid(32);
-  await saveServerConfig(config);
+  await updateServerConfig(config, draft => { draft.token = nanoid(32); });
   return config.token;
 }
 

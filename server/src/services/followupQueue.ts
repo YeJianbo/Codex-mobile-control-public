@@ -3,6 +3,7 @@ import type {SessionManager} from './sessionManager.js';
 import type {ImageAttachment} from './imageUploads.js';
 import type {FileAttachment} from './fileUploads.js';
 import {isWriterOccupied,userFacingError} from './userFacingError.js';
+import {submissionFailureKind} from './submissionErrors.js';
 
 export type Followup = {id:string;threadId:string;text:string;images:ImageAttachment[];files:FileAttachment[];model?:string;effort?:string;mode?:"plan"|"default";fast?:boolean;permission?:'ask'|'auto'|'full'|'custom';sourcePublic?:boolean;createdAt:string;status:'queued'|'sending'|'failed'|'sent'|'editing';error?:string;resume?:boolean;order?:number};
 export class FollowupQueue {
@@ -66,7 +67,7 @@ export class FollowupQueue {
     try{await this.sessions.steer(threadId,e.text,e.images,e.files,desktopTurnId);e.status='sent';e.error=undefined;}
     catch(error){
       const message=userFacingError(error);
-      const uncertain=/timeout|timed out|EPIPE|ECONNRESET|ETIMEDOUT|closed|disconnect|超时|断开|退出|已关闭/i.test(message);
+      const uncertain=submissionFailureKind(error)==='uncertain';
       e.status=uncertain?'failed':'queued';e.error=uncertain?'引导结果待确认，请检查会话后再重试。'+message:message;throw error;
     }
     finally{this.save(e);this.busy.delete(threadId);}

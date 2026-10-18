@@ -108,7 +108,7 @@ data class NativeQuestionReply(val question:String,val answer:String)
 data class NativeAttachment(val name:String,val path:String,val url:String="")
 data class NativeImage(val id: String, val name: String)
 data class NativeUploadedFile(val id:String,val name:String,val mime:String,val size:Long)
-data class NativeModel(val id: String, val name: String, val efforts: List<String>, val defaultEffort: String,val available:Boolean=true,val unavailableReason:String="",val providerId:String="",val providerName:String="",val shortName:String="")
+data class NativeModel(val id: String, val name: String, val efforts: List<String>, val defaultEffort: String,val available:Boolean=true,val unavailableReason:String="",val providerId:String="",val providerName:String="",val shortName:String="",val harness:String=nativeAgent(id))
 data class NativeBackend(val agent:String,val available:Boolean,val reason:String="",val installed:Boolean=false,val supportsImages:Boolean?=null,val supportsPlanMode:Boolean?=null)
 data class NativeGoal(val objective:String,val status:String,val tokensUsed:Long=0,val tokenBudget:Long?=null,val timeUsedSeconds:Long?=null,val id:String="")
 

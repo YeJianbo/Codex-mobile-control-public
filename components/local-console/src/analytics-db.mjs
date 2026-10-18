@@ -1,0 +1,6 @@
+import {DatabaseSync} from 'node:sqlite';
+export function analyticsDb(file){const db=new DatabaseSync(file);db.exec(`PRAGMA journal_mode=WAL;PRAGMA synchronous=NORMAL;PRAGMA cache_size=-4096;PRAGMA temp_store=FILE;PRAGMA busy_timeout=1000;
+CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY,identity TEXT,size INTEGER,mtime REAL,offset INTEGER DEFAULT 0,state TEXT,session TEXT,created INTEGER,skipped INTEGER DEFAULT 0,archived INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS events(key TEXT PRIMARY KEY,kind TEXT,time INTEGER,session TEXT,input INTEGER DEFAULT 0,cached INTEGER DEFAULT 0,output INTEGER DEFAULT 0,reasoning INTEGER DEFAULT 0,tool TEXT,category TEXT);
+CREATE INDEX IF NOT EXISTS events_time ON events(time);
+CREATE TABLE IF NOT EXISTS refs(path TEXT,key TEXT,PRIMARY KEY(path,key));CREATE INDEX IF NOT EXISTS refs_key ON refs(key);`);const columns=new Set(db.prepare('PRAGMA table_info(events)').all().map(c=>c.name));for(const [name,type]of [['model','TEXT'],['effort','TEXT'],['tier','TEXT'],['dim_version','INTEGER DEFAULT 0']])if(!columns.has(name))db.exec(`ALTER TABLE events ADD COLUMN ${name} ${type}`);db.exec("CREATE INDEX IF NOT EXISTS events_kind_time ON events(kind,time); CREATE INDEX IF NOT EXISTS events_token_summary ON events(kind,time,model,tier,effort,dim_version,session,input,cached,output,reasoning)");return db;}

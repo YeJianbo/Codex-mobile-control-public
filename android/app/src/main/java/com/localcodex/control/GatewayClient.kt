@@ -3,6 +3,7 @@ package com.localcodex.control
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -698,7 +699,23 @@ class GatewayClient(
     private val modelReadMutex=Mutex()
     private var cachedModels:List<NativeModel>?=null
     private var modelsReadAt=0L
-    private data class ModelCatalog(val models:List<NativeModel>,val backends:List<NativeBackend>)
+    private data class ModelCatalog(val models:List<NativeModel>,val backends:List<NativeBackend>,val pending:Set<String> = emptySet())
+    suspend fun nativeModelUpdates(refresh:Boolean=false,onUpdate:(List<NativeModel>,Set<String>)->Unit):List<NativeModel> = withTimeoutOrNull(65000L){
+        var first=true
+        var previous:ModelCatalog?=null
+        var catalog:ModelCatalog
+        do{
+            val path="/api/models?agents=all&partial=1"+if(first&&refresh)"&refresh=1" else ""
+            catalog=withContext(Dispatchers.Default){parseNativeModels(requestAsync("GET",path,timeoutSeconds=10))}
+            if(catalog.pending.isEmpty())check(catalog.models.isNotEmpty()){"电脑没有返回可选模型，请重试"}
+            nativeBackendStatuses=catalog.backends.map{backend->if(backend.agent in catalog.pending)nativeBackendStatuses.find{it.agent==backend.agent}?:backend else backend}
+            if(catalog!=previous){onUpdate(catalog.models,catalog.pending);previous=catalog}
+            first=false
+            if(catalog.pending.isNotEmpty())delay(600)
+        }while(catalog.pending.isNotEmpty())
+        modelReadMutex.withLock{cachedModels=catalog.models;modelsReadAt=android.os.SystemClock.elapsedRealtime()}
+        catalog.models
+    }?:error("模型目录读取超时，请重试")
     suspend fun nativeModelsAsync(refresh:Boolean=false):List<NativeModel> {
         val requestedAt=android.os.SystemClock.elapsedRealtime()
         return modelReadMutex.withLock {
@@ -723,9 +740,10 @@ class GatewayClient(
             val levels = row.optJSONArray("supportedReasoningEfforts") ?: JSONArray()
             NativeModel(row.getString("model"), row.optString("displayName"),
                 (0 until levels.length()).map { levels.getJSONObject(it).getString("reasoningEffort") }, row.optString("defaultReasoningEffort"),row.optBoolean("available",true),row.optString("unavailableReason"),
-                if(row.isNull("providerId"))"" else row.optString("providerId"),if(row.isNull("providerName"))"" else row.optString("providerName"),if(row.isNull("shortName"))"" else row.optString("shortName"))
+                if(row.isNull("providerId"))"" else row.optString("providerId"),if(row.isNull("providerName"))"" else row.optString("providerName"),if(row.isNull("shortName"))"" else row.optString("shortName"),
+                row.optString("harness").takeIf{it in nativeHarnesses}?:nativeAgent(row.getString("model")))
         }
-        return ModelCatalog(models,statuses)
+        return ModelCatalog(models,statuses,catalog.optStringArray("pending").toSet())
     }
 
     fun nativeSend(thread: ThreadRecord?, project: Project?, text: String, model: String, effort: String, permission:String, requestId: String, images: List<NativeImage>, files:List<NativeUploadedFile>,mode:String="",fast:Boolean?=null): Boolean = sendSocketMessage(nativeCommand(thread,project,text,model,effort,permission,requestId,images,files,mode,fast))

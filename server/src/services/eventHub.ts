@@ -5,12 +5,13 @@ import { protocolMetadata } from "../protocol.js";
 import { randomUUID } from "node:crypto";
 import {scheduledMessage} from './messageSource.js';
 import {deferLiveActivityDetails,mobileDeferredActivityTypes} from './mobileActivityDetails.js';
+import {encodeEventPayload,EventSocketWriter,type EventPayload,type EventDisconnectCause} from './eventSocketWriter.js';
 
 const heartbeatIntervalMs = Number(process.env.CODEX_MOBILE_CONTROL_WS_HEARTBEAT_MS || "25000");
 const focusedStreamTypes=new Set(['message.delta','context.compaction',...mobileDeferredActivityTypes]);
 
 type ConnectionRoute='local'|'public'|'unknown';
-type DisconnectCause='peer_close'|'socket_error'|'heartbeat_timeout'|'unauthorized'|'not_open';
+type DisconnectCause=EventDisconnectCause;
 type ConnectionState={id:string;openedAt:number;lastPongAt?:number;lastPingAt?:number;awaitingPong:boolean;route:ConnectionRoute};
 export type EventConnectionDiagnostic={
   event:'opened'|'closed';connectionId:string;route:ConnectionRoute;stream:'all'|'thread'|'notifications';
@@ -27,9 +28,12 @@ export class EventHub {
   private readonly streamThreads=new Map<WebSocket,string>();
   private readonly authorizations = new Map<WebSocket, () => boolean>();
   private readonly connectionState = new Map<WebSocket, ConnectionState>();
+  private readonly socketWriter=new EventSocketWriter((client,cause,code,errorCode)=>this.remove(client,cause,code,errorCode));
   private readonly heartbeatTimer: NodeJS.Timeout;
   private lastHeartbeatAt=performance.now();
   private heartbeatDelayMs=0;
+  private historyWriteError?:string;
+  persistenceStatus(){return {ok:!this.historyWriteError,error:this.historyWriteError};}
 
   constructor(private readonly store: StateStore,private readonly isSubagent:(threadId:string)=>boolean=()=>false,
     private readonly diagnose:(record:EventConnectionDiagnostic)=>void=()=>{}) {
@@ -68,7 +72,7 @@ export class EventHub {
   focusStream(client:WebSocket,threadId:string,requestId:string):void{
     if(!this.clients.has(client))return;
     this.setStreamThread(client,threadId);
-    this.sendPayload(client,JSON.stringify({type:'thread.focused',threadId,requestId}));
+    this.socketWriter.send(client,encodeEventPayload({type:'thread.focused',threadId,requestId}));
   }
   private includes(client:WebSocket,event:GatewayEvent):boolean{
     return !this.streamThreads.has(client)||!('threadId' in event)||!event.threadId||!focusedStreamTypes.has(event.type)||this.streamThreads.get(client)===event.threadId;
@@ -78,19 +82,27 @@ export class EventHub {
     if(event.type==='user.message')event={...event,...scheduledMessage(event.text)};
     if((event.type==='turn.completed'||event.type==='goal.completed')&&this.isSubagent(event.threadId))event={...event,subagent:true};
     event = { ...event, eventId: event.eventId ?? randomUUID(), createdAt: event.createdAt ?? new Date().toISOString() };
-    if(persist)void this.store.appendEvent(event);
+    if(persist)void this.store.appendEvent(event).then(()=>{this.historyWriteError=undefined;},error=>{
+      const firstFailure=!this.historyWriteError;
+      this.historyWriteError=error instanceof Error?error.message:String(error);
+      // Keep the live stream available, but never claim that an unsaved event is recoverable.
+      if(firstFailure){
+        console.error('Gateway history write failed',error);
+        this.publish({type:'warning',title:'历史记录保存失败',detail:'当前内容仍会实时显示，尚未保存的内容无法在断线后恢复。请检查电脑存储空间和文件权限。'},false);
+      }
+    });
     for(const listener of this.listeners){
       try{listener(event);}catch{console.error('Gateway event subscriber failed');}
     }
     if(this.clients.size){
       let deferred:ReturnType<typeof deferLiveActivityDetails>|undefined;
-      let fullPayload:string|undefined,deferredPayload:string|undefined;
+      let fullPayload:EventPayload|undefined,deferredPayload:EventPayload|undefined;
       for(const client of this.clients){
         if(!this.includes(client,event))continue;
         if(this.deferredClients.has(client))deferred??=deferLiveActivityDetails(event);
         const payload=this.deferredClients.has(client)&&deferred!==event
-          ?deferredPayload??=JSON.stringify(deferred):fullPayload??=JSON.stringify(event);
-        this.sendPayload(client,payload);
+          ?deferredPayload??=encodeEventPayload(deferred):fullPayload??=encodeEventPayload(event);
+        this.socketWriter.send(client,payload);
       }
     }
   }
@@ -103,13 +115,7 @@ export class EventHub {
 
   private send(client: WebSocket, event: GatewayEvent): void {
     if(!this.includes(client,event))return;
-    this.sendPayload(client,JSON.stringify(this.deferredClients.has(client)?deferLiveActivityDetails(event):event));
-  }
-
-  private sendPayload(client:WebSocket,payload:string):void {
-    if (client.readyState === client.OPEN) {
-      client.send(payload);
-    }
+    this.socketWriter.send(client,encodeEventPayload(this.deferredClients.has(client)?deferLiveActivityDetails(event):event));
   }
 
   private checkHeartbeats(): void {

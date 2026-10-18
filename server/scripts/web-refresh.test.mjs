@@ -128,7 +128,7 @@ test('an old connection cannot start receipt recovery after its history complete
 function modelFixture(){
  const nodes=new Map(),listeners=new Map(),stored=new Map(),catalog=deferred();let controls=0,renders=0;
  const node=id=>{if(!nodes.has(id))nodes.set(id,{value:'',options:[],addEventListener:(event,listener)=>listeners.set(id,listener)});return nodes.get(id);};
- const context=vm.createContext({conversationGeneration:1,state:{threadId:'t',generation:1,selection:1,chatModelRevision:0,models:[],harness:'codex',
+ const context=vm.createContext({clearTimeout,setTimeout,conversationGeneration:1,state:{threadId:'t',generation:1,selection:1,chatModelRevision:0,models:[],harness:'codex',
    hydrating:new Map(),historyCount:new Map(),historyMore:new Map(),historyErrors:new Map(),events:new Map(),threads:[],historyLoading:new Set()},
   $:node,safeWrite:(key,value)=>stored.set(key,value),api:async path=>path.startsWith('/api/models')?catalog.promise:{events:[],settings:{model:'desktop',effort:'high'}},
   fillChatEfforts:()=>{node('chatEffort').options=[{value:'low'},{value:'high'}];node('chatEffort').value='low';},
