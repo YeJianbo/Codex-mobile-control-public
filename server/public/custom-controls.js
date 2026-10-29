@@ -216,7 +216,7 @@ function mountModelSettings() {
       try{localStorage.setItem('cmc.permission','auto');localStorage.setItem('cmc.permission.antigravity','auto');}catch{}
       permission='auto';
     }
-    for(const [value,label] of [['auto','自动审批'],['full','完全访问'],...(permissionHarness==='antigravity'?[]:[['ask','询问']]),...(permissionHarness==='codex'||!localStorage.getItem('cmc.harness')?[['custom','自定义 (config.toml)']]:[])]){
+    for(const [value,label] of [['auto','自动审批'],['full','完全访问'],...(permissionHarness==='antigravity'?[]:[['ask','询问']]),...(permissionHarness==='codex'||!localStorage.getItem('cmc.harness')?[['custom','自定义']]:[])]){
       const choice=document.createElement('button');choice.type='button';choice.textContent=label;choice.dataset.permission=value;choice.setAttribute('aria-pressed',String(permission===value));
       choice.onclick=()=>{try{localStorage.setItem('cmc.permission',value);localStorage.setItem('cmc.permission.'+(localStorage.getItem('cmc.harness')||'codex'),value);}catch{};permissionOptions.querySelectorAll('button').forEach(button=>button.setAttribute('aria-pressed',String(button===choice)));};
       permissionOptions.append(choice);
@@ -302,7 +302,7 @@ function mountModelSettings() {
           const agent=option.dataset.agent||'codex';
           const heading=document.createElement('p');heading.className='agent-section-heading';
           const group=option.dataset.group?`${agent}:${option.dataset.group}`:agent;
-          heading.textContent=option.dataset.groupLabel||({codex:'Codex',claude:'Claude Code',antigravity:'Antigravity',grok:'Grok Build',deepseek:'DeepSeek Harness',hermes:'Hermes',opencode:'OpenCode'})[agent]||agent;
+          heading.textContent=option.dataset.groupLabel||({codex:'Codex',claude:'Claude Code',antigravity:'Antigravity',grok:'Grok Build',deepseek:'DeepSeek Harness',hermes:'Hermes',opencode:'OpenCode',zcode:'ZCode'})[agent]||agent;
           const section=group!==lastGroup?[heading]:[];lastGroup=group;
           const item=document.createElement('button');item.type='button';item.className='choice-option';
           item.dataset.value=option.value;item.dataset.search=`${option.textContent} ${option.value} ${option.dataset.groupLabel||''}`.toLowerCase();item.disabled=!enabledOption(option);

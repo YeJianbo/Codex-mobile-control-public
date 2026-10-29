@@ -26,7 +26,7 @@ internal fun nativeRenderMarkdown(markwon:Markwon,source:String):Spanned {
 }
 
 private fun nativeMarkdownTree(markwon:Markwon,source:String):org.commonmark.node.Node {
-    val markdown=nativeMathMarkdown(source)
+    val markdown=nativeMathMarkdown(nativeFileCitationMarkdown(source))
     val eligible=cjkStrong.findAll(markdown).map{it.value}.toSet()
     val document=markwon.parse(markdown)
     if(eligible.isNotEmpty())document.accept(object:AbstractVisitor(){

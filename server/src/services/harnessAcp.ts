@@ -14,15 +14,15 @@ import {createOpencodePolicy,type OpencodePolicy} from './opencodePolicy.js';
 
 type Harness='deepseek'|'hermes'|'opencode';
 const scripts=fileURLToPath(new URL('../../scripts/',import.meta.url));
-function launchSettings(agent:Harness,permission?:string){
+function launchSettings(agent:Harness,permission?:string,catalog=false){
   if(agent==='opencode')return {args:['acp'],env:opencodeAcpEnvironment()};
   if(agent==='hermes')return {args:['acp'],env:{CMC_HERMES_ACP_EXTENSION:'1',PYTHONPATH:[path.join(scripts,'hermes-mobile-acp'),process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)}};
   const preset=permission==='full'?'danger-full-access':'workspace-write';
   const providerPatch=deepseekDesktopProviderPatch();
-  const patchDirectory=permission||providerPatch.length?mkdtempSync(path.join(os.tmpdir(),'cmc-dsh-policy-')):undefined;
+  const patchDirectory=permission||providerPatch.length||catalog?mkdtempSync(path.join(os.tmpdir(),'cmc-dsh-policy-')):undefined;
   const patch=patchDirectory&&path.join(patchDirectory,'policy.yml');
   if(patch){
-    const entries=[...providerPatch,...(permission?[{insert:[{id:'cmc-mobile-permission',name:path.join(scripts,'deepseek-mobile-policy.mjs')}]}]:[])];
+    const entries=[...providerPatch,...(catalog?[{id:'session-persistence-jsonl',config:{root:path.join(patchDirectory!,'sessions')}},{id:'session-query-sqlite',config:{path:':memory:'}}]:[]),...(permission?[{insert:[{id:'cmc-mobile-permission',name:path.join(scripts,'deepseek-mobile-policy.mjs')}]}]:[])];
     writeFileSync(patch,JSON.stringify(entries),{mode:0o600});
   }
   return {args:['--profile','acp',...(patch?['--patch',patch]:[])],env:{DSH_PERMISSION_MODE:preset,CMC_DSH_PERMISSION_PRESET:preset},patchDirectory};
@@ -43,8 +43,8 @@ class AcpConnection {
   onRequest:(message:any)=>void=message=>this.send({id:message.id,error:{code:-32601,message:'Client method not supported'}});
   onPolicyRequest:(params:any)=>Promise<boolean>=async()=>false;
   onUpdate:(params:any)=>void=()=>{};
-  constructor(readonly agent:Harness,command:string,cwd:string,launch:typeof execa,private terminate:typeof execa=execa,permission?:string){
-    const settings=launchSettings(agent,permission);
+  constructor(readonly agent:Harness,command:string,cwd:string,launch:typeof execa,private terminate:typeof execa=execa,permission?:string,catalog=false){
+    const settings=launchSettings(agent,permission,catalog);
     this.patchDirectory='patchDirectory' in settings?settings.patchDirectory:undefined;
     const start=(env:Record<string,string>)=>{
       this.child=launch(command,settings.args,{cwd,env,windowsHide:true,reject:false,buffer:false,stdin:'pipe'});
@@ -180,7 +180,7 @@ function catalogFromSession(agent:Harness,state:any):PickerModel[]{
 
 export async function readHarnessCatalog(agent:Harness,command:string,cwd:string,launch:typeof execa=execa,refresh=false){
   if(agent==='opencode')await refreshOpencodeModels(command,cwd,launch,refresh);
-  const connection=new AcpConnection(agent,command,cwd,launch);
+  const connection=new AcpConnection(agent,command,cwd,launch,execa,undefined,true);
   let session:string|undefined,canClose=false;
   try{
     const init=await connection.request('initialize',initialize,20000);
@@ -234,7 +234,7 @@ export function harnessAcp(options:{agent:Harness;command:string;cwd:string;sess
     if(update.sessionUpdate==='usage_update'){contextWindow=Number.isFinite(update.size)?update.size:contextWindow;contextUsed=Number.isFinite(update.used)?update.used:contextUsed;}
     if(update.sessionUpdate==='tool_call'||update.sessionUpdate==='tool_call_update'){
       const id=update.toolCallId,previous=tools.get(id),tool={...previous,...update};tools.set(id,tool);
-      if(!previous)emit({type:'assistant',message:{content:[{type:'tool_use',id,name:tool.title||tool.kind||'工具',input:tool.rawInput||{}}]}});
+      if(!previous||JSON.stringify([previous.title,previous.kind,previous.rawInput])!==JSON.stringify([tool.title,tool.kind,tool.rawInput]))emit({type:'assistant',message:{content:[{type:'tool_use',id,name:tool.title||tool.kind||'工具',input:tool.rawInput||{}}]}});
       if(['completed','failed'].includes(tool.status)&&!completed.has(id)){
         permissionDecisions.delete(`${params.sessionId}\0${id}`);
         completed.add(id);
@@ -252,6 +252,9 @@ export function harnessAcp(options:{agent:Harness;command:string;cwd:string;sess
       if(options.agent==='opencode'&&session&&!canResume&&init.agentCapabilities?.loadSession!==true)throw Error('OpenCode ACP 未声明恢复会话能力，未创建替代会话');
       const state=await connection.request(session?(canResume?'session/resume':'session/load'):'session/new',{...(session?{sessionId:session}:{}),cwd:options.cwd,mcpServers:[]});
       session=session||state?.sessionId;if(!session)throw Error('ACP 未返回会话编号');
+      // Save the native identity before configuration can fail, so a retry resumes
+      // this session instead of creating another conversation.
+      emit({type:'system',session_id:session});
       connection.assertPermissionAdapter();
       config=state?.configOptions||[];
       const requestedModel=options.agent==='deepseek'?canonicalDeepseekModel(options.model&&options.model!=='default'?options.model:config.find((o:any)=>o.id==='model'||o.category==='model')?.currentValue||state?.models?.currentModelId||''):options.model;

@@ -99,4 +99,54 @@ class TaskNotificationsTest {
         assertEquals("模型服务容量不足",taskNotification(done,history,emptyList(),"").body)
         assertEquals("模型服务容量不足",taskNotification(done,history,emptyList(),"").failureReason)
     }
+
+    @Test fun focusedStreamCompletionReadsTheOtherThreadsHistoryByTurn(){
+        val done=event("turn.completed",id="live",status="completed").copy(turnId="one")
+        val history=listOf(event("message.delta","已完成检查",item="reply").copy(turnId="one",textComplete=true),
+            done.copy(eventId="native-history"),event("message.delta","下一轮结果").copy(turnId="two"))
+        val tracker=TaskNotificationTracker()
+        assertTrue(tracker.accept(done)) // A focused socket receives no deltas for this thread.
+        assertEquals("已完成检查",tracker.content(done,history,"").body)
+    }
+
+    @Test fun emptyFinalTextDoesNotEraseAnExistingAnswer(){
+        val done=event("turn.completed",id="done",status="completed")
+        val history=listOf(event("message.delta","已有答复",item="reply"),event("tool.completed"),
+            event("message.delta","",item="empty"),event("message.delta"," ",item="empty"),done)
+        assertEquals("已有答复",taskNotification(done,history,emptyList(),"").body)
+    }
+
+    @Test fun textSnapshotsReplaceDeltasAndToolsDoNotSplitTheSameMessage(){
+        val done=event("turn.completed",id="done",status="completed")
+        val history=listOf(event("message.delta","答",item="reply"),event("tool.completed"),
+            event("message.delta","复",item="reply"),event("message.delta","答复完成",item="reply").copy(textComplete=true),done)
+        assertEquals("答复完成",taskNotification(done,history,emptyList(),"").body)
+    }
+
+    @Test fun lateStartAndUserEchoDoNotClearTheSameTurnsReply(){
+        val tracker=TaskNotificationTracker()
+        tracker.accept(event("message.delta","已答复",item="reply").copy(turnId="one"))
+        tracker.accept(event("turn.started").copy(turnId="one"))
+        tracker.accept(event("user.message","问题").copy(turnId="one"))
+        val done=event("turn.completed",id="done",status="completed").copy(turnId="one")
+        assertTrue(tracker.accept(done))
+        assertEquals("已答复",tracker.content(done,emptyList(),"").body)
+        tracker.accept(event("turn.started",id="duplicate-start").copy(turnId="one"))
+        assertFalse(tracker.accept(done.copy(eventId="duplicate-end")))
+    }
+
+    @Test fun anOldCompletionCannotFinishTheActiveTurn(){
+        val tracker=TaskNotificationTracker()
+        tracker.accept(event("turn.started").copy(turnId="two"))
+        tracker.accept(event("message.delta","本轮结果",item="reply").copy(turnId="two"))
+        assertFalse(tracker.accept(event("turn.completed",status="completed").copy(turnId="one")))
+        val done=event("turn.completed",id="done",status="completed").copy(turnId="two")
+        assertTrue(tracker.accept(done))
+        assertEquals("本轮结果",tracker.content(done,emptyList(),"").body)
+    }
+
+    @Test fun missingHistoryDoesNotClaimThereWasNoReply(){
+        val done=event("turn.completed",id="done",status="completed")
+        assertEquals("打开会话查看结果",taskNotification(done,emptyList(),emptyList(),"").body)
+    }
 }

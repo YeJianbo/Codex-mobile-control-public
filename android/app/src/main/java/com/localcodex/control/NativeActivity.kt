@@ -110,7 +110,7 @@ internal fun nativeActivityItems(events:List<ChatEvent>):List<NativeActivityItem
             else->nativeToolTitle(title)
         }
         val draft=tools.getOrPut(key){ActivityDraft(key,visibleTitle,event.type,event.status).also{result.add(it)}}
-        if(draft.title=="运行命令")draft.title=visibleTitle
+        if(event.type=="tool.started"&&event.title.isNotBlank()||draft.title=="运行命令")draft.title=visibleTitle
         if(event.type=="tool.completed")draft.status=event.status
         draft.events.add(event)
     }

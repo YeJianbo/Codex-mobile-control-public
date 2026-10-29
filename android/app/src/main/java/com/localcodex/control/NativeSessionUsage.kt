@@ -67,6 +67,16 @@ import org.json.JSONObject
         }
         if(tokens==null)Text("暂无 Token 记录",fontSize=13.sp,color=muted)
         else{
+            val subagents=tokens.optJSONObject("subagents")
+            if((subagents?.optInt("count")?:0)>0){
+                listOf("主会话" to tokens.optJSONObject("self"),"子代理（${subagents?.optInt("count")}）" to subagents).forEach{(label,usage)->
+                    Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(12.dp)){
+                        Text(label,Modifier.weight(1f),fontSize=12.sp,color=muted)
+                        Text(if(usage==null||usage.isNull("total"))"—" else nativeTokenCount(usage.optLong("total")),fontSize=13.sp,fontWeight=FontWeight.Medium)
+                    }
+                }
+            }
+            if(tokens.optBoolean("partial"))Text("部分用量尚未报告，当前显示已记录合计",fontSize=11.sp,color=muted)
             val input=tokens.optLong("input");val cached=tokens.optLong("cached")
             val hit=if(!tokens.isNull("input")&&!tokens.isNull("cached")&&input>0)
                 String.format(java.util.Locale.ROOT,"%.1f%%",cached.toDouble()/input*100) else "—"
@@ -93,6 +103,14 @@ import org.json.JSONObject
         Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(12.dp)){
             Text(label,Modifier.weight(1f),fontSize=12.sp,color=muted)
             Text(if(tokens.isNull(key))"—" else nativeTokenCount(tokens.optLong(key)),Modifier.testTag("usageToken:$key"),fontSize=13.sp)
+        }
+    }
+    val children=tokens.optJSONObject("subagents")?.optJSONArray("threads")
+    if(children!=null)for(index in 0 until children.length()){
+        val child=children.optJSONObject(index)?:continue
+        Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(12.dp)){
+            Text(child.optString("name","子代理"),Modifier.weight(1f),fontSize=12.sp,color=muted)
+            Text(if(child.isNull("total"))"—" else nativeTokenCount(child.optLong("total")),fontSize=13.sp)
         }
     }
     Text("缓存计入输入，推理计入输出；累计量包含压缩前的请求。",fontSize=11.sp,color=muted)

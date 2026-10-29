@@ -47,7 +47,7 @@ import androidx.compose.ui.unit.sp
     fun size(bytes:Long)=android.text.format.Formatter.formatFileSize(context,bytes)
     LaunchedEffect(state.items){selected=selected.intersect(state.items.filter{it.protectedReason.isBlank()}.map{it.key}.toSet())}
     Column(Modifier.fillMaxWidth(),verticalArrangement=Arrangement.spacedBy(10.dp)){
-        Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){Text("电脑上传附件",fontSize=17.sp);TextButton(onClick=onRefresh,enabled=!state.busy){Text("刷新")}}
+        Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){Text("电脑上传附件",fontSize=17.sp);ChromeButton(R.drawable.ic_lucide_rotate_cw,"刷新",onRefresh,enabled=!state.busy)}
         Text("${size(state.totalBytes)} · ${state.items.size} 个附件",fontSize=14.sp)
         OutlinedTextField(search,{search=it},label={Text("搜索文件名")},singleLine=true,modifier=Modifier.fillMaxWidth())
         Row{listOf(0 to "全部",30 to "30 天前",90 to "90 天前").forEach{(value,label)->TextButton(onClick={days=value;selected=emptySet()}){Text(if(days==value)"✓ $label" else label)}}}
@@ -74,5 +74,5 @@ import androidx.compose.ui.unit.sp
         }
         if(chosen.isNotEmpty())Text("已选 ${size(chosen.sumOf{it.size})}",fontSize=13.sp)
     }
-    confirming?.let{chosenItems->AlertDialog(onDismissRequest={confirming=null},title={Text("清理电脑附件")},text={Text("将永久删除 ${chosenItems.size} 个附件（${size(chosenItems.sumOf{it.size})}）。历史消息中的这些附件将无法再打开。聊天记录及另存到手机的文件会保留。")},confirmButton={TextButton(onClick={confirming=null;selected=emptySet();onDelete(chosenItems)}){Text("确认删除")}},dismissButton={TextButton(onClick={confirming=null}){Text("取消")}})}
+    confirming?.let{chosenItems->NativeAlertDialog(onDismissRequest={confirming=null},title={Text("清理电脑附件")},text={Text("将永久删除 ${chosenItems.size} 个附件（${size(chosenItems.sumOf{it.size})}）。历史消息中的这些附件将无法再打开。聊天记录及另存到手机的文件会保留。")},confirmButton={TextButton(onClick={confirming=null;selected=emptySet();onDelete(chosenItems)}){Text("确认删除")}},dismissButton={TextButton(onClick={confirming=null}){Text("取消")}})}
 }

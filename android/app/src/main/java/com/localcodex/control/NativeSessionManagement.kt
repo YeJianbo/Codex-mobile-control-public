@@ -142,9 +142,9 @@ private class SessionManagementController(
     val enabled=connected&&!state.loading&&!state.busy
     val archived=state.applied.archived
     NativeManagementPage("会话管理","",back,modifier=Modifier.testTag("sessionManagement"),actions={
-        TextButton(onClick=refresh,enabled=enabled){Text("刷新")}
+        ChromeButton(R.drawable.ic_lucide_rotate_cw,"刷新",refresh,enabled=enabled)
     }){
-        LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("sessionManagementList"),contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
+        LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("sessionManagementList"),state=rememberNativeManagementListState(),contentPadding=nativeManagementPadding(PaddingValues(16.dp)),verticalArrangement=Arrangement.spacedBy(12.dp)){
             item{
                 DashboardCard{
                     DashboardTabs(listOf("current" to "当前会话","archived" to "已归档"),if(state.filters.archived)"archived" else "current",{filters(state.filters.copy(archived=it=="archived"),true)},enabled=enabled)
@@ -221,7 +221,7 @@ private class SessionManagementController(
     var acknowledged by remember(value){mutableStateOf(false)}
     val delete=value.action=="delete"
     val verb=when(value.action){"delete"->"永久删除";"archive"->"归档";else->"恢复"}
-    AlertDialog(onDismissRequest={if(!busy)dismiss()},title={Text("${verb}会话")},text={
+    NativeAlertDialog(onDismissRequest={if(!busy)dismiss()},title={Text("${verb}会话")},text={
         Column(Modifier.heightIn(max=460.dp).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(10.dp)){
             if(error.isNotBlank())Text(error,color=MaterialTheme.colors.error,fontSize=13.sp)
             if(delete){
@@ -252,7 +252,7 @@ private class SessionManagementController(
         Text(label,fontSize=12.sp,color=MaterialTheme.colors.onSurface.copy(alpha=.65f))
         Box{
             OutlinedButton(onClick={open=true},enabled=enabled,modifier=Modifier.fillMaxWidth()){Text(choices.firstOrNull{it.first==value}?.second?:value,maxLines=2)}
-            DropdownMenu(open,{open=false}){choices.forEach{choice->DropdownMenuItem(onClick={onSelect(choice.first);open=false}){Text(choice.second,fontSize=13.sp)}}}
+            NativeDropdownMenu(open,{open=false}){choices.forEach{choice->DropdownMenuItem(onClick={onSelect(choice.first);open=false}){Text(choice.second,fontSize=13.sp)}}}
         }
     }
 }

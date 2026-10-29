@@ -1,6 +1,7 @@
 from pathlib import Path
 from zipfile import ZipFile,ZIP_DEFLATED
 import json,shutil,hashlib,subprocess,re,argparse,tempfile
+from datetime import datetime,timezone
 root=Path(__file__).resolve().parents[1]
 android_version=re.search(r'versionName\s*=\s*"([^"]+)"',(root/'android/app/build.gradle.kts').read_text(encoding='utf-8')).group(1)
 parser=argparse.ArgumentParser();parser.add_argument('--version',default=android_version)
@@ -8,6 +9,7 @@ parser.add_argument('--output-dir',type=Path,default=root/'deliverables',help='D
 parser.add_argument('--android-build-dir',type=Path,default=root/'android/app/build',help='Android app build directory containing release output metadata')
 parser.add_argument('--android-apk',type=Path,help='Release APK to package; defaults to the versioned APK in artifacts')
 parser.add_argument('--android-build-log',type=Path,help='Build log belonging to the provided Android APK')
+parser.add_argument('--android-notes-file',type=Path,help='UTF-8 Android release notes shown in the in-app updater')
 parser.add_argument('--console-dir',type=Path,default=root/'components/local-console',help='Versioned Local Console component source and frontend')
 parser.add_argument('--console-runtime-dir',type=Path,default=Path.home()/'.codex/tools/local-console',help='Installed dependency and Node cache matching the component lockfiles')
 args=parser.parse_args();version=args.version
@@ -39,6 +41,12 @@ for source,destination in [(console/'src',stage/'src'),(console/'dist',stage/'di
 # The embedded download must match the APK shipped beside the installer.
 (stage/'gateway/public/downloads').mkdir(parents=True,exist_ok=True)
 shutil.copy2(apk,stage/'gateway/public/downloads/android.apk')
+release={'packageName':metadata['applicationId'],'versionName':metadata['elements'][0]['versionName'],
+         'versionCode':metadata['elements'][0]['versionCode'],'size':apk.stat().st_size,
+         'sha256':hashlib.sha256(apk.read_bytes()).hexdigest(),
+         'notes':args.android_notes_file.read_text(encoding='utf-8') if args.android_notes_file else '',
+         'publishedAt':datetime.now(timezone.utc).isoformat()}
+(stage/'gateway/public/downloads/android.json').write_text(json.dumps(release,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
 for name in ('package.json','package-lock.json'):
     shutil.copy2(console/name,stage/name);shutil.copy2(root/'server'/name,stage/'gateway'/name)
 # Copy the verified production closure from the authoritative checkout. This

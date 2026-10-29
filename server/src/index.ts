@@ -1,4 +1,8 @@
 import {registerWorkspaceRoutes} from "./routes/workspace.js";
+import {readAndroidRelease} from './services/androidUpdates.js';
+import {registerThreadToolsRoutes} from './services/threadToolsRoutes.js';
+import {registerAgentInstructions} from './services/agentInstructions.js';
+import {DesktopBrowser,registerDesktopBrowser} from './services/desktopBrowser.js';
 import {registerGatewaySettings} from './routes/gatewaySettings.js';
 import {registerModelDirectory} from './routes/modelDirectory.js';
 import {AssistantModelCatalog} from './services/assistantModelCatalog.js';
@@ -6,20 +10,23 @@ import {readCodexActivityEventsByIds,readCodexHistoryImageSource,readCodexOutput
 import {registerThreadFast} from './services/threadFast.js';
 import {ChannelStore} from './channels/store.js';
 import {ChannelService} from './channels/service.js';
+import {ChannelWorkspaces} from './channels/workspace.js';
+import {channelDefaultModel,channelAssistantModel,channelAssistantCommand} from './channels/model.js';
 import {registerChannelRoutes} from './channels/routes.js';
 import {qqDriver} from './channels/qq.js';
 import {weixinDriver} from './channels/weixin.js';
 import {CloudSnapshots,isCloudSnapshot,assertControllableThread} from './services/cloudSnapshots.js';
 import {listAutomations,listAutomationTargets,saveAutomation} from './services/automations.js';
+import {automationScheduleSchema} from './services/automationSchedule.js';
 import {CloudThreads,isCloudThread} from './services/cloudThreads.js';
 import {cloudSourceAvatar,enrichMessageSources} from './services/messageSource.js';
 import {confirmedToolChanges} from './services/fileChanges.js';
 import type {ClientCommand} from './services/sessionManager.js';
-import {sidebarPage,sidebarPageQuery} from './services/sidebarPage.js';
+import {sidebarPage,sidebarPageQuery,nativeSidebarAgents} from './services/sidebarPage.js';
 import {SidebarDeltaCache} from './services/sidebarDelta.js';
 import {SidebarStatusCache} from './services/sidebarStatus.js';
 import {subagentSidebarPage,subagentThreadScope} from './services/subagentThreads.js';
-import {archiveOrCloseSubagent} from './services/subagentClose.js';
+import {archiveOrCloseSubagent,subagentCanArchive} from './services/subagentClose.js';
 import {desktopThreadIsSubagent,desktopArchivedThreads,desktopThreadSections} from './services/desktopSidebar.js';
 import {GoalCompletionTracker,readCodexGoalSnapshot} from './services/codexGoals.js';
 import Fastify from "fastify";
@@ -40,18 +47,20 @@ import { EventHub } from "./services/eventHub.js";
 import { CodexAppServerClient } from "./codex/appServerClient.js";
 import { bearerToken, isAuthorizedWithDevices } from "./routes/auth.js";
 import { SessionManager } from "./services/sessionManager.js";
+import { RemoteAgentSessions } from "./services/remoteAgentSessions.js";
+import {withCurrentZcodeContext} from './services/zcodeModelContext.js';
 import { StateStore, stateStorePath } from "./services/stateStore.js";
 import { LocalTerminal } from "./services/localTerminal.js";
 import { httpsListenOptions, readHttpsConfig, updateHttpsConfig } from "./services/httpsConfig.js";
 import { protocolMetadata } from "./protocol.js";
 import { checkCodexUpgrade } from "./services/codexUpgrade.js";
-import { formatDesktopQuestionReply, listThreadsWithCodexHistory, pendingDesktopQuestions, readCodexThreadEvents, readRecentSearchEvents, selectConversationWindow, selectConversationPage, readCodexConversationEvents, selectConversationTurns, deferMobileActivityDetails, readCodexActivityEventById, mobileDeferredActivityTypes } from "./services/codexSessions.js";
+import { formatDesktopQuestionReply, listThreadsWithCodexHistory, pendingDesktopQuestions, readCodexThreadEvents, readRecentSearchEvents, selectConversationWindow, selectConversationPage, readCodexConversationPreview, selectConversationTurns, deferMobileActivityDetails, readCodexActivityEventById, mobileDeferredActivityTypes } from "./services/codexSessions.js";
 import {readCodexThreadCompletion} from './services/codexSessions.js';
 import {withThreadReadState,watchDesktopReadState} from './services/threadReadState.js';
-import {activityOutputImageText,resolveMarkdownOutputImage,resolvePublicOutputImage,resolveThreadOutputFile,storedOutputMessage} from './services/threadOutputFiles.js';
+import {activityOutputImageText,listThreadOutputDirectory,OutputDirectoryError,resolveMarkdownOutputImage,resolvePublicOutputImage,resolveThreadDirectoryFile,resolveThreadOutputFile,storedOutputMessage} from './services/threadOutputFiles.js';
 import {readCodexOutputEventById} from './services/codexSessions.js';
 import type { GatewayEvent, ThreadRecord } from "./types.js";
-import {readClashOpenAI,selectClashOpenAI,testClashOpenAI} from './services/clashOpenAI.js';
+import {readClashOpenAI,selectClashOpenAI,testClashOpenAI,readClashProvider,selectClashProvider,testClashProvider} from './services/clashOpenAI.js';
 import { registerPreviewProxy, handlePreviewUpgrade } from "./services/previewProxy.js";
 import {readModelCatalog,assertAvailableModel} from './services/modelCatalog.js';
 import {modelAgent,threadAgent,publicAgentAllowed,configurePublicAgentAccess,agentNames} from './services/agentProtocol.js';
@@ -66,19 +75,23 @@ import {FollowupQueue} from './services/followupQueue.js';
 import {isWriterOccupied,userFacingError} from './services/userFacingError.js';
 import {UsageReader} from './services/usage.js';
 import {watchDeepSeekSessions,deepseekNativeSessions} from './services/deepseekNativeSessions.js';
+import {watchZcodeSessions,zcodeNativeSessions} from './services/zcodeNativeSessions.js';
+import {zcodeSubagents} from './services/zcodeSubagents.js';
 import {readCodexGoals} from './services/codexGoals.js';
-import {verifyDeviceProof} from './services/deviceProof.js';
+import {verifyDeviceProof,deviceProofTarget} from './services/deviceProof.js';
+import {normalizePublicAccessUrl} from './services/publicAccessUrl.js';
+import {historyWorkerStatus} from './services/historyWorkers.js';
 import {readPublicAccessSettings,updatePublicAccessPassword,updatePublicAccessSettings} from './services/publicAccessSettings.js';
-import {mergeMobileThreadEvents,mergeDeepSeekThreadEvents,latestMobileThreadLifecycle,recoverMobileUploadFiles,recoverMobileUploadImages} from './services/mobileHistory.js';
+import {mergeMobileThreadEvents,mergeDeepSeekThreadEvents,mergeZcodeThreadEvents,latestMobileThreadLifecycle,recoverMobileUploadFiles,recoverMobileUploadImages} from './services/mobileHistory.js';
 import {registerLocalConsole} from './services/localConsole.js';
-import {registerConsoleManagement} from './services/consoleManagement.js';
+import {registerConsoleManagement,consoleManagementPublicPaths} from './services/consoleManagement.js';
 import {registerMobileMaintenance} from './services/mobileMaintenance.js';
 import {registerMobileStatistics} from './services/mobileStatistics.js';
 import {registerMobileSessionsChannels} from './services/mobileSessionsChannels.js';
 import {registerMobileAssistant} from './services/mobileAssistant.js';
 import {readSubmissionStatus} from './services/messageSubmissions.js';
 import {MobileActivityHistory} from './services/mobileActivityHistory.js';
-import {deferLiveActivityDetails} from './services/mobileActivityDetails.js';
+import {deferLiveActivityDetails,isVisibleMobileThreadEvent} from './services/mobileActivityDetails.js';
 import {historyCompression,registerHistoryCompression} from './services/historyCompression.js';
 import {AgentHealthMonitor} from './services/agentHealthMonitor.js';
 
@@ -122,7 +135,7 @@ const imageFields={images:z.array(z.object({id:z.string(),name:z.string().max(16
 const clientCommandSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("thread.start"), ...requestFields, ...projectFields, ...imageFields, initialText: z.string().optional() }),
   z.object({ type: z.literal("thread.resume"), ...requestFields, ...projectFields, threadId: z.string().min(1) }),
-  z.object({ type: z.literal("turn.start"), ...requestFields, ...projectFields, ...imageFields, threadId: z.string().min(1), text: z.string().trim(),replaceTurnId:z.string().min(1).max(160).optional() }),
+  z.object({ type: z.literal("turn.start"), ...requestFields, ...projectFields, ...imageFields, threadId: z.string().min(1), text: z.string().trim(),replaceTurnId:z.string().min(1).max(160).optional(),keepAttachmentPaths:z.array(z.string().max(8192)).max(100).optional() }),
   z.object({ type: z.literal("turn.interrupt"), ...requestFields, threadId: z.string().min(1) }),
   z.object({ type: z.literal("approval.resolve"), ...requestFields, approvalId: z.string().min(1), decision: z.enum(["accept", "decline"]) }),
   z.object({ type: z.literal("debug.echo"), ...requestFields, threadId: z.string().optional(), text: z.string() }),
@@ -134,11 +147,12 @@ const publicProxySecret=await fs.readFile(path.join(appHome(),'public-access.jso
 const store = new StateStore();
 await store.load();
 await store.closeDanglingTerminalCommands();
-await store.expirePendingApprovals();
+// Agent-host approvals are still live while the gateway restarts.
+await store.expirePendingApprovals(process.env.CODEX_MOBILE_CONTROL_AGENT_HOST==='1'?approval=>approval.id.startsWith('agent-'):undefined);
 const httpsOptions = await httpsListenOptions(config);
 const app = Fastify({ logger: { serializers: { req: (request: { method: string; url: string }) => ({ method: request.method, url: request.url.replace(/([?&]token=)[^&]*/g, "$1[redacted]") }) } }, ...(httpsOptions ? { https: httpsOptions } : {}) } as any) as unknown as FastifyInstance;
 await registerHistoryCompression(app);
-const hub = new EventHub(store,desktopThreadIsSubagent,connection=>app.log.info({connection},'Gateway event connection'));
+const hub = new EventHub(store,desktopThreadIsSubagent,connection=>app.log.info({connection},'Gateway event connection'),stall=>app.log.warn({stall},'Gateway event loop stalled'));
 const closeDesktopReadWatcher=watchDesktopReadState(()=>hub.publish({type:'thread.read-state.changed'},false));
 app.addHook('onClose',async()=>closeDesktopReadWatcher());
 const goalCompletions=new GoalCompletionTracker(readCodexGoalSnapshot());
@@ -149,19 +163,37 @@ setInterval(()=>{
   }
 },5000).unref();
 const codex = new CodexAppServerClient();
+// CLI assistants run in a separate long-lived host so restarting the gateway only
+// drops the event connection instead of killing their child processes.
+let hostedAgents:RemoteAgentSessions|undefined;
+if(process.env.CODEX_MOBILE_CONTROL_AGENT_HOST==='1'){
+  hostedAgents=new RemoteAgentSessions(event=>{
+    // The host has a separate StateStore connection; mirror its lifecycle into
+    // this process's cached list before a phone can request another snapshot.
+    if(event.type==='thread.started'&&event.thread&&!store.threads.some(thread=>thread.id===event.threadId)){
+      void store.upsertThread(event.thread).catch(error=>app.log.error({error},'执行器会话同步失败'));
+    }else if(event.type==='turn.started'||event.type==='turn.completed'){
+      const status=event.type==='turn.started'?'running':event.status==='interrupted'?'interrupted':event.status==='error'?'error':'completed';
+      void store.upsertThread({id:event.threadId,status}).catch(error=>app.log.error({error},'执行器状态同步失败'));
+    }
+    hub.publish(event);
+  });
+  try{await hostedAgents.ready();}
+  catch(error){app.log.warn({error},'执行器不可用，回退到网关内运行');hostedAgents=undefined;}
+}
 const sessions = new SessionManager(codex, hub, store,undefined,async prompt=>{
   const workspace=await createCodexProjectlessWorkspace(prompt);
   await addProject(config,workspace);
   hub.publish({type:'projects.changed'});
   return workspace;
-});
+},hostedAgents);
 sessions.setCapacityAutoRetry(config.capacityAutoRetry===true);
 app.addHook('onClose',async()=>sessions.closeCapacityRetries());
 app.addHook('onClose',async()=>sessions.receipts.close());
 // Protect attachments during preflight, before the execution ledger owns the request.
 let preparingClientSubmissions=0;
 const activityHistory=new MobileActivityHistory();
-for(const thread of store.threads.filter(t=>threadAgent(t.id)!=='codex'&&t.status==='running')){
+if(!hostedAgents)for(const thread of store.threads.filter(t=>threadAgent(t.id)!=='codex'&&t.status==='running')){
   await store.upsertThread({id:thread.id,status:'interrupted'});
   hub.publish({type:'turn.completed',threadId:thread.id,status:'interrupted'});
 }
@@ -176,7 +208,8 @@ const currentThreadStatus=async(id:string,events:GatewayEvent[])=>{
   return status;
 };
 const followups=new FollowupQueue(store,sessions,async id=>{
-  return currentThreadStatus(id,await readCodexThreadEvents(id));
+  const events=store.recentEventsForThread(id);
+  return currentThreadStatus(id,events);
 },async entry=>{
   await validateAgentModel(entry.model,entry.threadId);
   const projectPath=await assertProjectAccess(undefined,entry.threadId);
@@ -189,6 +222,7 @@ const serverRoot = fileURLToPath(new URL("../", import.meta.url));
 const consoleHtmlPath = path.join(serverRoot, "public", "console.html");
 const assets: Record<string, [string, string]> = {
   'file-links.js':['public/file-links.js','text/javascript'],
+  'file-citation.js':['dist/services/fileCitation.js','text/javascript'],
   'compat.js':['node_modules/core-js-bundle/minified.js','text/javascript'],
   'math.js':['public/math.js','text/javascript'],
   'katex.js':['node_modules/katex/dist/katex.mjs','text/javascript'],
@@ -204,6 +238,8 @@ const assets: Record<string, [string, string]> = {
   "console.js": ["public/console.js", "text/javascript"],
   "channels-ui.js": ["public/channels-ui.js", "text/javascript"],
   "console-core.js": ["public/console-core.js", "text/javascript"],
+  "console-thread-tools.js": ["public/console-thread-tools.js", "text/javascript"],
+  "automation-schedule.js": ["public/automation-schedule.js", "text/javascript"],
   "model-identity.js": ["public/model-identity.js", "text/javascript"],
   "model-controls.js": ["public/model-controls.js", "text/javascript"],
   "settings-controller.js": ["public/settings-controller.js", "text/javascript"],
@@ -239,6 +275,7 @@ codex.on("autorestarted", (event) => {
 await app.register(cors, { origin: false });
 
 app.setErrorHandler((error, _request, reply) => {
+  if(error instanceof OutputDirectoryError)return reply.code(409).send({error:error.message,kind:'directory'});
   if (error instanceof z.ZodError) {
     return reply.code(400).send({ error: "bad_request", issues: error.issues });
   }
@@ -274,6 +311,10 @@ app.get("/console/", async (_request, reply) => {
   return reply.type("text/html; charset=utf-8").send(await fs.readFile(consoleHtmlPath, "utf8"));
 });
 
+app.get('/downloads/android.json',async(_request,reply)=>{
+  try{return reply.header('Cache-Control','no-store').send(await readAndroidRelease(path.join(serverRoot,'public','downloads')));}
+  catch(error){return reply.code(503).send({error:error instanceof Error?error.message:'应用更新暂不可用'});}
+});
 app.get('/downloads/android.apk',async(_request,reply)=>{
   const apk=path.join(serverRoot,'public','downloads','android.apk');
   const stat=await fs.stat(apk);
@@ -287,8 +328,8 @@ app.get('/downloads/android.apk',async(_request,reply)=>{
 
 app.addHook("preHandler", async (request, reply) => {
   const pathname = new URL(request.url, `http://${request.headers.host ?? "localhost"}`).pathname;
-  if(['/manage','/manage/','/manage/app.js','/manage/app.css','/manage/management.css'].includes(pathname))return;
-  if (pathname === "/" || pathname === "/health" || pathname === "/console" || pathname === "/console/" || pathname === "/downloads/android.apk" || pathname.startsWith("/console/assets/") || pathname.startsWith("/preview/site/") || pathname.startsWith("/preview/file/") || pathname === "/api/pair/claim") {
+  if(consoleManagementPublicPaths.has(pathname))return;
+  if (pathname === "/" || pathname === "/health" || pathname === "/console" || pathname === "/console/" || pathname === "/downloads/android.apk" || pathname === "/downloads/android.json" || pathname.startsWith("/console/assets/") || pathname.startsWith("/preview/site/") || pathname.startsWith("/preview/file/") || pathname === "/api/pair/claim") {
     return;
   }
   const url = new URL(request.url, `http://${request.headers.host ?? "localhost"}`);
@@ -302,10 +343,14 @@ app.addHook("preHandler", async (request, reply) => {
   const viaPublic=typeof proxyHeader==='string'&&publicProxySecret!=null&&proxyHeader===publicProxySecret;
   if(proxyHeader&&!viaPublic){await reply.code(401).send({error:'unauthorized'});return;}
   const certificate=token===config.token?undefined:store.certificateForToken(token);
-  if((viaPublic&&!certificate)||(certificate&&!verifyDeviceProof(certificate,request.method,request.url,request.headers))){
+  if((viaPublic&&!certificate)||(certificate&&!verifyDeviceProof(certificate,request.method,deviceProofTarget(request.url,request.headers,publicProxySecret),request.headers))){
     await reply.code(401).send({error:'device_certificate_required'});
   }
 });
+
+app.get('/api/diagnostics/performance',async(_request,reply)=>reply.header('Cache-Control','no-store').send({
+  history:historyWorkerStatus(),events:hub.performanceStatus(),
+}));
 
 app.get("/api/projects", async () => ({
   projects: await listProjects(config),
@@ -336,11 +381,13 @@ const uploadStorage=new UploadStorage(store,async()=>{
   if(preparingClientSubmissions||sessions.receipts.hasProcessing())return '消息正在提交，完成后再清理';
   const threads=await listThreadsWithCodexHistory(store.threads,false,store.threads.filter(thread=>sessions.ownsThread(thread.id)).map(thread=>thread.id));
   for(const thread of threads.filter(thread=>!thread.readOnly&&(thread.status==='running'||sessions.ownsThread(thread.id))))
-    if(await currentThreadStatus(thread.id,await readCodexThreadEvents(thread.id))==='running')return '电脑有任务正在运行，结束后再清理附件';
+    if(await currentThreadStatus(thread.id,store.recentEventsForThread(thread.id))==='running')return '电脑有任务正在运行，结束后再清理附件';
   return preparingClientSubmissions||sessions.receipts.hasProcessing()?'消息正在提交，完成后再清理':'';
 });
 const closeDeepSeekWatcher=await watchDeepSeekSessions(store,hub,id=>sessions.agents.owns(id));
 app.addHook('onClose',async()=>closeDeepSeekWatcher());
+const closeZcodeWatcher=await watchZcodeSessions(store,hub,id=>sessions.agents.owns(id));
+app.addHook('onClose',async()=>closeZcodeWatcher());
 uploadStorage.register(app);
 registerImageUploads(app,uploadStorage);
 registerFileUploads(app,uploadStorage);
@@ -406,6 +453,15 @@ app.post('/api/network/openai/test',request=>{
  const body=z.object({group:z.string().min(1).max(300),node:z.string().min(1).max(300)}).parse(request.body);
  return testClashOpenAI(body.group,body.node);
 });
+app.get('/api/network/google',()=>readClashProvider('google'));
+app.put('/api/network/google/node',request=>{
+ const body=z.object({group:z.string().min(1).max(300),node:z.string().min(1).max(300)}).parse(request.body);
+ return selectClashProvider('google',body.group,body.node);
+});
+app.post('/api/network/google/test',request=>{
+ const body=z.object({group:z.string().min(1).max(300),node:z.string().min(1).max(300)}).parse(request.body);
+ return testClashProvider('google',body.group,body.node);
+});
 
 async function createPairingResponse(request: {query: unknown}) {
   const pairing = await store.createPairing();
@@ -414,7 +470,8 @@ async function createPairingResponse(request: {query: unknown}) {
   const baseUrl = addresses.find(a=>a.url===requested)?.url || publicBaseUrl();
   const certificateSha256=config.https?.enabled?new X509Certificate(await fs.readFile(config.https.certPath!)).fingerprint256.replaceAll(':',''):'';
   const remote=await fs.readFile(path.join(appHome(),'public-access.json'),'utf8').then(value=>(JSON.parse(value) as {publicUrl?:string}).publicUrl).catch(()=>undefined);
-  const publicUrl=remote&&/^https:\/\/[^/?#]+\/?$/.test(remote)?remote.replace(/\/$/,''):'';
+  let publicUrl='';
+  if(remote)try{publicUrl=normalizePublicAccessUrl(remote);}catch{}
   const setupUrl = `codex-control://pair?baseUrl=${encodeURIComponent(baseUrl)}&code=${encodeURIComponent(pairing.code)}${certificateSha256?`&certSha256=${certificateSha256}`:''}${publicUrl?`&publicUrl=${encodeURIComponent(publicUrl)}`:''}`;
   return {
     code: pairing.code,
@@ -438,7 +495,7 @@ app.post("/api/pair/start", createPairingResponse);
 
 app.post("/api/pair/claim", async (request) => {
   const body = pairDeviceSchema.parse(request.body);
-  if(body.certificate&&!verifyDeviceProof(body.certificate,request.method,request.url,request.headers))throw new Error('手机证书签名无效');
+  if(body.certificate&&!verifyDeviceProof(body.certificate,request.method,deviceProofTarget(request.url,request.headers,publicProxySecret),request.headers))throw new Error('手机证书签名无效');
   if(request.headers['x-public-proxy-secret']&&!body.certificate)throw new Error('公网配对需要手机证书');
   const result = await store.consumePairing({
     code: body.code,
@@ -498,7 +555,7 @@ app.get('/api/local-tasks/:requestId',async(request,reply)=>{
   const receipt=await sessions.receipts.get(requestId);
   return receipt?{request:receipt}:reply.code(404).send({error:'未找到此请求的提交记录。'});
 });
-const assistantTransports:Record<string,'app-server'|'acp'|'unavailable'>={codex:'app-server',grok:'acp',deepseek:'acp',hermes:'acp',opencode:'acp',claude:'acp',antigravity:'acp'};
+const assistantTransports:Record<string,'app-server'|'acp'|'unavailable'>={codex:'app-server',zcode:'app-server',grok:'acp',deepseek:'acp',hermes:'acp',opencode:'acp',claude:'acp',antigravity:'acp'};
 function assertAssistantLocal(request:{headers:Record<string,unknown>}){
   if(publicProxySecret!=null&&request.headers['x-public-proxy-secret']===publicProxySecret)throw Error('个人助理执行接口仅支持本地连接');
 }
@@ -526,7 +583,7 @@ app.post('/api/assistant-tasks',async(request,reply)=>{
   assertControllableThread(command.threadId||'');
   if(command.threadId)await managedThread(command.threadId);
   if(!command.model){
-    const settings=command.threadId?(threadAgent(command.threadId)==='codex'?desktopThreadSettings(command.threadId):sessions.agents.settings(command.threadId)):null;
+    const settings=command.threadId?(threadAgent(command.threadId)==='codex'?desktopThreadSettings(command.threadId):await sessions.agents.settings(command.threadId)):null;
     command.model=settings?.model||(await assistantModelCatalog()).defaultModel||undefined;
   }
   if(!command.model)throw Error('当前目录没有可用的 Sol 模型，请先选择模型');
@@ -558,15 +615,15 @@ app.post('/api/assistant-threads/:threadId/interrupt',async request=>{
   else await sessions.handleClientCommand({type:'turn.interrupt',threadId,requestId});
   return {ok:true,threadId,requestId};
 });
-async function submitLocalTask(raw:unknown,viaPublic:boolean){
+async function submitLocalTask(raw:unknown,viaPublic:boolean,resolveProject=assertProjectAccess){
   const command=z.object({requestId:z.string().min(1).max(160),threadId:z.string().optional(),projectPath:z.string().optional(),text:z.string().min(1).max(200000),model:z.string().optional(),effort:z.string().optional(),mode:z.enum(['default','plan']).optional(),fast:z.boolean().optional()}).strict().parse(raw);
   assertControllableThread(command.threadId||'');
   const identity={...(raw as object),type:command.threadId?'turn.start':'thread.start'} as ClientCommand;
   const settings=command.threadId?desktopThreadSettings(command.threadId):undefined;
-  command.model ||= settings?.model||'gpt-6-sol';
+  command.model ||= settings?.model||channelDefaultModel((await readModelCatalog(codex)).models);
   if(modelAgent(command.model)!=='codex')throw new Error('本地任务接口仅支持 Codex。');
   await validateAgentModel(command.model,command.threadId);
-  command.projectPath=await assertProjectAccess(command.projectPath,command.threadId);
+  command.projectPath=await resolveProject(command.projectPath,command.threadId);
   command.effort ||= (settings?.model===command.model?settings.effort:undefined)||(command.model.includes('astra')?'medium':'high');
   if(!command.threadId&&!command.projectPath)throw new Error('启动本地任务需要选择已有项目目录。');
   if(command.threadId)await sessions.handleClientCommand({type:'turn.start',...command,threadId:command.threadId},viaPublic,false,identity);
@@ -575,11 +632,13 @@ async function submitLocalTask(raw:unknown,viaPublic:boolean){
 }
 async function interruptCodexThread(threadId:string,requestId?:string){
   if(sessions.isCapacityRetryPending(threadId)){await sessions.interrupt(threadId,undefined,requestId);return;}
-  const history=sessions.canSteer(threadId)?[]:await readCodexThreadEvents(threadId);
-  if(!sessions.canSteer(threadId))await currentThreadStatus(threadId,history);
-  const lifecycle=sessions.canSteer(threadId)?undefined:latestMobileThreadLifecycle(history,store.eventsForThread(threadId));
-  if(lifecycle?.type==='turn.completed')return {type:'turn.completed' as const,threadId,requestId,status:lifecycle.status};
-  await sessions.interrupt(threadId,lifecycle?.type==='turn.started'?lifecycle.turnId:undefined,requestId);
+  const turnId=await sessions.currentTurnId(threadId);
+  if(!turnId){
+    const status=await currentThreadStatus(threadId,store.recentEventsForThread(threadId));
+    if(status!=='running')return {type:'turn.completed' as const,threadId,requestId,status:status==='idle'?'completed':status};
+    throw new Error('当前任务状态尚未同步，请重试停止');
+  }
+  await sessions.interrupt(threadId,turnId,requestId);
 }
 app.post('/api/local-tasks',async(request,reply)=>{
   const viaPublic=request.headers['x-public-proxy-secret']===publicProxySecret&&publicProxySecret!=null;
@@ -596,18 +655,30 @@ app.post('/api/threads/:threadId/interrupt',async(request,reply)=>{
   await interruptCodexThread(threadId,requestId);
   return {ok:true,threadId,requestId};
 });
+const channelWorkspaces=new ChannelWorkspaces(path.join(appHome(),'assistant-workspaces'));
+const channelProject=async(projectPath?:string,threadId?:string)=>{
+  const directory=projectPath||store.threads.find(thread=>thread.id===threadId)?.projectPath;
+  return directory&&channelWorkspaces.owns(directory)?channelWorkspaces.validate(directory):assertProjectAccess(projectPath,threadId);
+};
 const channels=new ChannelService(new ChannelStore(),{
+  prepareWorkspace:(requestId,previousThreadId)=>previousThreadId?channelProject(undefined,previousThreadId):channelWorkspaces.prepare(requestId),
+  requiresNewThread:async threadId=>threadAgent(threadId)!=='antigravity'||store.readAgentMeta(threadId)?.transport==='acp',
   validateProject:async projectPath=>{await assertProjectAccess(projectPath);},
   validateThread:async threadId=>{
     assertControllableThread(threadId);
-    if(threadAgent(threadId)!=='codex')throw Error('消息通道目前仅支持绑定 Codex 会话');
-    await assertProjectAccess(undefined,threadId);
+    if(!['codex','antigravity'].includes(threadAgent(threadId)))throw Error('消息通道支持 AGY 助理会话；原 Codex 会话在下一条新消息时切换');
+    await channelProject(undefined,threadId);
   },
-  submit:command=>submitLocalTask(command,false),
+  submit:async command=>{
+    const model=channelAssistantModel(await sessions.agents.models());
+    const projectPath=await channelProject(command.projectPath,command.threadId);
+    await sessions.handleClientCommand(channelAssistantCommand({...command,projectPath},model));
+    return sessions.receipts.get(command.requestId);
+  },
   receipt:requestId=>sessions.receipts.get(requestId),
-  status:async threadId=>currentThreadStatus(threadId,await readCodexThreadEvents(threadId)),
-  result:async threadId=>{const events=await readCodexThreadEvents(threadId);const latest=events.filter(event=>event.type==='message.delta').at(-1);return latest?.type==='message.delta'?latest.text:'';},
-  interrupt:async(threadId,requestId)=>{await interruptCodexThread(threadId,requestId);},
+  status:async threadId=>currentThreadStatus(threadId,store.recentEventsForThread(threadId)),
+  result:async threadId=>{const events=threadAgent(threadId)==='codex'?await readCodexThreadEvents(threadId):await store.readThreadEvents(threadId);const latest=events.filter(event=>event.type==='message.delta').at(-1);return latest?.type==='message.delta'?latest.text:'';},
+  interrupt:async(threadId,requestId)=>{if(threadAgent(threadId)==='codex')await interruptCodexThread(threadId,requestId);else await sessions.handleClientCommand({type:'turn.interrupt',threadId,requestId});},
 });
 channels.register(qqDriver(channels));
 channels.register(weixinDriver(channels));
@@ -620,16 +691,14 @@ app.addHook('onClose',async()=>{unsubscribeChannels();await channels.close();});
 app.get("/api/threads", async (request) => {
   const query=sidebarPageQuery.parse(request.query);
   const included=new Set(query.include?.split(",")||[]);
-  // Native DeepSeek logs cannot contribute to another agent's filtered page,
-  // except when that page explicitly retains a selected DeepSeek conversation.
-  const includeDeepSeek=!query.agent||query.agent==='deepseek'||[...included].some(id=>id.startsWith('deepseek-'));
-  const [cloud,local]=await Promise.all([cloudThreads.cachedList(),listThreadsWithCodexHistory(store.threads,false,store.threads.filter(t=>sessions.ownsThread(t.id)).map(t=>t.id),includeDeepSeek)]);
+  const nativeAgents=nativeSidebarAgents(query.agent,included);
+  const [cloud,local]=await Promise.all([cloudThreads.cachedList(),listThreadsWithCodexHistory(store.threads,false,store.threads.filter(t=>sessions.ownsThread(t.id)).map(t=>t.id),nativeAgents)]);
   const listed=[...await cloudSnapshots.list(),...cloud,...local].sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt));
   const scoped=subagentThreadScope(listed.filter(thread=>!store.isThreadHidden(thread.id)),thread=>(!query.agent||threadAgent(thread.id)===query.agent||included.has(thread.id))&&(!query.project||path.resolve(thread.projectPath||'.').toLowerCase()===path.resolve(query.project).toLowerCase()));
   const initialPage=subagentSidebarPage(scoped,query.limit,thread=>(thread.pinnedIndex??-1)>=0||included.has(thread.id));
   const candidates=query.filter&&query.filter!=='all'?scoped:initialPage.rows;
   for(const thread of candidates.filter(thread=>(['running','interrupted','error'].includes(thread.status)||sessions.ownsThread(thread.id))&&!thread.readOnly)){
-    thread.status=sidebarStatuses.read(thread,async()=>currentThreadStatus(thread.id,await readCodexThreadEvents(thread.id,undefined,'background')));
+    thread.status=sidebarStatuses.read(thread,async()=>currentThreadStatus(thread.id,store.recentEventsForThread(thread.id)));
   }
   const annotated=await withThreadReadState(candidates,store);
   const matching=query.filter==='running'?subagentThreadScope(annotated,thread=>thread.status==='running')
@@ -678,7 +747,7 @@ app.get("/api/threads/search", async (request,reply) => {
   try{
   const needle = query.q.toLowerCase();
   const limit = query.limit ?? 12;
-  const candidates = [...await cloudSnapshots.list(),...await cloudThreads.cachedList(),...await listThreadsWithCodexHistory(store.threads,false,[],!query.agent||query.agent==='deepseek')]
+  const candidates = [...await cloudSnapshots.list(),...await cloudThreads.cachedList(),...await listThreadsWithCodexHistory(store.threads,false,[],nativeSidebarAgents(query.agent))]
     .filter((thread) => !thread.subagent && !store.isThreadHidden(thread.id) && (!query.agent || threadAgent(thread.id) === query.agent))
     .sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
   controller.signal.throwIfAborted();
@@ -736,10 +805,14 @@ app.get('/api/threads/:threadId/queue',async request=>{
   const {threadId}=request.params as {threadId:string};
   if(isCloudSnapshot(threadId))return {canSteer:false,messages:[],drafts:[]};
   const viaPublic=request.headers['x-public-proxy-secret']===publicProxySecret&&publicProxySecret!=null;
-  const history=await readCodexThreadEvents(threadId);
+  const history=store.recentEventsForThread(threadId);
   const status=await currentThreadStatus(threadId,history);
-  const lifecycle=latestMobileThreadLifecycle(history,store.eventsForThread(threadId));
-  const canSteer=threadAgent(threadId)==='codex'&&status==='running'&&(sessions.canSteer(threadId)||(lifecycle?.type==='turn.started'&&!!lifecycle.turnId));
+  const agent=threadAgent(threadId);
+  // An older host keeps its running AGY tasks during an idle upgrade. Its
+  // settings predate canSteer, but the persisted transport still identifies CLI.
+  const agentCanSteer=status==='running'&&agent!=='codex'&&sessions.agents.owns(threadId)
+    ?(await sessions.agents.settings(threadId)).canSteer??(agent==='antigravity'&&store.readAgentMeta(threadId)?.transport!=='acp'):false;
+  const canSteer=status==='running'&&(agent==='codex'||agentCanSteer);
   return {canSteer,messages:followups.list(threadId).map(message=>({...message,canSteer:canSteer&&(!viaPublic||message.sourcePublic===true)})),drafts:followups.drafts(threadId).filter(message=>!viaPublic||message.sourcePublic===true)};
 });
 app.post('/api/threads/:threadId/queue',async request=>{
@@ -787,10 +860,10 @@ app.post('/api/threads/:threadId/queue/:id/:action',async request=>{
   if(viaPublic&&!publicAgentAllowed(threadAgent(threadId)))throw new Error('此助手的公网访问已关闭');
   if(viaPublic&&!followups.list(threadId).some(entry=>entry.id===id&&entry.sourcePublic))throw new Error('公网只能处理本机排队的消息');
   if(action==='steer'){
-    const history=await readCodexThreadEvents(threadId);
+    const history=store.recentEventsForThread(threadId);
     if(await currentThreadStatus(threadId,history)!=='running')throw new Error('当前没有正在运行的任务，消息已保留，请重试发送');
-    const lifecycle=latestMobileThreadLifecycle(history,store.eventsForThread(threadId));
-    const desktopTurnId=lifecycle?.type==='turn.started'?lifecycle.turnId:undefined;
+    const desktopTurnId=threadAgent(threadId)==='codex'?await sessions.currentTurnId(threadId):undefined;
+    if(threadAgent(threadId)==='codex'&&!desktopTurnId)throw new Error('当前没有正在运行的任务，消息已保留，请重试发送');
     await followups.steer(id,threadId,desktopTurnId);
   }
   else if(action==='retry')followups.retry(id,threadId);
@@ -800,6 +873,11 @@ app.post('/api/threads/:threadId/queue/:id/:action',async request=>{
 
 app.get("/api/threads/:threadId/events",{compress:historyCompression}, async (request,reply) => {
   const params = request.params as { threadId: string };
+  if(store.isEphemeral(params.threadId)){
+    await assertProjectAccess(undefined,params.threadId);
+    const status=await currentThreadStatus(params.threadId,store.eventsForThread(params.threadId,1000));
+    return {events:store.eventsForThread(params.threadId,1000),status,hasMore:false};
+  }
   const {count,turns,activityDetails}=z.object({count:z.coerce.number().int().min(20).max(20000).optional(),turns:z.coerce.number().int().min(1).max(2000).optional(),activityDetails:z.enum(['deferred']).optional()}).parse(request.query);
   if(isCloudSnapshot(params.threadId))return cloudSnapshots.read(params.threadId,count,turns);
   if(isCloudThread(params.threadId))return cloudThreads.read(params.threadId,turns??Math.max(10,Math.ceil((count??200)/20)));
@@ -808,18 +886,19 @@ app.get("/api/threads/:threadId/events",{compress:historyCompression}, async (re
   reply.raw.once('close',closed);
   if(reply.raw.destroyed||request.raw.aborted)controller.abort();
   try{
-  const historicalEvents = turns===undefined?await readCodexThreadEvents(params.threadId,count,'interactive',controller.signal):await readCodexConversationEvents(params.threadId,turns,controller.signal);
+  const historicalEvents = turns===undefined?await readCodexThreadEvents(params.threadId,count,'interactive',controller.signal):await readCodexConversationPreview(params.threadId,turns,controller.signal);
   // History is already available locally. A backend status RPC can wait 60s;
   // reconcile it in the existing cache without holding the transcript response.
   const snapshotStatus=await sessions.currentThreadStatus(params.threadId,historicalEvents,false);
   const storedThread=store.threads.find(thread=>thread.id===params.threadId);
-  const storedEvents = store.eventsForThread(params.threadId);
+  const storedEvents = await store.readThreadEvents(params.threadId,turns!==undefined?true:activityDetails==='deferred'?'live':false,controller.signal);
   const lifecycle=latestMobileThreadLifecycle(historicalEvents,storedEvents);
   const status=sidebarStatuses.read({id:params.threadId,status:snapshotStatus as ThreadRecord['status'],updatedAt:[storedThread?.updatedAt,lifecycle?.createdAt].filter(Boolean).sort().at(-1)||''},()=>currentThreadStatus(params.threadId,historicalEvents));
   const expiredApprovals=new Set(store.approvals.filter(a=>a.threadId===params.threadId&&a.status==='expired').map(a=>a.id));
   const nativeDeepSeek=params.threadId.startsWith('deepseek-')?await deepseekNativeSessions.read(params.threadId):null;
-  const merged=confirmedToolChanges((nativeDeepSeek?mergeDeepSeekThreadEvents(historicalEvents,storedEvents,sessions.agents.owns(params.threadId)):mergeMobileThreadEvents(historicalEvents, storedEvents)).filter(isVisibleMobileThreadEvent).map(event=>event.type==='approval.resolved'&&event.decision==='decline'&&expiredApprovals.has(event.approvalId)?{...event,decision:'resolved' as const}:event));
-  const external=/^(antigravity|claude|grok|deepseek|hermes|opencode)-/.test(params.threadId);
+  const nativeZcode=params.threadId.startsWith('zcode-')?(await zcodeNativeSessions.list()).find(session=>session.thread.id===params.threadId):null;
+  const merged=confirmedToolChanges((nativeZcode?mergeZcodeThreadEvents(historicalEvents,storedEvents,sessions.agents.owns(params.threadId)):nativeDeepSeek?mergeDeepSeekThreadEvents(historicalEvents,storedEvents,sessions.agents.owns(params.threadId)):mergeMobileThreadEvents(historicalEvents, storedEvents)).filter(isVisibleMobileThreadEvent).map(event=>event.type==='approval.resolved'&&event.decision==='decline'&&expiredApprovals.has(event.approvalId)?{...event,decision:'resolved' as const}:event));
+  const external=/^(antigravity|claude|grok|deepseek|hermes|opencode|zcode)-/.test(params.threadId);
   const selected=turns!==undefined?selectConversationTurns(merged,turns):count===undefined&&!external?selectConversationWindow(merged):selectConversationPage(merged,count??200);
   const restoredAttachments=await recoverMobileUploadImages(await recoverMobileUploadFiles(selected.map(event=>event.type==='user.message'&&event.eventId?.startsWith('history:')?{
     ...event,attachments:event.attachments?.map((file,index)=>({
@@ -830,7 +909,7 @@ app.get("/api/threads/:threadId/events",{compress:historyCompression}, async (re
   }:event)));
   return {
     status,
-    settings:nativeDeepSeek&&!sessions.agents.owns(params.threadId)?{model:nativeDeepSeek.model,effort:nativeDeepSeek.effort||''}:external?sessions.agents.settings(params.threadId):desktopThreadSettings(params.threadId),
+    settings:(nativeZcode||nativeDeepSeek)&&!sessions.agents.owns(params.threadId)?{model:(nativeZcode||nativeDeepSeek)!.model,effort:(nativeZcode||nativeDeepSeek)!.effort||''}:external?await sessions.agents.settings(params.threadId):desktopThreadSettings(params.threadId),
     hasMore:merged.length>selected.length,
     events: await enrichMessageSources(turns!==undefined?activityHistory.compact(restoredAttachments):activityDetails==='deferred'?restoredAttachments.map(deferLiveActivityDetails):restoredAttachments),
   };
@@ -865,7 +944,7 @@ app.get('/api/threads/:threadId/submission',async request=>{
   const {threadId}=request.params as {threadId:string};
   const {requestId}=z.object({requestId:z.string().min(1).max(200)}).parse(request.query);
   const submission=await readSubmissionStatus(requestId,store.events,sessions.receipts,threadId==='_new'?undefined:threadId);
-  return {submission,...(submission.state==='accepted'&&submission.threadId?{status:await currentThreadStatus(submission.threadId,await readCodexThreadEvents(submission.threadId))}:{})};
+  return {submission,...(submission.state==='accepted'&&submission.threadId?{status:await currentThreadStatus(submission.threadId,store.recentEventsForThread(submission.threadId))}:{})};
 });
 
 app.get('/api/threads/:threadId/output-file/:name',async(request,reply)=>{
@@ -873,21 +952,23 @@ app.get('/api/threads/:threadId/output-file/:name',async(request,reply)=>{
   const {threadId,name}=request.params as {threadId:string;name:string};
   if(viaPublic&&!/\.(png|jpe?g|webp|gif)$/i.test(name))return reply.code(403).send({error:'公网会话输出只支持已授权项目中的图片'});
   if(threadId.startsWith('cloud-snapshot:')||isCloudThread(threadId))return reply.code(403).send({error:'云端会话不提供电脑文件访问'});
-  const query=z.object({eventId:z.string().min(1),path:z.string().min(1).max(4096),source:z.string().min(1).max(4096).optional()}).parse(request.query);
-  if(viaPublic&&query.source)return reply.code(403).send({error:'关联图片请通过已授权项目或内网读取'});
+  const query=z.object({eventId:z.string().min(1),path:z.string().max(4096),source:z.string().min(1).max(4096).optional(),directory:z.string().min(1).max(4096).optional(),browse:z.literal('1').optional()}).parse(request.query);
+  if(!query.path&&!query.directory)throw new Error('文件路径不能为空');
+  if(viaPublic&&(query.source||query.directory||query.browse))return reply.code(403).send({error:'关联文件请通过已授权项目或内网读取'});
+  if(query.source&&(query.directory||query.browse))throw new Error('文件来源参数不兼容');
   const controller=new AbortController();
   const closed=()=>{if(!reply.raw.writableEnded)controller.abort();};
   reply.raw.once('close',closed);
   if(reply.raw.destroyed||request.raw.aborted)controller.abort();
   try{
-  const stored=store.eventsForThread(threadId,2000);
+  const stored=await store.readThreadEvents(threadId,false,controller.signal);
   const event=storedOutputMessage(stored,query.eventId)||stored.find(item=>item.eventId===query.eventId)
     ||await readCodexOutputSourceEventById(threadId,query.eventId,controller.signal);
   const activityText=event?.type==='message.delta'?null:activityOutputImageText(
     event);
   const text=event?.type==='message.delta'?event.text:activityText;
   if(text==null)return reply.code(404).send({error:'找不到这条回复或图片操作记录'});
-  if(activityText&&(!/\.(png|jpe?g|webp|gif)$/i.test(name)||query.source))return reply.code(403).send({error:'操作预览仅支持该记录中的图片'});
+  if(activityText&&(!/\.(png|jpe?g|webp|gif)$/i.test(name)||query.source||query.directory||query.browse))return reply.code(403).send({error:'操作预览仅支持该记录中的图片'});
   const cwd=store.threads.find(thread=>thread.id===threadId)?.projectPath
     ||(await desktopSidebar()).threads.find(thread=>thread.id===threadId)?.cwd||'';
   if(viaPublic){
@@ -896,7 +977,8 @@ app.get('/api/threads/:threadId/output-file/:name',async(request,reply)=>{
       return reply.type(file.mime).header('X-Content-Type-Options','nosniff').header('Cache-Control','private, no-store').send(await fs.readFile(file.absolutePath,{signal:controller.signal}));
     }catch(error){return reply.code(403).send({error:error instanceof Error?error.message:'图片不可读取'});}
   }
-  const file=query.source?await resolveMarkdownOutputImage(text,query.source,query.path,cwd):await resolveThreadOutputFile(text,query.path,cwd);
+  if(query.browse)return reply.header('Cache-Control','private, no-store').send(await listThreadOutputDirectory(text,query.directory??query.path,cwd,query.directory?query.path:''));
+  const file=query.directory?await resolveThreadDirectoryFile(text,query.directory,cwd,query.path):query.source?await resolveMarkdownOutputImage(text,query.source,query.path,cwd):await resolveThreadOutputFile(text,query.path,cwd);
   return reply.type(contentTypeFor(file.fileName)).header('Cache-Control','private, no-store').send(await fs.readFile(file.absolutePath,{signal:controller.signal}));
   }finally{reply.raw.off('close',closed);}
 });
@@ -918,6 +1000,17 @@ app.get('/api/threads/:threadId/history-image',async(request,reply)=>{
     .header('Cache-Control','private, max-age=300')
     .send((await import('node:fs')).createReadStream(file.absolutePath));
   }finally{reply.raw.off('close',closed);}
+});
+
+registerThreadToolsRoutes(app,{codex,sessions,store,authorize:async(request,threadId)=>{
+  assertControllableThread(threadId);
+  if(threadAgent(threadId)!=='codex')throw Error('此助手暂不支持此操作');
+  if(publicProxySecret!=null&&request.headers['x-public-proxy-secret']===publicProxySecret&&!publicAgentAllowed('codex'))throw Error('此助手的公网访问已关闭');
+  await assertProjectAccess(undefined,threadId);
+}});
+registerAgentInstructions(app,async(_request,threadId)=>assertProjectAccess(undefined,threadId),publicProxySecret);
+registerDesktopBrowser(app,new DesktopBrowser(),request=>{
+  if(publicProxySecret!=null&&request.headers['x-public-proxy-secret']===publicProxySecret&&!publicAgentAllowed('codex'))throw Error('此助手的公网访问已关闭');
 });
 
 app.post('/api/threads/:threadId/compact',async request=>{
@@ -974,7 +1067,7 @@ app.patch('/api/threads/:threadId/goal',async request=>{
 
 const automationEdit=z.object({name:z.string().trim().min(1).max(200).optional(),prompt:z.string().trim().min(1).max(200000).optional(),
   status:z.enum(['ACTIVE','PAUSED']).optional(),threadId:z.string().min(1).max(160).optional(),
-  schedule:z.object({frequency:z.enum(['MINUTELY','HOURLY','DAILY','WEEKLY']),interval:z.number().int().min(1).max(10080)}).strict().optional()}).strict();
+  schedule:automationScheduleSchema.optional()}).strict();
 app.get('/api/automations',async()=>({automations:await listAutomations()}));
 app.get('/api/automations/targets',async request=>{
   const query=z.object({q:z.string().trim().max(200).default(''),limit:z.coerce.number().int().min(1).max(500).default(60)}).parse(request.query);
@@ -1027,7 +1120,7 @@ app.post('/api/threads/:threadId/move',async request=>{
 app.post('/api/threads/:threadId/unread',async request=>{
   const {threadId}=z.object({threadId:z.string().min(1)}).parse(request.params);
   const thread=await managedThread(threadId);
-  const completedAt=await readCodexThreadCompletion(threadId).catch(()=>0)||Date.parse(thread.updatedAt)||Date.now();
+  const completedAt=Math.max(await readCodexThreadCompletion(threadId).catch(()=>0),store.threadCompletion(threadId),Date.now(),store.threadReadThrough(threadId)+1,(store.manualUnread(threadId)||0)+1);
   store.markThreadUnread(threadId,completedAt);
   hub.publish({type:'thread.read-state.changed'},false);
   return {ok:true,unread:true,completedAt};
@@ -1047,21 +1140,23 @@ app.post('/api/threads/:threadId/unarchive',async request=>{
   return {ok:true,threadId,archived:false};
 });
 async function subagentClosePreview(threadId:string){
+  if(threadAgent(threadId)==='zcode')return zcodeSubagents.preview(threadId);
   const thread=await managedThread(threadId);
   if(threadAgent(threadId)!=='codex'||!thread.subagent?.parentThreadId)throw Error('只能关闭有明确父会话的本地子代理');
   const result=await codex.request('thread/read',{threadId,includeTurns:false}) as {thread?:{status?:string|{type?:string}}};
   const status=typeof result.thread?.status==='string'?result.thread.status:result.thread?.status?.type||'unknown';
+  await sessions.currentThreadStatus(threadId,store.recentEventsForThread(threadId));
   const running=status==='active'||sessions.ownsThread(threadId)||readCodexGoals().get(threadId)?.status==='active';
-  return {thread,threadId,status,running,canArchive:!running&&['idle','notLoaded'].includes(status),subagent:thread.subagent};
+  return {thread,threadId,status,running,canArchive:subagentCanArchive(status,running),subagent:thread.subagent};
 }
 const closingSubagents=new Set<string>();
 app.get('/api/threads/:threadId/close-preview',async request=>{
-  const {threadId}=z.object({threadId:z.string().uuid()}).parse(request.params);
+  const {threadId}=z.object({threadId:z.string().min(1).max(256)}).parse(request.params);
   const {thread,...preview}=await subagentClosePreview(threadId);return preview;
 });
 app.post('/api/threads/:threadId/close',async(request,reply)=>{
-  const {threadId}=z.object({threadId:z.string().uuid()}).parse(request.params);
-  const {stopRunning,parentThreadId}=z.object({stopRunning:z.boolean(),parentThreadId:z.string().uuid()}).strict().parse(request.body);
+  const {threadId}=z.object({threadId:z.string().min(1).max(256)}).parse(request.params);
+  const {stopRunning,parentThreadId}=z.object({stopRunning:z.boolean(),parentThreadId:z.string().min(1).max(256)}).strict().parse(request.body);
   if(closingSubagents.has(threadId))return reply.code(409).send({error:'子代理正在关闭，请稍后刷新'});
   closingSubagents.add(threadId);
   try{
@@ -1072,7 +1167,8 @@ app.post('/api/threads/:threadId/close',async(request,reply)=>{
     if(preview.subagent.parentThreadId!==parentThreadId||parentThreadId===threadId)return reply.code(409).send({error:'子代理所属会话已改变，请刷新后重试'});
     if(preview.running){
       if(!stopRunning)return reply.code(409).send({error:'子代理仍在运行，请确认停止该子代理后再关闭'});
-      await interruptCodexThread(threadId);
+      if(threadAgent(threadId)==='zcode')await zcodeSubagents.stopTree(threadId);
+      else await interruptCodexThread(threadId);
       for(let attempt=0;attempt<10;attempt++){
         preview=await subagentClosePreview(threadId);
         if(preview.canArchive)break;
@@ -1080,6 +1176,15 @@ app.post('/api/threads/:threadId/close',async(request,reply)=>{
       }
     }
     if(!preview.canArchive)return reply.code(409).send({error:'尚未确认子代理停止，未归档，请稍后刷新'});
+    if(threadAgent(threadId)==='zcode'){
+      const tree=await zcodeSubagents.tree(threadId);
+      if(!(await zcodeSubagents.preview(threadId)).canArchive)return reply.code(409).send({error:'子代理状态已改变，请刷新后重试'});
+      store.closeSubagents(tree);
+      hub.publish({type:'thread.history.changed',threadId},false);
+      return {ok:true,threadId,closed:true,archived:false,closureKind:'gatewayClosed',closedThreadIds:tree.map(row=>row.id)};
+    }
+    store.sessionUsage?.observeThread(preview.thread);
+    await usageReader.capture(threadId);
     const result=await archiveOrCloseSubagent(preview.thread,{
       request:(method,params)=>codex.request(method,params),
       list:()=>listThreadsWithCodexHistory(store.threads),
@@ -1103,13 +1208,18 @@ app.post('/api/threads/:threadId/archive',async(request,reply)=>{
   if(sessions.ownsThread(threadId)||status==='active'||readCodexGoals().get(threadId)?.status==='active')
     return reply.code(409).send({error:thread.subagent?'子代理仍在运行，请先停止该子代理再关闭':'会话仍在运行，请先停止再归档'});
   if(status!=='idle'&&status!=='notLoaded')return reply.code(409).send({error:'暂时无法确认会话状态，请刷新后重试'});
-  if(threadAgent(threadId)==='codex')await codex.request('thread/archive',{threadId});
+  if(threadAgent(threadId)==='codex'){
+    store.sessionUsage?.observeThread(thread);
+    await usageReader.capture(threadId);
+    await codex.request('thread/archive',{threadId});
+  }
   store.archiveThread(threadId,thread);
   return {ok:true,threadId,archived:true};
 });
 
 app.delete("/api/threads/:threadId", async (request) => {
   const params = request.params as { threadId: string };
+  if(threadAgent(params.threadId)==='codex')await usageReader.capture(params.threadId);
   if(threadAgent(params.threadId)==='antigravity')await sessions.agents.forget(params.threadId);
   await store.deleteThread(params.threadId);
   return { ok: true };
@@ -1119,7 +1229,13 @@ app.get("/api/approvals", async request => {
   await sessions.reconcileApprovalMirrors();
   const threadId=z.object({threadId:z.string().optional()}).parse(request.query).threadId;
   if(threadId&&isCloudSnapshot(threadId))return {approvals:[]};
-  const desktop=threadId?pendingDesktopQuestions(threadId,await readCodexThreadEvents(threadId),store.eventsForThread(threadId),store.approvals.filter(item=>item.status!=='pending'&&(!item.id.startsWith('desktop-question:')||item.method==='desktop/questionReply')).map(item=>item.id)):[];
+  const resolvedIds=store.approvals.filter(item=>item.status!=='pending'&&(!item.id.startsWith('desktop-question:')||item.method==='desktop/questionReply')).map(item=>item.id);
+  // Only revisit conversations with a known pending asynchronous prompt. This
+  // recovers missed cross-thread notices without scanning every rollout.
+  const questionThreads=new Set(store.events.flatMap(event=>event.type==='approval.requested'&&event.approvalType==='question'&&event.approvalId?.startsWith('desktop-question:')?[event.threadId]:[]));
+  for(const id of questionThreads)if(!pendingDesktopQuestions(id,store.recentEventsForThread(id),[],resolvedIds).length)questionThreads.delete(id);
+  if(threadId)questionThreads.add(threadId);
+  const desktop=(await Promise.all([...questionThreads].map(async id=>pendingDesktopQuestions(id,await readCodexThreadEvents(id,undefined,'background'),await store.readThreadEvents(id),resolvedIds)))).flat();
   const pendingIds=new Set(desktop.map(item=>item.id));
   return {approvals:[...store.approvals.filter(item=>!pendingIds.has(item.id)),...desktop]};
 });
@@ -1133,7 +1249,7 @@ app.post('/api/approvals/:approvalId/answer',async(request)=>{
     const threadId=body.threadId;
     if(!threadId||threadAgent(threadId)!=='codex')throw new Error('无效的 Codex 会话');
     const events=await readCodexThreadEvents(threadId);
-    const pending=pendingDesktopQuestions(threadId,events,store.eventsForThread(threadId),store.approvals.filter(item=>item.status!=='pending'&&(!item.id.startsWith('desktop-question:')||item.method==='desktop/questionReply')).map(item=>item.id)).find(item=>item.id===approvalId);
+    const pending=pendingDesktopQuestions(threadId,events,await store.readThreadEvents(threadId),store.approvals.filter(item=>item.status!=='pending'&&(!item.id.startsWith('desktop-question:')||item.method==='desktop/questionReply')).map(item=>item.id)).find(item=>item.id===approvalId);
     if(!pending)throw new Error('问题已处理或不再可用，请刷新会话');
     const questions=JSON.parse(pending.detail||'{}').questions as {id:string;question:string}[];
     if(Object.keys(body.answers).length!==questions.length||questions.some(item=>!body.answers[item.id]?.answers[0]?.trim()))throw new Error('请回答所有问题');
@@ -1199,11 +1315,23 @@ app.put('/api/settings/public-access/password',async request=>{
   if(password.trim()!==password)throw new Error('密码首尾不能有空格');
   return {publicAccess:await updatePublicAccessPassword(password)};
 });
-const usageReader=new UsageReader(codex,threadId=>hub.publish({type:'usage.updated',threadId}));
+const usageReader=new UsageReader(codex,threadId=>hub.publish({type:'usage.updated',threadId}),store.sessionUsage??undefined);
 app.get('/api/usage',async request=>{
-  const query=z.object({threadId:z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/).optional(),agent:z.enum(['codex','claude','antigravity','grok','deepseek','hermes','opencode']).optional(),model:z.string().max(200).optional(),days:z.coerce.number().int().min(1).max(90).optional()}).parse(request.query);
+  const query=z.object({threadId:z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/).optional(),agent:z.enum(['codex','claude','antigravity','grok','deepseek','hermes','opencode','zcode']).optional(),model:z.string().max(200).optional(),days:z.coerce.number().int().min(1).max(90).optional()}).parse(request.query);
   const agent=query.threadId?threadAgent(query.threadId):query.agent||'codex';
-  return agent!=='codex'?sessions.agents.usage(query.threadId||'',agent,query.model):usageReader.read(query.threadId,query.days);
+  if(agent==='codex')return usageReader.read(query.threadId,query.days);
+  const usage=await sessions.agents.usage(query.threadId||'',agent,query.model);
+  if(agent==='zcode'&&query.threadId){
+    const tokens=await withCurrentZcodeContext(query.threadId,usage.tokens,query.model);
+    return {...usage,tokens:store.sessionUsage?.combine(query.threadId,tokens)||tokens};
+  }
+  // AGY reports the same 5h/7d buckets as Codex; keep its samples so the quota
+  // chart is not an empty "暂无历史记录" page on the phone.
+  if(agent!=='antigravity')return usage;
+  const scope='antigravity:'+(query.model||'').split('::').pop();
+  const windows=usage.quota?.windows||[];
+  if(!usage.quota?.stale&&windows.some(window=>window.remainingPercent!==null))usageReader.recordExternalQuota(scope,windows);
+  return {...usage,quotaTrend:usageReader.externalQuotaTrend(scope,query.days)};
 });
 registerModelDirectory(app,codex,sessions.agents,publicProxySecret);
 const agentHealthMonitor=new AgentHealthMonitor();
@@ -1289,7 +1417,7 @@ wss.on("connection", (socket, request) => {
   const proxyHeader=request.headers['x-public-proxy-secret'];
   const viaPublic=typeof proxyHeader==='string'&&publicProxySecret!=null&&proxyHeader===publicProxySecret;
   const certificate=token===config.token?undefined:store.certificateForToken(token);
-  if((proxyHeader&&!viaPublic)||(viaPublic&&!certificate)||(certificate&&!verifyDeviceProof(certificate,'GET',request.url??'/ws',request.headers))){socket.close(1008,'device_certificate_required');return;}
+  if((proxyHeader&&!viaPublic)||(viaPublic&&!certificate)||(certificate&&!verifyDeviceProof(certificate,'GET',deviceProofTarget(request.url??'/ws',request.headers,publicProxySecret),request.headers))){socket.close(1008,'device_certificate_required');return;}
 
   if (token !== config.token) {
     void store.touchDeviceToken(token, {
@@ -1415,12 +1543,6 @@ function publicBaseUrl(): string {
   return `${scheme}://${address?.address ?? "127.0.0.1"}:${config.port}`;
 }
 
-function isVisibleMobileThreadEvent(event: GatewayEvent): boolean {
-  if(event.type==='context.compaction')return true;
-  const text = "text" in event ? event.text ?? "" : "";
-  const detail = "detail" in event ? event.detail ?? "" : "";
-  return !text.includes("codex_internal_context") && !detail.includes("codex_internal_context");
-}
 
 async function codexCompatibilityReport() {
   const status = await codex.status();

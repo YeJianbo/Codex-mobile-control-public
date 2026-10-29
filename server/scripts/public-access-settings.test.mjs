@@ -24,3 +24,14 @@ test('invalid destinations and passwords leave both saved files unchanged',async
   for(const input of [{publicUrl:'http://phone.example.com'},{publicUrl:'https://phone.example.com/path'},{publicUrl:'https://name:secret@phone.example.com'},{password:' short '},{}])await assert.rejects(updatePublicAccessSettings(input,home));
   assert.equal(await fs.readFile(path.join(home,'public-access.json'),'utf8'),config);assert.equal(await fs.readFile(path.join(home,'public-password.txt'),'utf8'),'old-password\n');
 });
+
+test('secret public prefixes survive saving and do not alter other credentials',async t=>{
+  const home=await fixture(t),prefix='a'.repeat(64);
+  await updatePublicAccessSettings({publicUrl:`https://phone.example.com/${prefix}/`},home);
+  assert.equal((await readPublicAccessSettings(home)).publicUrl,`https://phone.example.com/${prefix}`);
+  assert.equal(await fs.readFile(path.join(home,'public-password.txt'),'utf8'),'old-password\n');
+  const before=await fs.readFile(path.join(home,'public-access.json'),'utf8');
+  for(const suffix of ['/short','/'+prefix+'/extra','/'+prefix+'/../','/%61'.repeat(22),'//'+prefix])
+    await assert.rejects(updatePublicAccessSettings({publicUrl:'https://phone.example.com'+suffix},home));
+  assert.equal(await fs.readFile(path.join(home,'public-access.json'),'utf8'),before);
+});

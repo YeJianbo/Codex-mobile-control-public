@@ -14,7 +14,8 @@ internal fun nativeAnswerText(source:String):String=nativeAnswerContent(source).
 
 /** Keep reference provenance separate from prose and preserve literal fenced examples. */
 internal fun nativeAnswerContent(source:String):NativeAnswerContent {
-    if(!answerMetadataTag.containsMatchIn(source))return NativeAnswerContent(source)
+    val displaySource=nativeFileCitationMarkdown(source)
+    if(!answerMetadataTag.containsMatchIn(displaySource))return NativeAnswerContent(displaySource)
     val output=StringBuilder()
     val prose=StringBuilder()
     var marker:Char?=null
@@ -39,7 +40,7 @@ internal fun nativeAnswerContent(source:String):NativeAnswerContent {
         }while(cleaned!=previous)
         output.append(answerMetadataClose.replace(cleaned,""));prose.setLength(0)
     }
-    source.splitToSequence('\n').forEach { line ->
+    displaySource.splitToSequence('\n').forEach { line ->
         val fence=answerFence.matchEntire(line)
         if(marker==null&&fence!=null){
             flush();marker=fence.groupValues[1].first();markerLength=fence.groupValues[1].length

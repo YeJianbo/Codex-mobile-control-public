@@ -1,5 +1,4 @@
 import {AgyUsage} from './agy-usage.mjs';
-import {ExternalUsage} from './external-usage.mjs';
 import {relayDesktop,applyDesktop,setDesktopOfficial,desktopStatus} from './claude-desktop.mjs';
 import {HarnessProfiles} from './harness-profiles.mjs';
 import {PersonalAssistant} from './personal-assistant.mjs';
@@ -8,6 +7,7 @@ import {AgyAccountManager} from './agy-account-manager.mjs';
 import {ClaudeAccountManager} from './claude-account-manager.mjs';
 import {AccountSwitchControl} from './account-switch-control.mjs';
 import {ModelAccounts} from './model-accounts.mjs';
+import {QuotaOverview} from './quota-overview.mjs';
 import {discoverProviderModels} from './provider-models.mjs';
 import {readErrorResponse,summarizeError} from './upstream-errors.mjs';
 import {networkError} from './network-error.mjs';
@@ -28,7 +28,10 @@ import {Store,json} from './store.mjs';
 import {GatewayService} from './gateway.mjs';
 import {AccessControl} from './access-control.mjs';
 import {SessionService} from './sessions.mjs';
-import {UsageService,usageObserver} from './usage.mjs';
+import {UsageService,usageObserver,activeAccount} from './usage.mjs';
+import {QuotaWarmup,sendQuotaWarmup} from './quota-warmup.mjs';
+import {RequestRecords} from './request-records.mjs';
+import {ExternalUsageIndexer} from './external-usage-worker.mjs';
 import {NativeSpeedService} from './native-speed.mjs';
 import {Maintenance} from './maintenance.mjs';
 import {filterRelayTools} from './compatibility.mjs';
@@ -36,6 +39,7 @@ import {Analytics} from './analytics.mjs';
 import {OfficialCatalogUpdater} from './official-refresh.mjs';
 import {attachResponsesWebSocket} from './responses-websocket.mjs';
 const here=path.dirname(fileURLToPath(import.meta.url));
+const consoleVersion=json(path.join(here,'..','package.json')).version;
 export function endpoint(base){const u=new URL(base);let pathname=u.pathname.replace(/\/$/,'');if(!pathname.endsWith('/v1'))pathname+='/v1';u.pathname=pathname+'/responses';return u.href;}
 export function decodeModelBody(raw,encoding){
   const value=String(encoding||'identity').trim().toLowerCase();
@@ -70,9 +74,9 @@ export async function upstream(store,body,signal,{onRoute,rawBody,requestHeaders
     if(removed){rawBody=undefined;console.log('Historical image filtering: '+JSON.stringify({threadId:requestIds.find(id=>imagePolicy.threadIds.includes(id)),removed,forwardedBytes:Buffer.byteLength(JSON.stringify(body))}));}
   }
   let url,headers=new Headers({'Content-Type':'application/json',Accept:body.stream?'text/event-stream':'application/json'});let payload={...body},outgoing;
-  const route=store.resolveRoute(body.model);onRoute?.(route);
+  const route=store.resolveRoute(body.model);onRoute?.({...route,accountKey:route.provider?null:activeAccount(store)});
   if(route.provider){payload=filterRelayTools(payload,store.data.compatibility);url=endpoint(route.provider.baseUrl)+(resource==='responses/compact'?'/compact':'');headers.set('Authorization','Bearer '+await store.key(route.provider.id));payload.model=route.model;outgoing=JSON.stringify(payload);}
-  else {const a=store.auth();url='https://chatgpt.com/backend-api/codex/'+resource;headers=officialRequestHeaders(requestHeaders);headers.set('Authorization','Bearer '+a.tokens.access_token);if(!headers.has('ChatGPT-Account-Id')&&a.tokens.account_id)headers.set('ChatGPT-Account-Id',a.tokens.account_id);if(!headers.has('Content-Type'))headers.set('Content-Type','application/json');if(!headers.has('Accept'))headers.set('Accept',body.stream?'text/event-stream':'application/json');outgoing=rawBody??JSON.stringify(body);}
+  else {const a=store.auth();url='https://chatgpt.com/backend-api/codex/'+resource;headers=officialRequestHeaders(requestHeaders);headers.set('Authorization','Bearer '+a.tokens.access_token);if(!headers.has('ChatGPT-Account-Id')&&a.tokens.account_id)headers.set('ChatGPT-Account-Id',a.tokens.account_id);if(headers.get('ChatGPT-Account-Id')!==a.tokens.account_id)onRoute?.({...route,accountKey:headers.get('ChatGPT-Account-Id')||null});if(!headers.has('Content-Type'))headers.set('Content-Type','application/json');if(!headers.has('Accept'))headers.set('Accept',body.stream?'text/event-stream':'application/json');outgoing=rawBody??JSON.stringify(body);}
   return fetchImpl(url,{method:'POST',headers,body:outgoing,redirect:'error',signal});
 }
 async function readBody(req,limit=512*1024,raw=false){let total=0;const chunks=[];for await(const c of req){total+=c.length;if(total>limit)throw new Error('请求过大');chunks.push(c);}const bytes=Buffer.concat(chunks);return raw?bytes:JSON.parse(bytes.toString()||'{}');}
@@ -99,10 +103,29 @@ export function createServer({home,port=25819,webDir=path.join(here,'..','dist')
  const usageService=usage||new UsageService(store);const tools=maintenance||new Maintenance(store,{listener,metrics,processAdapter});
  const routingMigration=new RoutingMigration(store,tools.processAdapter,port);
  const sharedBackend=new SharedBackendControl(store,tools.processAdapter);
+ const quotaWarmup=new QuotaWarmup(store,usageService,{
+  idle:async()=>{
+   if(metrics.activeRequests||assistantEngine.live.size||sharedBackend.busy||routingMigration.busy)return false;
+   const before=sharedBackend.endpoint();if(!before)return false;
+   const threads=await backendActivity(before);
+   const after=sharedBackend.endpoint();
+   return before.url===after?.url&&before.token===after?.token&&!metrics.activeRequests&&!assistantEngine.live.size&&threads.every(thread=>thread.status==='idle');
+  },
+  send:async(account,signal)=>{
+   metrics.activeRequests++;
+   try{return await sendQuotaWarmup(store,usageService,account,signal,{fetchImpl:upstreamFetch});}
+   finally{metrics.activeRequests--;}
+  },
+ });
+ quotaWarmup.start();
  const agyAccounts=new AgyAccountManager({directory:store.dir,acpCredentialFile:null});
  const claudeAccounts=new ClaudeAccountManager({dir:store.dir,harnessProfiles});
  const invalidateAgy=()=>{modelAccounts.readonlyAccounts.cached=null;modelAccounts.readonlyAccounts.at=0;modelAccounts.readonlyAccounts.agySnapshot=null;};
  const readModelAccounts=()=>agyAccounts.withQuotaRefresh(()=>modelAccounts.list(),{invalidateCache:invalidateAgy});
+ const quotaOverview=new QuotaOverview({store,usage:usageService,agy:agyAccounts,claude:claudeAccounts,refreshAgy:async()=>{
+  const result=await agyAccounts.withQuotaRefresh(async()=>({accounts:[await modelAccounts.readonlyAccounts.agy()]}),{invalidateCache:invalidateAgy});
+  const row=result.accounts[0];if(!row?.windows?.length||row.stale)throw Error(row?.note||'AGY 未返回额度');
+ }});
  const switches=new AccountSwitchControl({inspectActivity:async agent=>{
   const blocking=[];
   if(agent==='codex'){
@@ -128,9 +151,14 @@ export function createServer({home,port=25819,webDir=path.join(here,'..','dist')
  const claudeSelection=async id=>{const view=await claudeAccounts.act('preview-switch',{id});return {view,revision:JSON.stringify([claudeAccounts.native(),claudeAccounts.state().items.find(item=>item.id===id)])};};
  const harnessSelection=async body=>{if(body.app==='opencode')return opencode.profileSelection(harnessProfiles.profile('opencode',body.id));const state=harnessProfiles.list(),item=state.apps[body.app],target=item?.profiles.find(profile=>profile.id===body.id);if(!target)throw new Error('配置不存在');return {view:{app:body.app,id:body.id,label:target.name,from:item.profiles.find(profile=>profile.id===item.activeId)||null,to:target,canSwitch:item.managed,message:'切换后新建进程使用此配置'},revision:JSON.stringify([harnessProfiles.live(body.app),harnessProfiles.profile(body.app,body.id)])};};
  const harnessAgent=app=>app==='codex'?'codex':app==='claude'?'claude':app==='gemini'?'antigravity':app;
- let agy;const getAgy=()=>agy??=new AgyUsage(path.join(store.dir,'analytics'));const externalUsage=new ExternalUsage(undefined,{dir:path.join(store.dir,'analytics'),refreshMs:60000});
+ let agy;const getAgy=()=>agy??=new AgyUsage(path.join(store.dir,'analytics'));
  let analytics;const getAnalytics=()=>analytics??=new Analytics(home,path.join(store.dir,'analytics'));
  let nativeSpeed;const getNativeSpeed=()=>nativeSpeed??=new NativeSpeedService(home,store.dir);
+ const externalUsageIndexer=new ExternalUsageIndexer(path.join(store.dir,'analytics'));
+ const requestRecords=new RequestRecords({directory:store.dir,usage:usageService,refresh:async()=>{
+  if(!getAnalytics().paused)getAnalytics().start();getAgy().refresh();getNativeSpeed().start();
+  await externalUsageIndexer.start();
+ },indexing:()=>!!(analytics?.progress.running||agy?.progress.running||nativeSpeed?.progress.running||externalUsageIndexer.progress.running)});
  const origin=`http://127.0.0.1:${port}`;
  const server=http.createServer(async(req,res)=>{
   const send=(status,value)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'});res.end(JSON.stringify(value));};
@@ -140,12 +168,12 @@ export function createServer({home,port=25819,webDir=path.join(here,'..','dist')
    if(pathname.startsWith('/claude-desktop/')){await relayDesktop(req,res,{dir:store.dir});return;}
    if(routingMigration.busy&&req.method==='POST'){send(409,{error:'会话迁移正在进行，请稍后操作'});return;}
    if(sharedBackend.busy&&req.method==='POST'){send(409,{error:'共享后端正在重启，请稍后操作'});return;}
-   if(pathname==='/health'&&req.method==='GET'){send(200,{ok:true,application:'local-console',version:'0.12.3'});return;}
+   if(pathname==='/health'&&req.method==='GET'){send(200,{ok:true,application:'local-console',version:consoleVersion});return;}
    if(['/v1/responses','/v1/responses/compact','/relay/v1/responses','/relay/v1/responses/compact'].includes(pathname)&&req.method==='POST'){
     const a=store.auth();if(req.headers.authorization!=='Bearer '+a.tokens.access_token){send(401,{error:{message:'本地认证失败'}});return;}
     if(req.headers.origin&&![origin,`http://localhost:${port}`].includes(req.headers.origin)){send(403,{error:'来源不允许'});return;}
     const rawBody=decodeModelBody(await readBody(req,16*1024*1024,true),req.headers['content-encoding']);const body=JSON.parse(rawBody.toString());if(pathname.startsWith('/relay/')&&(!String(body.model).includes('::')||!store.resolveRoute(body.model).provider))throw new Error('独立中转入口只接受新增中转模型');const controller=new AbortController();const timer=setTimeout(()=>controller.abort(Object.assign(new Error('Upstream timeout'),{code:'UPSTREAM_TIMEOUT'})),300000);res.on('close',()=>{if(!res.writableEnded)controller.abort(Object.assign(new Error('Client closed'),{code:'CLIENT_CLOSED'}));});metrics.requests++;metrics.activeRequests++;metrics.lastRequest={at:new Date().toISOString(),model:body.model};
-    const started=performance.now();let status=0,provider='openai',errorCode=null,errorSummary=null;const observer=usageObserver({startedAt:started});try{const r=await upstream(store,body,controller.signal,{onRoute:route=>provider=route.provider?.id||'openai',rawBody,requestHeaders:req.headers,resource:pathname.endsWith('/compact')?'responses/compact':'responses',fetchImpl:upstreamFetch});status=r.status;const responseHeaders=upstreamResponseHeaders(r.headers);responseHeaders['x-local-console-route']=provider==='openai'?'openai-passthrough':'relay';if(!r.ok){const failure=await readErrorResponse(r);errorSummary=failure.summary;errorCode=errorSummary.code||'UPSTREAM_HTTP_ERROR';responseHeaders['content-type']='application/json; charset=utf-8';delete responseHeaders['content-length'];res.writeHead(r.status,responseHeaders);res.end(JSON.stringify(failure.body));}else {observer.expectSSE(r.headers.get('content-type')?.includes('text/event-stream'));res.writeHead(r.status,responseHeaders);if(r.body)await pipeline(Readable.fromWeb(r.body),observer.stream,res);else res.end();errorSummary=observer.getFailure();if(errorSummary)errorCode=errorSummary.code||'UPSTREAM_STREAM_ERROR';}}catch(e){const failure=networkError(controller.signal.aborted?controller.signal.reason:e)||networkError(e);errorCode=failure?.code||'UPSTREAM_STREAM_ERROR';if(!status)status=failure?.status||502;errorSummary=summarizeError(status,{error:{code:errorCode,message:failure?.message||'上游响应流中断'}});throw e;}finally{clearTimeout(timer);metrics.activeRequests--;if(errorCode||status>=400)metrics.errors++;try{usageService.recordRequest({model:body.model,provider,status,errorCode,errorSummary,durationMs:performance.now()-started,resource:pathname.endsWith('/compact')?'responses/compact':'responses',usage:observer.getUsage(),tier:observer.getTier(),timings:observer.getTimings()});}catch{}}return;
+    const started=performance.now(),startedAt=Date.now();let accountKey=null,status=0,provider='openai',errorCode=null,errorSummary=null;const observer=usageObserver({startedAt:started});try{const r=await upstream(store,body,controller.signal,{onRoute:route=>{provider=route.provider?.id||'openai';accountKey=route.accountKey;},rawBody,requestHeaders:req.headers,resource:pathname.endsWith('/compact')?'responses/compact':'responses',fetchImpl:upstreamFetch});status=r.status;const responseHeaders=upstreamResponseHeaders(r.headers);responseHeaders['x-local-console-route']=provider==='openai'?'openai-passthrough':'relay';if(!r.ok){const failure=await readErrorResponse(r);errorSummary=failure.summary;errorCode=errorSummary.code||'UPSTREAM_HTTP_ERROR';responseHeaders['content-type']='application/json; charset=utf-8';delete responseHeaders['content-length'];res.writeHead(r.status,responseHeaders);res.end(JSON.stringify(failure.body));}else {observer.expectSSE(r.headers.get('content-type')?.includes('text/event-stream'));res.writeHead(r.status,responseHeaders);if(r.body)await pipeline(Readable.fromWeb(r.body),observer.stream,res);else res.end();errorSummary=observer.getFailure();if(errorSummary)errorCode=errorSummary.code||'UPSTREAM_STREAM_ERROR';}}catch(e){const failure=networkError(controller.signal.aborted?controller.signal.reason:e)||networkError(e);errorCode=failure?.code||'UPSTREAM_STREAM_ERROR';if(!status)status=failure?.status||502;errorSummary=summarizeError(status,{error:{code:errorCode,message:failure?.message||'上游响应流中断'}});throw e;}finally{clearTimeout(timer);metrics.activeRequests--;if(errorCode||status>=400)metrics.errors++;try{usageService.recordRequest({accountKey,startedAt,model:body.model,effort:body.reasoning?.effort,requestedTier:body.service_tier,sessionId:req.headers['session-id']||req.headers['thread-id']||req.headers['conversation-id'],provider,status,errorCode,errorSummary,durationMs:performance.now()-started,resource:pathname.endsWith('/compact')?'responses/compact':'responses',usage:observer.getUsage(),tier:observer.getTier(),timings:observer.getTimings()});}catch{}}return;
    }
    if(pathname.startsWith('/api/')){
     if(req.headers.origin&&![origin,`http://localhost:${port}`].includes(req.headers.origin)){send(403,{error:'来源不允许'});return;}
@@ -157,7 +185,7 @@ export function createServer({home,port=25819,webDir=path.join(here,'..','dist')
       send(200,await (action==='pair'?access.pair(body):action==='remote'?access.remote(body):action==='revoke'?access.revoke(body):access.channel(body)));return;
     }
     if(req.method==='GET'&&pathname==='/api/agy/usage'){const q=new URL(req.url,origin).searchParams;send(200,getAgy().summary(q.get('range')||'week',{from:q.get('from'),to:q.get('to')}));return;}
-    if(req.method==='GET'&&pathname==='/api/external/usage'){const q=new URL(req.url,origin).searchParams;send(200,await externalUsage.summary(q.get('source')||'zcode',q.get('range')||'week',{from:q.get('from'),to:q.get('to')}));return;}
+    if(req.method==='GET'&&pathname==='/api/external/usage'){const q=new URL(req.url,origin).searchParams;send(200,await externalUsageIndexer.summary(q.get('source')||'zcode',q.get('range')||'week',{from:q.get('from'),to:q.get('to')}));return;}
     if(req.method==='GET'&&pathname==='/api/analytics'){const q=new URL(req.url,origin).searchParams;send(200,getAnalytics().summary(q.get('range')||'week',{view:q.get('view')||'all',model:q.get('model')||'all',tier:q.get('tier')||'all',effort:q.get('effort')||'all',pricing:q.get('pricing')||'codex'},{from:q.get('from'),to:q.get('to')}));return;}
     if(req.method==='GET'&&pathname==='/api/usage/speed'){const q=new URL(req.url,origin).searchParams,source=q.get('source')||'router',range=q.get('range')||'week',bounds={from:q.get('from'),to:q.get('to')},filters={model:q.get('model')||'all',provider:q.get('provider')||'all'};if(!['native','router'].includes(source))throw new Error('速度来源无效');if(source==='native'){const service=getNativeSpeed();const result=service.summary(range,bounds,filters);service.start();send(200,{...result,progress:service.progress});}else send(200,{...usageService.speed(range,bounds,filters),source:'router'});return;}
     if(req.method==='GET'&&pathname==='/api/sessions'){const q=new URL(req.url,origin).searchParams;send(200,await sessionService.list({archived:q.get('archived')==='true',cursor:q.get('cursor'),search:q.get('search')||'',source:q.get('source')||'interactive',cwd:q.get('cwd')||'',olderThanDays:q.get('olderThanDays')||0,minBytes:q.get('minBytes')||0,onlyIdle:q.get('onlyIdle')==='true'}));return;}
@@ -165,7 +193,12 @@ export function createServer({home,port=25819,webDir=path.join(here,'..','dist')
     if(req.method==='GET'&&pathname==='/api/state'){
       let configuredModels=[];try{configuredModels=store.models();modelError=null;}catch(e){modelError=e.message;}let config;try{config=store.configInfo();}catch{config={provider:'unknown',model:null,owned:false,nativeCatalog:false,error:'配置语法异常'};}
       const models=configuredModels.map(m=>({id:m.slug,name:m.display_name||m.slug,context:m.context_window,official:!m.slug.includes('::'),enabled:m.visibility!=='hide',route:store.data.modelSettings?.[m.slug]?.route||null}));
-      send(200,{home,port,version:'0.12.3',config,routingPreferences:{includeOfficial:store.data.includeOfficialInRelay===true},modelError,catalogSource:store.catalogSource,catalogRefresh:catalogUpdater.status(),compatibility:store.data.compatibility||{},accounts:store.accounts(),models,providers:store.providers(),metrics,backups:store.backups(),events:store.events(),processOperation:tools.processOperation(),sharedBackend:sharedBackend.summary(),gateway:{...await listener.status(),autoStart:store.data.gatewayAutoStart!==false},memoryMB:Math.round(process.memoryUsage().rss/1048576)});return;
+      send(200,{home,port,version:consoleVersion,config,routingPreferences:{includeOfficial:store.data.includeOfficialInRelay===true},modelError,catalogSource:store.catalogSource,catalogRefresh:catalogUpdater.status(),compatibility:store.data.compatibility||{},accounts:store.accounts(),models,providers:store.providers(),metrics,backups:store.backups(),events:store.events(),processOperation:tools.processOperation(),sharedBackend:sharedBackend.summary(),gateway:{...await listener.status(),autoStart:store.data.gatewayAutoStart!==false},memoryMB:Math.round(process.memoryUsage().rss/1048576)});return;
+    }
+    if(req.method==='GET'&&pathname==='/api/usage/warmup'){send(200,quotaWarmup.state());return;}
+    if(req.method==='GET'&&pathname==='/api/usage/requests'){
+     if(Date.now()-requestRecords.lastRefresh>60000)void requestRecords.update().catch(()=>{});
+     send(200,requestRecords.read(Object.fromEntries(new URL(req.url,origin).searchParams)));return;
     }
     if(req.method==='GET'&&pathname==='/api/usage/history'){const q=new URL(req.url,origin).searchParams,bounds={from:q.get('from'),to:q.get('to')};send(200,{...usageService.history(q.get('account')||undefined,Number(q.get('days')||7),q.get('range'),bounds),routing:usageService.requests(Number(q.get('days')||7),q.get('range'),bounds)});return;}
     if(req.method==='GET'&&pathname==='/api/maintenance/report'){send(200,await tools.exportReport());return;}
@@ -195,9 +228,12 @@ export function createServer({home,port=25819,webDir=path.join(here,'..','dist')
     }
     if(req.method==='GET'&&pathname==='/api/model-accounts'){const q=new URL(req.url,origin).searchParams;send(200,q.get('editable')==='1'?await modelAccounts.list({editableOnly:true}):await readModelAccounts());return;}
     if(req.method==='GET'&&pathname==='/api/model-accounts/oauth'){send(200,modelAccounts.oauthStatus());return;}
+    if(req.method==='GET'&&pathname==='/api/quota-overview'){const query=new URL(req.url,origin).searchParams;send(200,query.get('catalog')==='1'?quotaOverview.catalog():await quotaOverview.read(query.get('source')||'all'));return;}
+    if(req.method==='GET'&&pathname==='/api/harnesses/catalog'){const refresh=new URL(req.url,origin).searchParams.get('refresh')==='1';send(200,await personalAssistant.request('/api/models?agents=all&partial=1'+(refresh?'&refresh=1':'')));return;}
     if(req.method!=='POST'){send(404,{error:'未找到接口'});return;}
     const b=await readBody(req);let result;
-    if(pathname==='/api/agy/accounts/import')result=await agyAccounts.import(b);
+    if(pathname==='/api/quota-overview/refresh')result=quotaOverview.refresh(b.source||'all');
+    else if(pathname==='/api/agy/accounts/import')result=await agyAccounts.import(b);
     else if(pathname==='/api/agy/accounts/refresh'){
      const quota=await agyAccounts.withQuotaRefresh(async()=>{invalidateAgy();return {accounts:await modelAccounts.readonlyAccounts.list()};},{invalidateCache:invalidateAgy});
      const row=quota.accounts.find(account=>account.app==='agy');
@@ -227,6 +263,7 @@ export function createServer({home,port=25819,webDir=path.join(here,'..','dist')
     else if(pathname==='/api/maintenance/send')result=await tools.sendReport(b.destination);
     else if(pathname==='/api/compatibility'){if(typeof b.filterImages!=='boolean'||typeof b.filterWebSearch!=='boolean')throw new Error('过滤开关无效');store.data.compatibility={filterImages:b.filterImages,filterWebSearch:b.filterWebSearch};store.save();result=store.data.compatibility;}
     else if(pathname==='/api/usage/auto'){if(typeof b.enabled!=='boolean')throw new Error('自动采样开关无效');store.data.usageAutoSample=b.enabled;store.save();result={enabled:b.enabled};}
+    else if(pathname==='/api/usage/warmup')result=quotaWarmup.configure(b);
     else if(pathname==='/api/sessions/delete-preview')result=await sessionService.previewDelete(b.ids,{source:b.source||'interactive'});
     else if(pathname==='/api/sessions/change')result=await sessionService.change(b.ids,b.action,{source:b.source||'interactive',planId:b.planId});
     else if(pathname==='/api/opencode/provider-preview')result=await opencode.preview('provider',b,switches);
@@ -268,11 +305,12 @@ export function createServer({home,port=25819,webDir=path.join(here,'..','dist')
     }else {send(404,{error:'未找到接口'});return;}send(200,result);return;
    }
    if(req.method!=='GET'){send(405,{error:'不支持该方法'});return;}
-   const files={'/':'index.html','/app.js':'app.js','/app.css':'app.css','/management.css':'management.css'};const file=files[pathname];if(!file){res.writeHead(404);res.end();return;}
+   const files={'/':'index.html',...Object.fromEntries(['app.js','app.css','management.css','quota-warmup.js','request-records.js','request-records.css','channel-auth.js','management-overview.js','management-overview.css','relay-management.js','credit-history.js','console-management-client.js','console-management-ui.css'].map(file=>['/'+file,file]))};const file=files[pathname];if(!file){res.writeHead(404);res.end();return;}
    let content=fs.readFileSync(path.join(webDir,file));if(file==='index.html')content=content.toString().replace('__LOCAL_TOKEN__',store.secret);
    res.writeHead(200,{'Content-Type':file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"});res.end(content);
   }catch(e){if(!res.headersSent){const failure=networkError(e);if(failure){res.setHeader('Retry-After','1');send(failure.status,{error:{message:failure.message,type:'upstream_connection_error',code:failure.code}});}else send(Number.isInteger(e.statusCode)&&e.statusCode>=400&&e.statusCode<600?e.statusCode:400,{error:e.message});}else res.destroy();}
  });
+ server.on('close',()=>quotaWarmup.stop());
  attachResponsesWebSocket(server,{
   authorize:req=>{
    if(![`127.0.0.1:${port}`,`localhost:${port}`].includes(req.headers.host))return 403;
@@ -280,11 +318,11 @@ export function createServer({home,port=25819,webDir=path.join(here,'..','dist')
    if(req.headers.origin&&![origin,`http://localhost:${port}`].includes(req.headers.origin))return 403;
    try{return req.headers.authorization==='Bearer '+store.auth().tokens.access_token?200:401;}catch{return 401;}
   },
-  request:(body,signal,requestHeaders)=>upstream(store,body,signal,{requestHeaders,fetchImpl:upstreamFetch}),
+  request:(body,signal,requestHeaders,onRoute)=>upstream(store,body,signal,{requestHeaders,onRoute,fetchImpl:upstreamFetch}),
   onRequest:model=>{metrics.requests++;metrics.activeRequests++;metrics.lastRequest={at:new Date().toISOString(),model};},
-  onFinish:result=>{metrics.activeRequests--;if(result.errorCode||result.status>=400)metrics.errors++;try{usageService.recordRequest({...result,provider:'openai',resource:'responses',transport:'local-websocket'});}catch{}},
+  onFinish:result=>{metrics.activeRequests--;if(result.errorCode||result.status>=400)metrics.errors++;try{usageService.recordRequest({...result,resource:'responses',transport:'local-websocket'});}catch{}},
  });
- server.on('close',()=>{modelAccounts.cancelOAuth();usageService.stop();sessionService.close?.();analytics?.close();nativeSpeed?.close();catalogUpdater.stop();void assistantEngine.close();});server.on('close',()=>agy?.close());return {server,store,metrics,listener,usageService,getAnalytics,catalogUpdater};
+ server.on('close',()=>{modelAccounts.cancelOAuth();usageService.stop();sessionService.close?.();analytics?.close();nativeSpeed?.close();catalogUpdater.stop();void assistantEngine.close();});server.on('close',()=>{agy?.close();externalUsageIndexer.close();});return {server,store,metrics,listener,usageService,getAnalytics,catalogUpdater};
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
  const args=process.argv.slice(2);const home=args.includes('--home')?args[args.indexOf('--home')+1]:process.env.CODEX_HOME||path.join(os.homedir(),'.codex');const port=Number(process.env.LOCAL_CONSOLE_PORT||25819);const {server,store,listener,usageService,getAnalytics,catalogUpdater}=createServer({home,port});server.on('error',e=>{console.error(e.code==='EADDRINUSE'?'控制台端口已占用':e.message);process.exitCode=1;});server.listen(port,'127.0.0.1',()=>{console.log(`Local Console http://127.0.0.1:${port}`);usageService.start();catalogUpdater.start();if(process.env.LOCAL_CONSOLE_DISABLE_ANALYTICS!=='1'){try{getAnalytics().startSchedule();}catch(e){console.error('Analytics: '+e.message);}}if(store.data.gatewayAutoStart!==false)listener.ensure().catch(e=>console.error('Gateway: '+e.message));});

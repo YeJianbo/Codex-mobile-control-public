@@ -1,14 +1,14 @@
 package com.localcodex.control
 
 fun nativeAgent(model:String):String=model.substringBefore("::","codex").takeIf{it in nativeHarnesses}?:"codex"
-internal val nativeHarnesses=listOf("codex","claude","antigravity","grok","deepseek","hermes","opencode")
+internal val nativeHarnesses=listOf("codex","claude","antigravity","grok","deepseek","hermes","opencode","zcode")
 fun nativeModelCatalogOrDefaults(models:List<NativeModel>):List<NativeModel> = models.ifEmpty {
     nativeHarnesses.map { agent ->
         NativeModel(if(agent=="codex")"" else "$agent::default","默认模型",emptyList(),"",available=false,unavailableReason="尚未获取模型目录，请重新检查连接")
     }
 }
 fun nativeThreadAgent(id:String):String=id.substringBefore('-').takeIf{it in nativeHarnesses}?:"codex"
-fun nativeAgentName(agent:String):String=when(agent){"claude"->"Claude Code";"antigravity"->"Antigravity";"grok"->"Grok Build";"deepseek"->"DeepSeek Harness";"hermes"->"Hermes";"opencode"->"OpenCode";else->"Codex"}
+fun nativeAgentName(agent:String):String=when(agent){"claude"->"Claude Code";"antigravity"->"Antigravity";"grok"->"Grok Build";"deepseek"->"DeepSeek Harness";"hermes"->"Hermes";"opencode"->"OpenCode";"zcode"->"ZCode";else->"Codex"}
 
 internal fun nativeModelProviderId(model:NativeModel):String=model.providerId.ifBlank{
     if(model.harness=="opencode")model.id.substringAfter("::").substringBefore('/',"") else ""
@@ -18,7 +18,7 @@ internal fun nativeModelRouteHints(models:List<NativeModel>):Map<String,String> 
     .values.filter{it.size>1}.flatMap{rows->rows.map{it.id to it.id.substringAfter("::").substringAfterLast('/')}}.toMap()
 internal data class NativeModelGroup(val id:String,val name:String,val models:List<NativeModel>)
 internal fun nativeModelGroups(models:List<NativeModel>):List<NativeModelGroup>{
-    if(models.none{it.harness=="opencode"})return if(models.isEmpty())emptyList() else listOf(NativeModelGroup("","",models))
+    if(models.none{it.harness in setOf("opencode","zcode")})return if(models.isEmpty())emptyList() else listOf(NativeModelGroup("","",models))
     return models.groupBy{nativeModelProviderId(it)}.map{(provider,rows)->
         val legacyName=rows.firstOrNull()?.takeIf{it.id.substringAfter("::").contains('/')}?.name?.substringAfter(" · ")?.takeIf{it.contains('/')}?.substringBefore('/')
         NativeModelGroup(provider,rows.firstNotNullOfOrNull{it.providerName.takeIf{it.isNotBlank()}}?:legacyName?:provider.ifBlank{"默认模型"},rows)
@@ -48,6 +48,12 @@ internal fun nativeBackendAvailable(agent:String,models:List<NativeModel>,backen
     backends.find{it.agent==agent}?.available?:models.any{it.harness==agent&&it.available}
 internal fun nativeBackendReason(agent:String,models:List<NativeModel>,backends:List<NativeBackend>):String=
     backends.find{it.agent==agent}?.reason?.takeIf{it.isNotBlank()}?:models.find{it.harness==agent&&!it.available}?.unavailableReason?.takeIf{it.isNotBlank()}?:if(nativeBackendAvailable(agent,models,backends))"" else "未检测到可用 CLI"
+internal fun nativeBackendStatusLabel(reason:String):String=when{
+    reason.contains("公网")->"公网不支持"
+    Regex("sign in|log in|not logged|登录|授权",RegexOption.IGNORE_CASE).containsMatchIn(reason)->"需要登录"
+    Regex("网络|超时|模型目录|连接|timeout|network",RegexOption.IGNORE_CASE).containsMatchIn(reason)->"连接或模型目录异常"
+    else->"不可用"
+}
 internal fun nativePlanAvailable(agent:String,backends:List<NativeBackend>):Boolean=
     backends.find{it.agent==agent}?.supportsPlanMode?: (agent in setOf("codex","claude","antigravity"))
 internal fun nativeSnapshotStatus(status:String)=when(status){"running"->"进行中";"completed"->"已完成";"error"->"错误";"interrupted"->"已中断";else->"未知"}

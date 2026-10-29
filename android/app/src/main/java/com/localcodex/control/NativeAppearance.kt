@@ -21,7 +21,7 @@ import androidx.compose.ui.unit.sp
     onImport:()->Unit,onExport:()->Unit,onRemove:()->Unit,onBack:()->Unit,
 ){
     NativeManagementPage("外观","",onBack){
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(start=16.dp,end=16.dp,top=22.dp,bottom=34.dp),verticalArrangement=Arrangement.spacedBy(16.dp)){
+        Column(Modifier.weight(1f).nativeManagementScroll(rememberScrollState()).padding(start=16.dp,end=16.dp,top=22.dp,bottom=34.dp),verticalArrangement=Arrangement.spacedBy(16.dp)){
             SettingsSectionLabel("显示模式")
             NativeSettingsGroup(Modifier.selectableGroup()){
                 listOf("system" to "跟随系统","light" to "浅色","dark" to "深色").forEachIndexed{index,(value,label)->

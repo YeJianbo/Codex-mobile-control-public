@@ -8,7 +8,7 @@ export function channelSummary(raw){
   return {channels:rows(raw.channels).map(row=>({kind:text(row.kind,20),available:row.available===true})),accounts:rows(raw.accounts).map(account=>{
     const details=object(account.details);
     return {id:text(account.id,512),channel:text(account.channel,20),label:text(account.label,80),projectPath:text(account.projectPath,4096),state:text(account.state,40),bindingCount:Number(account.bindingCount)||0,
-      details:{configured:details.configured===true,appId:text(details.appId,30),ownerId:text(details.ownerId,512),transport:text(details.transport,80),lastError:text(details.lastError,1000)}};
+      details:{configured:details.configured===true,appId:text(details.appId,30),ownerId:text(details.ownerId,512),transport:text(details.transport,80),lastError:text(details.lastError,1000),authorizedCount:Number(details.authorizedCount)||0}};
   })};
 }
 // These fixed operations share the gateway's paired-device services. The admin token never reaches the browser.
@@ -47,7 +47,8 @@ export class AccessControl {
     if(body.password!==undefined){if(typeof body.password!=='string'||body.password.length<6||body.password.length>128||body.password.trim()!==body.password)throw Error('密码需要 6 至 128 个字符，首尾不能有空格');value.password=body.password;}
     if(body.publicUrl!==undefined){
       if(typeof body.publicUrl!=='string'||body.publicUrl.length>2048)throw Error('公网地址无效');
-      value.publicUrl=body.publicUrl.trim();if(value.publicUrl){const url=new URL(value.publicUrl);if(url.protocol!=='https:'||url.username||url.password||url.pathname!=='/'||url.search||url.hash)throw Error('公网地址需要 HTTPS 域名，不带路径');value.publicUrl=url.origin;}
+      // URL and secret-path validation belongs to the gateway used by pairing too.
+      value.publicUrl=body.publicUrl.trim();
     }
     if(!Object.keys(value).length)throw Error('请填写连接设置');
     return {publicAccess:publicSettings((await this.call('/api/settings/public-access/config','PUT',value)).publicAccess)};
@@ -61,15 +62,19 @@ export class AccessControl {
       return {account:channelSummary({accounts:[raw.account]}).accounts[0]};
     }
     const id=requireText(body.id,'渠道账号',512),action=body.action;let payload={};
-    if(action==='settings')payload={projectPath:requireText(body.projectPath,'工作目录',4096)};
+    if(action==='settings'){
+      if(typeof body.projectPath!=='string'||body.projectPath.length>2048)throw Error('工作目录无效');
+      payload={projectPath:body.projectPath.trim()};
+    }
     else if(action==='credentials')payload={appId:requireText(body.appId,'AppID',30),appSecret:requireText(body.appSecret,'AppSecret',512)};
     else if(action==='login'){
       if(body.verifyCode!==undefined)payload.verifyCode=requireText(body.verifyCode,'验证码',40);
       if(body.refresh!==undefined){if(typeof body.refresh!=='boolean')throw Error('刷新参数无效');payload.refresh=body.refresh;}
-    }else if(action==='remove'){if(body.confirmed!==true)throw Error('请确认清除渠道登录');payload={confirm:true};}
-    else if(!['connect','disconnect'].includes(action))throw Error('渠道操作无效');
+    }else if(action==='remove'||action==='revoke-access'){if(body.confirmed!==true)throw Error('请确认清除渠道登录或授权');payload={confirm:true};}
+    else if(!['connect','disconnect','pair'].includes(action))throw Error('渠道操作无效');
     const raw=await this.call('/api/mobile-management/channels/accounts/'+encodeURIComponent(id)+'/'+action,'POST',payload);
     if(action==='login')return {status:text(raw.status,80),expiresAt:Number(raw.expiresAt)||0,qrImage:typeof raw.qrImage==='string'&&/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(raw.qrImage)&&raw.qrImage.length<=524288?raw.qrImage:''};
+    if(action==='pair')return {code:text(raw.code,100),expiresAt:Number(raw.expiresAt)||0};
     return channelSummary(raw);
   }
 }

@@ -24,6 +24,10 @@ test('colliding conversation IDs use separate workers; each conversation keeps F
     assert.notEqual(first.threadId,other.threadId);
     assert.equal(first.threadId,cleared.threadId);assert.equal(first.threadId,last.threadId);
     assert.deepEqual([first.order,cleared.order,last.order],[1,2,3]);
+    const status=pool.status();
+    assert.equal(status.deduplicated,1);assert.equal(status.completed,4);
+    assert.equal(status.lanes.reduce((sum,lane)=>sum+lane.queued+Number(lane.running),0),0);
+    assert(!JSON.stringify(status).includes('01a07e7c'));
   }finally{await pool.close();}
 });
 

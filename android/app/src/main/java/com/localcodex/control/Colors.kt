@@ -56,6 +56,7 @@ internal object Radius {
     val Control:RoundedCornerShape @Composable get()=RoundedCornerShape(LocalNativeTheme.current.geometry.control.dp)
     val Card:RoundedCornerShape @Composable get()=RoundedCornerShape(LocalNativeTheme.current.geometry.card.dp)
     val Panel:RoundedCornerShape @Composable get()=RoundedCornerShape(LocalNativeTheme.current.geometry.panel.dp)
+    val Notice:RoundedCornerShape @Composable get()=RoundedCornerShape((LocalNativeTheme.current.geometry.panel+2f).coerceIn(28f,36f).dp)
     val Button:RoundedCornerShape @Composable get()=RoundedCornerShape(LocalNativeTheme.current.geometry.button.dp)
     val Field:RoundedCornerShape @Composable get()=RoundedCornerShape(LocalNativeTheme.current.geometry.field.dp)
     val Inset:RoundedCornerShape @Composable get()=Field

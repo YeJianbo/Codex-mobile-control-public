@@ -88,6 +88,19 @@ try{
  assert.equal(uncertain.calls.filter(c=>c.method==='thread/revert').length,1);
  assert.equal(uncertain.calls.filter(c=>c.method==='turn/start').length,1);
  console.log('PASS uncertain send is preserved and never replayed');
+ const removed=await fixture();
+ await removed.manager.handleClientCommand({...removed.command,images:[],files:[],keepAttachmentPaths:[]});
+ const removedInput=removed.calls.find(call=>call.method==='turn/start').params.input;
+ assert(!removedInput.some(item=>item.type==='localImage'));assert.equal(removedInput[0].text,removed.command.text);
+ const kept=await fixture();
+ const upload={id:'55555555-5555-4555-8555-555555555555',name:'new.txt',mime:'text/plain',size:3};
+ const folder=path.join(home,'uploads','files',upload.id);await fs.mkdir(folder,{recursive:true});
+ await fs.writeFile(path.join(folder,'meta.json'),JSON.stringify(upload));await fs.writeFile(path.join(folder,'content'),'new');
+ await kept.manager.handleClientCommand({...kept.command,images:[],files:[upload],keepAttachmentPaths:['C:/isolated/doc.md']});
+ const keptInput=kept.calls.find(call=>call.method==='turn/start').params.input;
+ assert(!keptInput.some(item=>item.type==='localImage'));assert(keptInput[0].text.includes('C:/isolated/doc.md'));assert(keptInput[0].text.includes('new.txt'));
+ assert.equal(keptInput[0].text.match(/# Files mentioned by the user:/g).length,1);
+ console.log('PASS explicit attachment edits remove originals and merge retained documents with new uploads in one envelope');
 }finally{
  for(const manager of managers){manager.closeCapacityRetries();manager.receipts.close();}
  store.close();

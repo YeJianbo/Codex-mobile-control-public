@@ -15,14 +15,16 @@ import androidx.compose.ui.graphics.layer.GraphicsLayer
 import androidx.compose.ui.graphics.layer.drawLayer
 import androidx.compose.ui.graphics.rememberGraphicsLayer
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.offset
 import androidx.compose.ui.unit.dp
 import kotlin.math.ceil
 import kotlinx.coroutines.flow.first
@@ -115,13 +117,13 @@ private fun screenOrigin(coordinates:LayoutCoordinates,view:View,screen:IntArray
 
 @Composable internal fun Modifier.nativeGaussianBackdrop(backdrop:NativeGlassBackdrop?,shape:Shape=RectangleShape,liquid:Boolean=false,frosted:Boolean=false):Modifier {
     if(backdrop==null)return this
-    val effect=rememberGraphicsLayer()
     val motionFrame=LocalNativeGlassMotion.current
     val view=LocalView.current
     val material=LocalNativeTheme.current.material
     val radius=with(LocalDensity.current){(if(frosted)material.overlayBlurDp else material.blurDp).coerceAtLeast(.1f).dp.toPx()}
     val blur=remember(radius){BlurEffect(radius,radius,TileMode.Clamp)}
     val density=LocalDensity.current
+    val layoutDirection=LocalLayoutDirection.current
     val lens=remember(liquid,density,radius){if(liquid&&Build.VERSION.SDK_INT>=33)with(density){NativeLiquidLens(radius,10.dp.toPx(),4.dp.toPx())} else null}
     var placement by remember{mutableStateOf<NativeGlassPlacement?>(null)}
     val screen=remember{IntArray(2)}
@@ -130,27 +132,31 @@ private fun screenOrigin(coordinates:LayoutCoordinates,view:View,screen:IntArray
         backdrop.consumers++
         onDispose{backdrop.consumers--}
     }
-    // A parent graphicsLayer transform does not redraw its cached children.
-    // Observe the same motion here, in an isolated background layer, so only
-    // the sampled backdrop follows the panel's current screen position.
-    return graphicsLayer().onGloballyPositioned{placement=glassPlacement(it)}.drawWithContent {
+    val padding=ceil(radius*2).toInt()
+    // The filter belongs to the Compose layer invalidated by scene/motion
+    // reads. A separately re-recorded filtered RenderNode can retain its old
+    // output on Android 12 even while its sampling coordinates change.
+    // Overscan preserves neighboring pixels for the blur at the panel edge.
+    return layout{measurable,constraints->
+        val child=measurable.measure(constraints.offset(padding*2,padding*2))
+        layout((child.width-padding*2).coerceAtLeast(0),(child.height-padding*2).coerceAtLeast(0)){
+            child.place(-padding,-padding)
+        }
+    }.graphicsLayer{
+        val bounds=androidx.compose.ui.geometry.Size((size.width-padding*2).coerceAtLeast(0f),(size.height-padding*2).coerceAtLeast(0f))
+        val outline=shape.createOutline(bounds,layoutDirection,this)
+        val corner=(outline as? Outline.Rounded)?.roundRect?.topLeftCornerRadius?.x?:0f
+        renderEffect=if(Build.VERSION.SDK_INT>=33&&lens!=null)lens.effect(bounds.width,bounds.height,corner,padding.toFloat()) else blur
+    }.onGloballyPositioned{placement=glassPlacement(it)}.drawWithContent {
         motionFrame()
         backdrop.scrollMotion?.invoke()
         val target=placement?.coordinates
         val source=backdrop.coordinates
         if(backdrop.frame>0&&target?.isAttached==true&&source?.isAttached==true&&!backdrop.layer.isReleased){
             val delta=screenOrigin(target,view,screen,window)-screenOrigin(source,backdrop.view,screen,window)
-            val padding=ceil(radius*2).toInt()
-            val extent=IntSize(ceil(size.width).toInt()+padding*2,ceil(size.height).toInt()+padding*2)
-            val outline=shape.createOutline(size,layoutDirection,this)
-            val corner=(outline as? Outline.Rounded)?.roundRect?.topLeftCornerRadius?.x?:0f
-            effect.renderEffect=if(Build.VERSION.SDK_INT>=33&&lens!=null)lens.effect(size.width,size.height,corner,padding.toFloat()) else blur
-            effect.record(size=extent){
-                translate(padding-delta.x,padding-delta.y){drawLayer(backdrop.layer)}
-            }
-            clipRect{translate(-padding.toFloat(),-padding.toFloat()){drawLayer(effect)}}
+            translate(-delta.x,-delta.y){drawLayer(backdrop.layer)}
         }
-        // The foreground text and controls are drawn after the blurred background.
+        // Only background content belongs here; tint and controls are siblings.
         drawContent()
     }
 }

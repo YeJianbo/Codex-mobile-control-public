@@ -17,18 +17,24 @@ export function mountChannels({api,button}){
       for(const [kind,row] of rows){const account=accountFor(kind);row.status.textContent=account?(account.details.transport==='reconnecting'?'正在重连':statusNames[account.state]||account.state):'未配置';row.issue.textContent=account?.details.lastError||'';
         if(account?.projectPath&&!row.project.value)row.project.value=account.projectPath;
         if(row.appId&&!row.appId.value&&account?.details.appId)row.appId.value=account.details.appId;
+        if(row.authorization)row.authorization.textContent=`已授权 ${account?.details.authorizedCount||0} 个 QQ 账号`;
       }
     }finally{refreshing=false;}
   }
-  async function saveProject(kind){const row=rows.get(kind);if(!row.project.value)throw Error('请选择工作目录');const account=await ensure(kind);await api(endpoint(account.id,'/settings'),{method:'PUT',body:{projectPath:row.project.value}});return account;}
+  async function saveProject(kind){const row=rows.get(kind);const account=await ensure(kind);await api(endpoint(account.id,'/settings'),{method:'PUT',body:{projectPath:row.project.value}});return account;}
   async function connect(kind){const account=await saveProject(kind);await api(endpoint(account.id,'/disconnect'),{method:'POST'});await api(endpoint(account.id,'/connect'),{method:'POST'});await refresh();}
   function createPlatform(kind){
     const root=el('section',null,'channel-account'),status=el('p',null,'muted'),issue=el('p',null,'inline-error');
     root.append(el('h3',kind==='qq'?'QQ 官方机器人':'微信'),status,issue);
-    const project=el('select');project.setAttribute('aria-label',`${kind==='qq'?'QQ':'微信'}工作目录`);project.add(new Option('选择工作目录',''));for(const item of projects)project.add(new Option(item.name||item.path,item.path));
-    const label=el('label','新会话的工作目录');label.className='channel-project';label.append(project);root.append(label);
+    const project=el('select');project.setAttribute('aria-label',`${kind==='qq'?'QQ':'微信'}新会话`);project.add(new Option('通用助理 · 不绑定项目',''));for(const item of projects)project.add(new Option(item.name||item.path,item.path));
+    const label=el('label','新会话');label.className='channel-project';label.append(project);root.append(label);
     const row={root,status,issue,project};rows.set(kind,row);
     if(kind==='qq'){
+      const authorization=el('p','尚未授权 QQ，机器人不会执行聊天任务','muted');row.authorization=authorization;
+      const command=el('input');command.readOnly=true;command.hidden=true;command.setAttribute('aria-label','QQ 绑定命令');let expiry;
+      root.append(authorization,actionButton('生成绑定码',async()=>{const account=await ensure(kind);const value=await api(endpoint(account.id,'/pair'),{method:'POST',body:{}});command.value='/绑定 '+value.code;command.hidden=false;clearTimeout(expiry);expiry=setTimeout(()=>{command.value='';command.hidden=true;},Math.max(0,value.expiresAt-Date.now()));}),command,
+        el('p','用需要授权的 QQ 私聊机器人发送绑定命令，十分钟内有效，只能使用一次。','muted'),
+        actionButton('清除 QQ 授权',async()=>{const account=accountFor(kind);if(account)await api(endpoint(account.id,'/revoke-access'),{method:'POST',body:{confirm:true}});command.value='';command.hidden=true;await refresh();}));
       const form=document.createElement('form');form.className='channel-credentials';
       const appId=el('input');appId.placeholder='AppID';appId.autocomplete='off';appId.setAttribute('aria-label','QQ AppID');row.appId=appId;
       const secret=el('input');secret.type='password';secret.placeholder='AppSecret（已保存时可留空）';secret.autocomplete='new-password';secret.setAttribute('aria-label','QQ AppSecret');

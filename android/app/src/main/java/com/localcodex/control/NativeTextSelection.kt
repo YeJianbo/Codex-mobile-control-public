@@ -20,8 +20,6 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -46,11 +44,90 @@ internal fun nativeSelectablePlainText(source:String):String{
 internal class NativeSelectableTextView(context:android.content.Context):android.widget.TextView(context){
     private var downX=0f;private var downY=0f;private var downAt=0L;private var selecting=false
     private var selectionPalette:TextSelectionColors?=null
+    private data class CodeBackground(val path:android.graphics.Path,val color:Int)
+    private var backgroundLayout:android.text.Layout?=null
+    private var backgroundText:CharSequence?=null
+    private var codeBackgrounds:List<CodeBackground> = emptyList()
+    private val codePaint=android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply{
+        pathEffect=android.graphics.CornerPathEffect(4f*resources.displayMetrics.density)
+    }
+    private val selectionPaint=android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply{
+        pathEffect=android.graphics.CornerPathEffect(2f*resources.displayMetrics.density)
+    }
+    private val selectionPath=android.graphics.Path()
+    private var selectionLayout:android.text.Layout?=null
+    private var selectionText:CharSequence?=null
+    private var selectionFrom=-1
+    private var selectionUntil=-1
+    // Android 12's hasSelection() excludes a reverse range ending at offset 0.
+    private val hasTextSelection get()=selectionStart>=0&&selectionEnd>=0&&selectionStart!=selectionEnd
     init{setTextIsSelectable(true);linksClickable=false}
+    override fun onTextChanged(text:CharSequence?,start:Int,lengthBefore:Int,lengthAfter:Int){
+        super.onTextChanged(text,start,lengthBefore,lengthAfter)
+        backgroundLayout=null;backgroundText=null;codeBackgrounds=emptyList()
+        selectionLayout=null
+    }
+    override fun onSizeChanged(width:Int,height:Int,oldWidth:Int,oldHeight:Int){
+        super.onSizeChanged(width,height,oldWidth,oldHeight);backgroundLayout=null;selectionLayout=null
+    }
+    override fun onDraw(canvas:android.graphics.Canvas){
+        val textLayout=layout
+        val styled=text as? android.text.Spanned
+        if(backgroundLayout!==textLayout||backgroundText!==text){
+            backgroundLayout=textLayout;backgroundText=text
+            codeBackgrounds=if(textLayout==null||styled==null)emptyList() else
+                styled.getSpans(0,styled.length,NativeInlineCodeSpan::class.java).map{span->
+                    val path=android.graphics.Path()
+                    textLayout.getSelectionPath(styled.getSpanStart(span),styled.getSpanEnd(span),path)
+                    CodeBackground(path,span.backgroundColor(paint))
+                }
+        }
+        val selected=selectionPalette!=null&&hasTextSelection&&(isFocused||isPressed)&&textLayout!=null
+        if(selected&&(selectionLayout!==textLayout||selectionText!==text||selectionFrom!=selectionStart||selectionUntil!=selectionEnd)){
+            selectionLayout=textLayout;selectionText=text;selectionFrom=selectionStart;selectionUntil=selectionEnd
+            selectionPath.rewind()
+            val begin=minOf(selectionStart,selectionEnd);val end=maxOf(selectionStart,selectionEnd)
+            val linePath=android.graphics.Path()
+            val lineBounds=android.graphics.Path()
+            for(line in textLayout!!.getLineForOffset(begin)..textLayout.getLineForOffset(end)){
+                val from=maxOf(begin,textLayout.getLineStart(line))
+                val until=minOf(end,textLayout.getLineVisibleEnd(line))
+                if(until>from){
+                    textLayout.getSelectionPath(from,until,linePath)
+                    // A soft-wrap endpoint belongs to the next line. Layout's
+                    // path can therefore include trailing fill and zero-width
+                    // contours there. Clip to this line, preserving bidi runs,
+                    // then union before rounding so shared edges have no dents.
+                    lineBounds.rewind()
+                    lineBounds.addRect(textLayout.getLineLeft(line),textLayout.getLineTop(line).toFloat(),
+                        textLayout.getLineRight(line),textLayout.getLineBottom(line).toFloat(),android.graphics.Path.Direction.CW)
+                    linePath.op(lineBounds,android.graphics.Path.Op.INTERSECT)
+                    selectionPath.op(linePath,android.graphics.Path.Op.UNION)
+                }
+            }
+        }
+        if(codeBackgrounds.isNotEmpty()||selected){
+            val saved=canvas.save()
+            canvas.clipRect(scrollX+totalPaddingLeft,scrollY+totalPaddingTop,scrollX+width-totalPaddingRight,scrollY+height-totalPaddingBottom)
+            canvas.translate(totalPaddingLeft.toFloat(),totalPaddingTop.toFloat())
+            for(background in codeBackgrounds){codePaint.color=background.color;canvas.drawPath(background.path,codePaint)}
+            if(selected)canvas.drawPath(selectionPath,selectionPaint)
+            canvas.restoreToCount(saved)
+        }
+        // A recycled AndroidView can receive a longer layout before its lazy
+        // row is remeasured. Keep the native display list inside its own bounds.
+        val textSave=canvas.save()
+        canvas.clipRect(scrollX,scrollY,scrollX+width,scrollY+height)
+        super.onDraw(canvas)
+        canvas.restoreToCount(textSave)
+    }
     fun applySelectionColors(colors:TextSelectionColors){
         if(selectionPalette==colors)return
         selectionPalette=colors
-        highlightColor=colors.backgroundColor.toArgb()
+        selectionPaint.color=colors.backgroundColor.toArgb()
+        // Keep Android's handles, selection range and actions. Only replace
+        // its full-paragraph background with the shaped, cached text selection.
+        highlightColor=android.graphics.Color.TRANSPARENT
         if(android.os.Build.VERSION.SDK_INT>=29){
             textSelectHandleLeft?.mutate()?.let{it.setTint(colors.handleColor.toArgb());setTextSelectHandleLeft(it)}
             textSelectHandleRight?.mutate()?.let{it.setTint(colors.handleColor.toArgb());setTextSelectHandleRight(it)}
@@ -59,7 +136,7 @@ internal class NativeSelectableTextView(context:android.content.Context):android
         }
     }
     override fun onTouchEvent(event:android.view.MotionEvent):Boolean{
-        if(event.actionMasked==android.view.MotionEvent.ACTION_DOWN){downX=event.x;downY=event.y;downAt=event.eventTime;selecting=hasSelection()}
+        if(event.actionMasked==android.view.MotionEvent.ACTION_DOWN){downX=event.x;downY=event.y;downAt=event.eventTime;selecting=hasTextSelection}
         val slop=android.view.ViewConfiguration.get(context).scaledTouchSlop
         val tap=event.actionMasked==android.view.MotionEvent.ACTION_UP&&!selecting&&event.eventTime-downAt<android.view.ViewConfiguration.getLongPressTimeout()&&kotlin.math.abs(event.x-downX)<slop&&kotlin.math.abs(event.y-downY)<slop
         val span=if(tap){
@@ -120,22 +197,20 @@ internal suspend fun prepareNativeTextSelection(document:String,anchor:String,an
     val scroll=rememberScrollState();val focus=remember{FocusRequester()}
     var selectionTop by remember(prepared){mutableStateOf<Float?>(null)}
     val clipboard=LocalClipboardManager.current
-    Dialog(onDismissRequest=close,properties=DialogProperties(usePlatformDefaultWidth=false)){
-        NativeDialogSystemBars()
+    NativeReaderDialog(close=close,header={
+        NativeReaderToolbar("本轮回复","关闭",close){
+            ChromeControl({value=value.copy(selection=TextRange(0,plain.length))},emphasized=false,enabled=prepared!=null){Text("全选",fontSize=13.sp,color=NativeInk)}
+            ChromeButton(R.drawable.ic_lucide_copy,"复制所选",{clipboard.setText(AnnotatedString(plain.substring(value.selection.min,value.selection.max)))},enabled=!value.selection.collapsed)
+        }
+    }){topInset->
         LaunchedEffect(prepared,selectionTop){if(prepared!=null)selectionTop?.let{focus.requestFocus();scroll.scrollTo((it-scroll.viewportSize/3).toInt().coerceAtLeast(0))}}
-        Surface(Modifier.fillMaxSize(),color=MaterialTheme.colors.background){Column(Modifier.systemBarsPadding()){
-            Text("本轮回复",Modifier.padding(horizontal=20.dp,vertical=12.dp),fontSize=18.sp)
-            Row(Modifier.fillMaxWidth().padding(horizontal=8.dp),horizontalArrangement=Arrangement.SpaceBetween){
-                TextButton(onClick=close){Text("关闭")}
-                TextButton(enabled=prepared!=null,onClick={value=value.copy(selection=TextRange(0,plain.length))}){Text("全选")}
-                TextButton(enabled=!value.selection.collapsed,onClick={clipboard.setText(AnnotatedString(plain.substring(value.selection.min,value.selection.max)))}){Text("复制所选")}
-            }
+        Column(Modifier.fillMaxSize().padding(top=topInset)){
             if(prepared==null)Box(Modifier.weight(1f).fillMaxWidth().testTag("replySelectionLoading"),contentAlignment=Alignment.Center){
                 NativeRunningTitle("正在整理文本…",rememberNativeRunningPulse(true))
             }else BasicTextField(value=value,onValueChange={value=it},readOnly=true,
                 textStyle=TextStyle(color=MaterialTheme.colors.onBackground,fontSize=16.sp,lineHeight=25.sp),
                 onTextLayout={if(selectionTop==null)selectionTop=it.getCursorRect(start).top},
                 modifier=Modifier.weight(1f).fillMaxWidth().verticalScroll(scroll).padding(horizontal=20.dp,vertical=12.dp).focusRequester(focus).testTag("replySelectionText"))
-        }}
+        }
     }
 }

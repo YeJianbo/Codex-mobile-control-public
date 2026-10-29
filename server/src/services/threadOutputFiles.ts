@@ -1,6 +1,9 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {marked} from 'marked';
+import {Marked} from 'marked';
+import {fileCitationExtension} from './fileCitation.js';
+
+const marked=new Marked({extensions:[fileCitationExtension]});
 
 export function activityOutputImageText(event:{type:string;title?:string;detail?:string;text?:string}|undefined|null):string|null {
   if(!event||!['tool.started','tool.completed'].includes(event.type)||!/查看图片|view_image|imageview/i.test(event.title||''))return null;
@@ -34,7 +37,7 @@ export function localOutputPath(href:string,cwd:string):string {
 }
 
 // A paired LAN client can read a visible output link; this is never a persistent project grant.
-export async function resolveThreadOutputFile(text:string,href:string,cwd:string){
+async function resolveReferencedOutput(text:string,href:string,cwd:string){
   const requested=localOutputPath(href,cwd);
   const normalize=(file:string)=>process.platform==='win32'?file.toLowerCase():file;
   const links:string[]=[];
@@ -42,10 +45,59 @@ export async function resolveThreadOutputFile(text:string,href:string,cwd:string
   const referenced=links.some(href=>{try{return normalize(localOutputPath(href,cwd))===normalize(requested);}catch{return false;}});
   if(!referenced)throw new Error('文件不是这条可见回复中的链接');
   const absolutePath=await fs.realpath(requested);
-  const stat=await fs.stat(absolutePath);
-  if(!stat.isFile())throw new Error('链接指向目录，请在电脑上打开');
-  if(stat.size>50*1024*1024)throw new Error('文件超过 50 MB，请在电脑上打开');
-  return {absolutePath,fileName:path.basename(requested)};
+  return {absolutePath,fileName:path.basename(requested),stat:await fs.stat(absolutePath)};
+}
+
+export class OutputDirectoryError extends Error {
+  constructor(){super('链接指向目录');}
+}
+
+function outputFile(file:{absolutePath:string;fileName:string;stat:import('node:fs').Stats}){
+  if(file.stat.isDirectory())throw new OutputDirectoryError();
+  if(!file.stat.isFile())throw new Error('路径不是普通文件');
+  if(file.stat.size>50*1024*1024)throw new Error('文件超过 50 MB，请在电脑上打开');
+  return {absolutePath:file.absolutePath,fileName:file.fileName};
+}
+
+export async function resolveThreadOutputFile(text:string,href:string,cwd:string){
+  return outputFile(await resolveReferencedOutput(text,href,cwd));
+}
+
+// A directory link grants read-only descendants for this reply, never a project grant.
+async function resolveDirectoryEntry(text:string,href:string,cwd:string,relative:string){
+  const root=await resolveReferencedOutput(text,href,cwd);
+  if(!root.stat.isDirectory())throw new Error('链接不是目录');
+  return directoryEntry(root.absolutePath,relative);
+}
+
+async function directoryEntry(root:string,relative:string){
+  const portable=relative.replaceAll('\\','/');
+  if(path.isAbsolute(portable)||/^[a-z][a-z\d+.-]*:/i.test(portable)||portable.split('/').includes('..'))throw new Error('路径超出链接目录');
+  const absolutePath=await fs.realpath(path.resolve(root,portable));
+  const within=path.relative(root,absolutePath);
+  if(within==='..'||within.startsWith('..'+path.sep)||path.isAbsolute(within))throw new Error('路径超出链接目录');
+  return {absolutePath,fileName:path.basename(absolutePath),stat:await fs.stat(absolutePath)};
+}
+
+export async function resolveThreadDirectoryFile(text:string,href:string,cwd:string,relative:string){
+  return outputFile(await resolveDirectoryEntry(text,href,cwd,relative));
+}
+
+export async function listThreadOutputDirectory(text:string,href:string,cwd:string,relative:string){
+  const root=await resolveReferencedOutput(text,href,cwd);
+  if(!root.stat.isDirectory())throw new Error('链接不是目录');
+  const directory=await directoryEntry(root.absolutePath,relative);
+  if(!directory.stat.isDirectory())throw new Error('路径不是目录');
+  const children=await fs.readdir(directory.absolutePath,{withFileTypes:true});
+  const files=await Promise.all(children.map(async child=>{
+    const childPath=path.posix.join(relative.replaceAll('\\','/'),child.name);
+    // Resolve each child too: junctions and symlinks must stay inside the linked root.
+    try{const file=await directoryEntry(root.absolutePath,childPath);
+      if(!file.stat.isDirectory()&&!file.stat.isFile())return null;
+      return {name:child.name,path:childPath,kind:file.stat.isDirectory()?'directory':'file',size:file.stat.size,modifiedAt:file.stat.mtime.toISOString()};
+    }catch{return null;}
+  }));
+  return {files:files.filter(file=>file!==null).sort((a,b)=>a.kind===b.kind?a.name.localeCompare(b.name):a.kind==='directory'?-1:1)};
 }
 
 // Public fallback images retain the same project boundary as /raw/projects.

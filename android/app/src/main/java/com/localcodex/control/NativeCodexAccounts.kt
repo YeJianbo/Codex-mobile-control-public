@@ -54,10 +54,10 @@ private val accountServices=listOf("codex" to "Codex","agy" to "AGY / Antigravit
     NativeManagementPage(accountServices.firstOrNull{it.first==service}?.second?:"账号","",back,modifier=Modifier.testTag("accountsPage:$service"),actions={
         if(service.isNotBlank())Box(Modifier.width(88.dp).height(48.dp).testTag("accountRefreshArea"),contentAlignment=Alignment.Center){
             if(busy)NativeRunningTitle(if(loading)"正在读取…" else "正在处理…",pulse,fontSize=13.sp)
-            else TextButton(onClick=refresh,enabled=connected,modifier=Modifier.fillMaxSize()){Text("刷新")}
+            else ChromeButton(R.drawable.ic_lucide_rotate_cw,"刷新",refresh,enabled=connected,modifier=Modifier.fillMaxSize())
         }
     }){
-        Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp),verticalArrangement=Arrangement.spacedBy(14.dp)){
+        Column(Modifier.weight(1f).fillMaxWidth().nativeManagementScroll(rememberScrollState()).padding(16.dp),verticalArrangement=Arrangement.spacedBy(14.dp)){
             if(service.isBlank())(accountServices+listOf("codex-relay" to "Codex 中转与模型","claude-profile" to "Claude 中转配置")).forEach{(id,name)->
                 Surface(shape=Radius.Section,color=MaterialTheme.colors.surface){TextButton(onClick={navigate(id)},modifier=Modifier.fillMaxWidth().testTag("accountService:$id")){Column(Modifier.fillMaxWidth().padding(8.dp)){
                     Text(name,fontSize=16.sp,fontWeight=FontWeight.Medium)
@@ -77,7 +77,7 @@ private val accountServices=listOf("codex" to "Codex","agy" to "AGY / Antigravit
     }
     current?.confirmation?.takeIf{service.isNotBlank()}?.let{preview->
         val allowed=preview.optBoolean("canSwitch",false)&&!preview.optBoolean("blocked")&&preview.accountText("planId").isNotBlank()
-        AlertDialog(onDismissRequest=dismissConfirmation,title={Text("确认切换账号")},text={Column(verticalArrangement=Arrangement.spacedBy(8.dp)){
+        NativeAlertDialog(onDismissRequest=dismissConfirmation,title={Text("确认切换账号")},text={Column(verticalArrangement=Arrangement.spacedBy(8.dp)){
             Text(preview.accountText("label").ifBlank{preview.accountText("name").ifBlank{preview.accountText("email").ifBlank{"所选账号"}}})
             Text(preview.accountText("message").ifBlank{if(allowed)"切换后，新请求使用该账号。" else "仍有任务正在运行，请结束后重试。"})
         }},confirmButton={if(allowed)TextButton(onClick={action("switch",JSONObject().put("id",preview.accountText("id")).put("accountId",preview.accountText("accountId")).put("target",preview.accountText("target")).put("planId",preview.accountText("planId")))},modifier=Modifier.testTag("confirmAccountSwitch")){Text("切换到此账号")}},dismissButton={TextButton(onClick=dismissConfirmation){Text("取消")}})
@@ -170,13 +170,13 @@ private val accountServices=listOf("codex" to "Codex","agy" to "AGY / Antigravit
     data.accountText("error").takeIf{it.isNotBlank()}?.let{Text(it,color=MaterialTheme.colors.error)}
     Box{
         OutlinedButton(onClick={providerOpen=true},enabled=enabled){Text(choices.firstOrNull{it.accountText("id")==provider}?.accountText("name")?:provider.ifBlank{"选择供应商"})}
-        DropdownMenu(providerOpen,{providerOpen=false}){choices.forEach{choice->DropdownMenuItem(onClick={provider=choice.accountText("id");baseUrl=choice.accountText("baseUrl");apiMode=choice.accountText("apiMode");apiKey="";providerOpen=false}){Text(choice.accountText("name").ifBlank{choice.accountText("id")})}}}
+        NativeDropdownMenu(providerOpen,{providerOpen=false}){choices.forEach{choice->DropdownMenuItem(onClick={provider=choice.accountText("id");baseUrl=choice.accountText("baseUrl");apiMode=choice.accountText("apiMode");apiKey="";providerOpen=false}){Text(choice.accountText("name").ifBlank{choice.accountText("id")})}}}
     }
     if(deepseek)OutlinedTextField(provider,{provider=it;apiKey=""},label={Text("供应商 ID")},enabled=enabled,modifier=Modifier.fillMaxWidth(),singleLine=true)
     OutlinedTextField(baseUrl,{baseUrl=it},label={Text("服务地址")},enabled=enabled&&provider!="openai-codex",modifier=Modifier.fillMaxWidth(),singleLine=true)
     Box{
         OutlinedButton(onClick={protocolOpen=true},enabled=enabled&&provider!="openai-codex"){Text("接口协议："+(protocols.firstOrNull{it.first==apiMode}?.second?:apiMode))}
-        DropdownMenu(protocolOpen,{protocolOpen=false}){protocols.forEach{(id,label)->DropdownMenuItem(onClick={apiMode=id;protocolOpen=false}){Text(label)}}}
+        NativeDropdownMenu(protocolOpen,{protocolOpen=false}){protocols.forEach{(id,label)->DropdownMenuItem(onClick={apiMode=id;protocolOpen=false}){Text(label)}}}
     }
     OutlinedTextField(model,{model=it},label={Text("模型 ID")},enabled=enabled,modifier=Modifier.fillMaxWidth(),singleLine=true)
     if(provider!="openai-codex")OutlinedTextField(apiKey,{apiKey=it},label={Text(if(data.optBoolean("hasKey"))"API Key（同供应商、地址留空保留）" else "API Key")},visualTransformation=PasswordVisualTransformation(),enabled=enabled,modifier=Modifier.fillMaxWidth(),singleLine=true)
@@ -197,6 +197,6 @@ private val accountServices=listOf("codex" to "Codex","agy" to "AGY / Antigravit
         TextButton(onClick={action("test",payload())},enabled=enabled&&baseUrl.isNotBlank()&&model.isNotBlank()){Text("测试连接")}
     }
     val models=result?.optJSONArray("models")?:data.optJSONArray("modelChoices")?:JSONArray()
-    if(models.length()>0){var open by remember{mutableStateOf(false)};Box{OutlinedButton(onClick={open=true},enabled=enabled){Text("选择模型（${models.length()}）")};DropdownMenu(open,{open=false}){(0 until models.length()).forEach{index->val name=models.optString(index);DropdownMenuItem(onClick={model=name;open=false}){Text(name)}}}}}
+    if(models.length()>0){var open by remember{mutableStateOf(false)};Box{OutlinedButton(onClick={open=true},enabled=enabled){Text("选择模型（${models.length()}）")};NativeDropdownMenu(open,{open=false}){(0 until models.length()).forEach{index->val name=models.optString(index);DropdownMenuItem(onClick={model=name;open=false}){Text(name)}}}}}
     Button(onClick={action("save",payload())},enabled=enabled&&baseUrl.isNotBlank()&&model.isNotBlank(),modifier=Modifier.fillMaxWidth().testTag("saveModelAccount")){Text("保存配置")}
 }

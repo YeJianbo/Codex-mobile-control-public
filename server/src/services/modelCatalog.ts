@@ -7,7 +7,7 @@ import {desktopThreadSettings} from './desktopSidebar.js';
 import {modelAgent,type Agent} from './agentProtocol.js';
 import {catalogReadBudget} from './catalogReadBudget.js';
 
-export type PickerModel = {model:string; displayName:string; harness?:Agent; modelProvider?:string; providerId?:string; providerName?:string; shortName?:string; supportedReasoningEfforts:{reasoningEffort:string}[]; defaultReasoningEffort?:string};
+export type PickerModel = {model:string; displayName:string; harness?:Agent; modelProvider?:string; providerId?:string; providerName?:string; shortName?:string; supportedReasoningEfforts:{reasoningEffort:string}[]; defaultReasoningEffort?:string; contextWindow?:number; maxOutputTokens?:number; inputModalities?:string[]};
 type ModelCatalog={models:PickerModel[];source:string};
 type ModelRpc=Pick<CodexAppServerClient,'request'>;
 const catalogs=new WeakMap<ModelRpc,{value?:ModelCatalog;expiresAt:number;pending?:Promise<ModelCatalog>;error?:string;failedAt?:number}>();
@@ -55,18 +55,24 @@ async function loadModelCatalog(codex: ModelRpc): Promise<ModelCatalog> {
       model:m.slug,displayName:m.display_name || m.slug,
       supportedReasoningEfforts:(m.supported_reasoning_levels || []).map((e:any)=>({reasoningEffort:e.effort})),
       defaultReasoningEffort:m.default_reasoning_level,
+      ...catalogCapabilities(m),
     }))},config);
   }
   const models:PickerModel[]=[];let cursor:string|null=null;
   do {
     const result=await codex.request('model/list',{includeHidden:false,limit:100,cursor}) as any;
     if(!Array.isArray(result.data)) throw new Error('Codex 未返回有效模型列表');
-    models.push(...result.data.filter((m:any)=>!m.hidden));cursor=result.nextCursor || null;
+    models.push(...result.data.filter((m:any)=>!m.hidden).map((model:any)=>({...model,...catalogCapabilities(model)})));cursor=result.nextCursor || null;
   } while(cursor);
   return appendConsoleRelays({models,source:'app-server'},config);
 }
 
 const consoleDirectory=()=>path.join(path.dirname(userCodexConfigPath()),'codexmate','local-console');
+function catalogCapabilities(model:any):Pick<PickerModel,'contextWindow'|'maxOutputTokens'|'inputModalities'>{
+  const context=model.contextWindow??model.context_window,output=model.maxOutputTokens??model.max_output_tokens,modalities=model.inputModalities??model.input_modalities;
+  return {...(Number.isFinite(context)&&context>0?{contextWindow:context}:{}),...(Number.isFinite(output)&&output>0?{maxOutputTokens:output}:{}),
+    ...(Array.isArray(modalities)?{inputModalities:modalities.filter((value:unknown)=>typeof value==='string')}:{} )};
+}
 async function appendConsoleRelays(catalog:ModelCatalog,config:Record<string,unknown>):Promise<ModelCatalog>{
   // Reuse the installed local relay and its enabled catalog. Neither the
   // desktop catalog nor the user's global provider selection is changed.
@@ -83,6 +89,7 @@ async function appendConsoleRelays(catalog:ModelCatalog,config:Record<string,unk
   for(const entry of relay.models){
     if(entry.visibility!=='list'||typeof entry.slug!=='string'||!entry.slug.includes('::'))continue;
     models.set(entry.slug,{model:entry.slug,displayName:entry.display_name||entry.slug,modelProvider:provider,
+      ...catalogCapabilities(entry),
       supportedReasoningEfforts:(entry.supported_reasoning_levels||[]).map((level:any)=>({reasoningEffort:level.effort})),defaultReasoningEffort:entry.default_reasoning_level});
   }
   return {models:[...models.values()],source:models.size>catalog.models.length?'console-catalog':catalog.source};

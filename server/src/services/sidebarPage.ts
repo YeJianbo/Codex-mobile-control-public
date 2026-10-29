@@ -1,8 +1,14 @@
 import {z} from 'zod';
 
+/** Each native index follows its own filter, including explicitly retained threads. */
+export function nativeSidebarAgents(agent?:string,retained:Iterable<string>=[]):('deepseek'|'zcode')[]{
+  const ids=[...retained];
+  return (['deepseek','zcode'] as const).filter(native=>!agent||agent===native||ids.some(id=>id.startsWith(native+'-')));
+}
+
 export const sidebarPageQuery=z.object({
   limit:z.coerce.number().int().min(1).max(20000).optional(),
-  agent:z.enum(['codex','claude','antigravity','grok','deepseek','hermes','opencode']).optional(),
+  agent:z.enum(['codex','claude','antigravity','grok','deepseek','hermes','opencode','zcode']).optional(),
   project:z.string().max(4096).optional(),
   filter:z.enum(['all','running','unread']).optional(),
   threadId:z.string().max(256).optional(),

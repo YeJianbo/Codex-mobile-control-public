@@ -1,5 +1,5 @@
-export type Agent = 'codex'|'claude'|'antigravity'|'grok'|'deepseek'|'hermes'|'opencode';
-export const agentNames:Record<Agent,string>={codex:'Codex',claude:'Claude Code',antigravity:'Antigravity',grok:'Grok Build',deepseek:'DeepSeek Harness',hermes:'Hermes',opencode:'OpenCode'};
+export type Agent = 'codex'|'claude'|'antigravity'|'grok'|'deepseek'|'hermes'|'opencode'|'zcode';
+export const agentNames:Record<Agent,string>={codex:'Codex',claude:'Claude Code',antigravity:'Antigravity',grok:'Grok Build',deepseek:'DeepSeek Harness',hermes:'Hermes',opencode:'OpenCode',zcode:'ZCode'};
 export function modelAgent(model=''):Agent { const prefix=model.split('::')[0];return Object.hasOwn(agentNames,prefix)&&prefix!=='codex'?prefix as Agent:'codex'; }
 export function threadAgent(id=''):Agent {const prefix=id.split('-')[0];return Object.hasOwn(agentNames,prefix)&&prefix!=='codex'?prefix as Agent:'codex';}
 let publicAgentAccess:Partial<Record<Agent,boolean>>={};
@@ -38,7 +38,8 @@ export function agentUpdates(agent:Agent,line:any):AgentUpdate[]{
     return [];
   }
   const out:AgentUpdate[]=[];
-  if(agent==='claude'&&line.type==='system'&&line.subtype==='api_retry')out.push({kind:'retry',text:'Claude 服务请求未成功，正在重试'+(Number.isInteger(line.attempt)&&line.attempt>0?`（第 ${line.attempt} 次）`:'')});
+  if(line.type==='system'&&line.subtype==='api_retry')out.push({kind:'retry',text:line.message||agentNames[agent]+' 服务请求未成功，正在重试'+(Number.isInteger(line.attempt)&&line.attempt>0?`（第 ${line.attempt} 次）`:'')});
+  if(line.type==='tool_output'&&line.id)out.push({kind:'output',id:line.id,text:line.text});
   if(line.type==='plan'&&Array.isArray(line.entries))out.push({kind:'plan',text:line.entries.filter((entry:any)=>typeof entry.content==='string').map((entry:any)=>`${entry.status==='completed'?'✓':entry.status==='in_progress'?'进行中':'待开始'} ${entry.content}`).join('\n')});
   if(line.session_id)out.push({kind:'session',id:line.session_id});
   if(line.type==='assistant')for(const block of line.message?.content||[]){

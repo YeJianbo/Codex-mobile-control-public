@@ -29,7 +29,7 @@ function fixture(){
   if(method==='turn/start'){backend='active';return {turn:{id:'continued-turn'}};}
   return {};
  };
- const store={threads,approvals:[],eventsForThread:()=>events,async upsertThread(row){Object.assign(threads[0],Object.fromEntries(Object.entries(row).filter(([,value])=>value!==undefined)));return threads[0]}};
+ const store={threads,approvals:[],recentEventsForThread:()=>events,async upsertThread(row){Object.assign(threads[0],Object.fromEntries(Object.entries(row).filter(([,value])=>value!==undefined)));return threads[0]}};
  const manager=new SessionManager(codex,{publish:e=>events.push(e)},store,()=>new Map([['goal-thread',goal]]));
  managers.push(manager);manager.receipts=new CommandReceipts(path.join(home,`receipt-${++sequence}.json`));
  return {manager,codex,calls,events,threads,goal,continuations,setBackend:value=>backend=value};

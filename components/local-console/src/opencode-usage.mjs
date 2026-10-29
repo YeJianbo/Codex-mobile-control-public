@@ -51,7 +51,7 @@ export function readOpenCodeUsage(home){
       json_extract(data,'$.state.time.start') tool_start,json_extract(data,'$.state.time.end') tool_end
       FROM part WHERE json_valid(data) AND json_extract(data,'$.type') IN ('step-start','step-finish','tool','text','reasoning')
       ORDER BY time_created,id`).all();
-    const rows=[],events=new Map(),steps=new Map();
+    const rows=[],events=new Map(),steps=new Map(),stepStarts=new Map(),responseParts=new Map();
     const event=(kind,sessionId,at,extra={})=>{
       if(!time(at))return;
       const moment=kind==='activity'?Math.floor(at/60000)*60000:at;
@@ -77,11 +77,17 @@ export function readOpenCodeUsage(home){
         const name=label(part.tool)||'unknown';
         event('tool',part.session_id,time(part.tool_start)||part.time_created,{partId:part.id,tool:name,category:toolCategory(name)});
       }
+      if(part.type==='step-start')stepStarts.set(message.id,time(part.start)||time(part.time_created));
+      if(part.type==='text'||part.type==='reasoning'){
+        if(!responseParts.has(message.id))responseParts.set(message.id,[]);
+        responseParts.get(message.id).push(part);
+      }
       if(part.type==='step-finish'&&message.role==='assistant'){
         let usage;try{usage=tokens(JSON.parse(part.tokens));}catch{}
         if(!usage)continue;
         if(!steps.has(message.id))steps.set(message.id,[]);
-        steps.get(message.id).push({part,usage});
+        steps.get(message.id).push({part,usage,start:stepStarts.get(message.id)});
+        stepStarts.delete(message.id);
       }
     }
     const turns=new Set();
@@ -95,16 +101,22 @@ export function readOpenCodeUsage(home){
           calls.push({usage});messageFallbacks++;
         }
       }else stepRecords+=calls.length;
-      for(const {part,usage}of calls){
+      for(const {part,usage,start}of calls){
         const at=time(part?.time_created)||time(message.completed)||message.created;
         if(!at)continue;
         const parent=byMessage.get(message.parent_id),turn=JSON.stringify([message.session_id,message.parent_id]);
         const firstTurn=parent?.role==='user'&&!parent.inherited&&!turns.has(turn);
         if(firstTurn)turns.add(turn);
         const usd=amount(part?part.cost:message.cost);
+        const started=start??(calls.length===1?message.created:null),ended=part?time(part.end)||time(part.time_created):time(message.completed);
+        const durationMs=started&&ended&&ended>started?ended-started:null;
+        const first=(type)=>{
+          const moments=(responseParts.get(message.id)||[]).filter(part=>!type||part.type===type).map(part=>time(part.start)).filter(value=>value!==null&&value>=started&&value<=ended);
+          return durationMs!==null&&moments.length?Math.min(...moments)-started:null;
+        };
         rows.push({usageId:JSON.stringify(['opencode',file,message.session_id,message.id,part?.id||'message']),nativeMessageId:message.id,measurement:part?'step':'message',
           time:at,firstTime:message.created,sessionId:message.session_id,model:label(message.model)||'未知模型',provider:label(message.provider)||'未知供应商',billingMode:'',
-          ...usage,requests:1,turns:firstTurn?1:0,cost:{usd,basis:usd===null?'unknown':'native_estimate'}});
+          ...usage,durationMs,firstOutputMs:first(),firstTextMs:first('text'),requests:1,turns:firstTurn?1:0,cost:{usd,basis:usd===null?'unknown':'native_estimate'}});
       }
     }
     return {rows,events:[...events.values()],coverage:{...coverage,available:true,stepRecords,messageFallbacks,skippedInheritedMessages,failedMessages}};

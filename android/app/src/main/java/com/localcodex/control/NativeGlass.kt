@@ -92,10 +92,14 @@ internal fun nativeGlassPolicy(mode:NativeGlassMode,supported:Boolean=Build.VERS
     val overlayShadow=if(frosted)Modifier.shadow(material.shadowDp.dp,shape,clip=false,
         ambientColor=Color.Black.copy(alpha=if(light).08f else .20f),
         spotColor=Color.Black.copy(alpha=if(light).10f else .26f)) else Modifier
-    Surface(modifier.then(overlayShadow).nativeGlassSource(nestedBackdrop),shape,Color.Transparent,border=edge,elevation=0.dp){
+    Surface(modifier.then(overlayShadow),shape,Color.Transparent,border=edge,elevation=0.dp){
         Box(propagateMinConstraints=true) {
-            Box(Modifier.matchParentSize().clipToBounds().nativeGaussianBackdrop(backdrop,shape,liquid=true,frosted=frosted)
-                .background(color.copy(alpha=tint))){
+            // Children may sample this material, but must never be recorded in
+            // their own source. Capturing the whole Surface creates a RenderNode
+            // cycle when a glass popup contains another glass control.
+            Box(Modifier.matchParentSize().clipToBounds().nativeGlassSource(nestedBackdrop)){
+                Box(Modifier.matchParentSize().nativeGaussianBackdrop(backdrop,shape,liquid=true,frosted=frosted))
+                Box(Modifier.matchParentSize().background(color.copy(alpha=tint))){
                 Box(Modifier.matchParentSize()
                     .drawWithCache{
                         val sheen=Brush.verticalGradient(listOf(Color.White.copy(alpha=.045f),Color.Transparent),
@@ -113,6 +117,7 @@ internal fun nativeGlassPolicy(mode:NativeGlassMode,supported:Boolean=Build.VERS
                             }
                         }
                     })
+                }
             }
             content()
         }

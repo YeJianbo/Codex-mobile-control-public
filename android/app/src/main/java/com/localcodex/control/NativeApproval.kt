@@ -18,3 +18,14 @@ internal fun nativeApprovalResultLabel(result:String,handled:Boolean,pending:Boo
     "resolved"->"已处理"
     else->if(pending)"待确认" else if(handled)"已处理" else "结果未记录"
 }
+
+internal fun nativeApprovalTimelineEvents(events:List<ChatEvent>,pendingIds:Set<String>,handledIds:Set<String>,
+    results:Map<String,String>,autoApprove:Boolean):List<ChatEvent> = events.mapNotNull{event->
+    if(event.type!="approval.requested"||event.approvalType=="question")return@mapNotNull event
+    val result=results[nativeApprovalKey(event.threadId,event.approvalId)].orEmpty()
+    if(autoApprove&&result in setOf("accepted","resolved"))return@mapNotNull null
+    val actionable=event.approvalId.isNotBlank()&&event.approvalId in pendingIds&&event.approvalId !in handledIds&&result.isEmpty()
+    if(actionable)event else event.copy(type="tool.completed",title="审批记录",
+        status=when(result){"accepted","resolved"->"ok";"declined"->"error";"expired"->"cancelled";else->""},
+        detail=listOfNotNull(result.takeIf{it.isNotBlank()}?.let{nativeApprovalResultLabel(it,true,false)},event.detail.takeIf{it.isNotBlank()}).joinToString("\n"))
+}

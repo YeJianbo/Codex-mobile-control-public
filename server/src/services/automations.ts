@@ -6,8 +6,9 @@ import {codexHome} from './paths.js';
 import {randomUUID} from 'node:crypto';
 import {visibleThreadTitle,latestIndexEntries} from './codexSessions.js';
 import {subagentMetadata} from './subagentThreads.js';
+import {automationRule,type AutomationSchedule} from './automationSchedule.js';
 
-export type AutomationEdit={name?:string;prompt?:string;status?:'ACTIVE'|'PAUSED';schedule?:{frequency:'MINUTELY'|'HOURLY'|'DAILY'|'WEEKLY';interval:number};threadId?:string};
+export type AutomationEdit={name?:string;prompt?:string;status?:'ACTIVE'|'PAUSED';schedule?:AutomationSchedule;threadId?:string};
 const validId=(id:string)=>/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,159}$/.test(id);
 function file(id:string,home:string){if(!validId(id))throw Error('定时任务编号无效');return path.join(home,'automations',id,'automation.toml');}
 async function read(id:string,home:string){
@@ -74,7 +75,7 @@ function view(task:Record<string,any>,time?:Record<string,any>){
   const synced=!!time&&time.status===task.status&&String(time.rrule).replace(/^RRULE:/,'')===String(task.rrule).replace(/^RRULE:/,'');
   return {id:task.id,name:task.name,prompt:task.prompt,status:task.status,kind:task.kind,threadId:task.target_thread_id||'',
     rrule:task.rrule,nextRunAt:task.status==='ACTIVE'&&synced?time?.next_run_at??null:null,lastRunAt:time?.last_run_at??null,
-    updatedAt:task.updated_at,model:task.model||'',effort:task.reasoning_effort||''};
+    updatedAt:task.updated_at,model:task.model||'',effort:task.reasoning_effort||'',timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone};
 }
 export async function listAutomations(home=codexHome()){
   let names:string[];try{names=(await fs.readdir(path.join(home,'automations'),{withFileTypes:true})).filter(e=>e.isDirectory()&&!e.isSymbolicLink()&&validId(e.name)).map(e=>e.name)}catch(e:any){if(e.code==='ENOENT')return [];throw e;}
@@ -98,7 +99,7 @@ export async function saveAutomation(id:string|undefined,edit:AutomationEdit,hom
     if(task.kind!=='heartbeat')throw Error('此任务每次新建会话，不能绑定已有会话');
     task.target_thread_id=edit.threadId;
   }
-  if(edit.schedule)task.rrule=`FREQ=${edit.schedule.frequency};INTERVAL=${edit.schedule.interval}`;
+  if(edit.schedule)task.rrule=automationRule(edit.schedule);
   task.updated_at=Date.now();
   const target=file(id,home);await fs.mkdir(path.dirname(target),{recursive:true});
   const temporary=target+'.'+randomUUID()+'.tmp';

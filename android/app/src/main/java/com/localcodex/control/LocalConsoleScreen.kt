@@ -64,9 +64,10 @@ private fun consoleTime(value:String)=runCatching{DateFormat.getDateTimeInstance
             if(section!="额度")IconButton(onClick=onRefresh,enabled=connected&&!(if(section=="统计")state.statisticsLoading else state.infoLoading)&&state.busyAction.isBlank()){
                 Icon(painterResource(R.drawable.ic_lucide_rotate_cw),"刷新电脑控制台")
             }
+        },pinnedContent={
+            DashboardTabs((if(quotaContent!=null)listOf("额度" to "额度") else emptyList())+listOf("统计" to "统计","模型" to "模型","服务" to "服务"),section,{if(onSectionChange!=null)onSectionChange(it) else savedSection=it},Modifier.padding(horizontal=16.dp,vertical=4.dp))
         }){
-                DashboardTabs((if(quotaContent!=null)listOf("额度" to "额度") else emptyList())+listOf("统计" to "统计","模型" to "模型","服务" to "服务"),section,{if(onSectionChange!=null)onSectionChange(it) else savedSection=it},Modifier.padding(horizontal=16.dp))
-                sections.SaveableStateProvider(section){Column(Modifier.weight(1f).clipToBounds().verticalScroll(rememberScrollState()).padding(16.dp).testTag("consoleScroll")){
+                sections.SaveableStateProvider(section){Column(Modifier.weight(1f).clipToBounds().nativeManagementScroll(rememberScrollState()).padding(16.dp).testTag("consoleScroll")){
                     if(!connected&&section!="额度")Text("连接电脑后查看统计与管理模型",color=MaterialTheme.colors.onSurface.copy(alpha=0.65f))
                     if(section=="额度")quotaContent?.invoke()
                     else if(section=="统计")ConsoleStatisticsContent(state,connected,onFilter,onAction)

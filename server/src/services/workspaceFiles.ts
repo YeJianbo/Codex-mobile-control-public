@@ -3,6 +3,7 @@ import path from "node:path";
 import { execa } from "execa";
 import type { DiffFileEntry, DiffHunk, FileEntry, Project, ServerConfig } from "../types.js";
 import { listProjects } from "./projects.js";
+import {OutputDirectoryError} from './threadOutputFiles.js';
 
 const ignoredNames = new Set([".git", "node_modules", ".gradle", "dist", "build", ".idea"]);
 const maxTextFileBytes = 1024 * 1024;
@@ -69,6 +70,7 @@ export async function writeTextFile(config: ServerConfig, projectId: string, rel
 export async function resolveRawFile(config: ServerConfig, projectId: string, relativePath: string): Promise<{ absolutePath: string; fileName: string }> {
   const { absolutePath } = await resolveWorkspacePath(config, projectId, relativePath);
   const stat = await fs.stat(absolutePath);
+  if(stat.isDirectory())throw new OutputDirectoryError();
   if (!stat.isFile()) {
     throw new Error("路径不是文件");
   }

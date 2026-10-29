@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import {appHome} from './paths.js';
+import {normalizePublicAccessUrl} from './publicAccessUrl.js';
 
 type PublicAccessConfig={port:number;publicUrl?:string;passwordSha256:string;proxySecret:string};
 const updates=new Map<string,Promise<unknown>>();
@@ -31,9 +32,7 @@ async function applyPublicAccessSettings(input:{password?:string;publicUrl?:stri
   if(input.password!==undefined&&(input.password.length<6||input.password.length>128||input.password.trim()!==input.password||/[\r\n]/.test(input.password)))throw new Error('密码需要 6 至 128 个字符，首尾不能有空格');
   let publicUrl=input.publicUrl;
   if(publicUrl){
-    const url=new URL(publicUrl);
-    if(url.protocol!=='https:'||url.username||url.password||url.pathname!=='/'||url.search||url.hash)throw new Error('公网地址需要 HTTPS 域名，不带路径');
-    publicUrl=url.origin;
+    publicUrl=normalizePublicAccessUrl(publicUrl);
   }
   if(input.password===undefined&&publicUrl===undefined)throw new Error('请填写要更新的连接设置');
   const configPath=path.join(home,'public-access.json');

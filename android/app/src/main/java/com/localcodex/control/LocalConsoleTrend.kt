@@ -58,6 +58,7 @@ private fun consoleTrendData(data:ConsoleStatistics):ConsoleTrendData{
     val palette=listOf(MaterialTheme.colors.primary,AppColor.ChartPurple,Color(0xff259fb8),Color(0xffd08b36),Color(0xff459777),Color(0xffc66c94))
     var focus by remember(data.source,data.range){mutableStateOf<String?>(null)}
     val selected=remember(trend){mutableIntStateOf(-1)}
+    val touchPosition=remember(trend){mutableStateOf(Offset.Zero)}
     val focused=focus?.takeIf{it in trend.models}
     val maximum=buckets.maxOfOrNull{it.models.values.maxOrNull()?:0}?.coerceAtLeast(1)?:1
     Text(if(trend.hourly)"每小时 Token" else "每日 Token",fontSize=14.sp,fontWeight=FontWeight.SemiBold)
@@ -85,7 +86,7 @@ private fun consoleTrendData(data:ConsoleStatistics):ConsoleTrendData{
         Column(Modifier.weight(1f)){
             Box(Modifier.fillMaxWidth().height(168.dp)){
                 Spacer(Modifier.fillMaxSize().testTag("consoleDailyChart").semantics{contentDescription=if(trend.hourly)"按小时与模型显示 Token，按住或横向滑动查看明细" else "按日期与模型显示 Token，按住或横向滑动查看明细"}
-                    .nativeChartPress(trend,{position,size->selected.intValue=(position.x/size.width.coerceAtLeast(1)*(buckets.size-1)).roundToInt().coerceIn(buckets.indices)},{selected.intValue=-1})
+                    .nativeChartPress(trend,{position,size->touchPosition.value=position;selected.intValue=(position.x/size.width.coerceAtLeast(1)*(buckets.size-1)).roundToInt().coerceIn(buckets.indices)},{selected.intValue=-1})
                     .drawWithCache{
                     val top=8.dp.toPx();val bottom=size.height-4.dp.toPx();val height=bottom-top
                     fun x(index:Int)=if(buckets.size==1)size.width/2 else index.toFloat()/(buckets.size-1)*size.width
@@ -115,7 +116,7 @@ private fun consoleTrendData(data:ConsoleStatistics):ConsoleTrendData{
                         if(selectedIndex in buckets.indices)drawLine(grid,Offset(x(selectedIndex),top),Offset(x(selectedIndex),bottom),1.dp.toPx())
                     }
                 })
-                ConsoleTrendCallout(trend,focused,maximum,selected,muted)
+                ConsoleTrendCallout(trend,focused,selected,touchPosition,muted)
             }
             Row(Modifier.fillMaxWidth().padding(top=8.dp),horizontalArrangement=Arrangement.SpaceBetween){
                 (0..3).map{it*(buckets.size-1)/3}.distinct().forEach{index->
@@ -126,13 +127,12 @@ private fun consoleTrendData(data:ConsoleStatistics):ConsoleTrendData{
     }
 }
 
-@Composable private fun ConsoleTrendCallout(trend:ConsoleTrendData,focused:String?,maximum:Long,selection:State<Int>,muted:Color){
+@Composable private fun ConsoleTrendCallout(trend:ConsoleTrendData,focused:String?,selection:State<Int>,touchPosition:State<Offset>,muted:Color){
     val selected=selection.value
     val buckets=trend.buckets
     buckets.getOrNull(selected)?.let{bucket->
         val shown=(if(focused!=null)listOf(focused) else trend.models.sortedByDescending{bucket.models[it]?:0}.take(3))
-        val anchor=shown.maxOfOrNull{bucket.models[it]?:0}?:0
-        ChartCallout(if(buckets.size==1)0.5f else selected.toFloat()/(buckets.size-1),1f-(anchor.toDouble()/maximum).toFloat()){
+        ChartCallout(touchPosition){
             Column(Modifier.padding(horizontal=10.dp,vertical=8.dp),verticalArrangement=Arrangement.spacedBy(4.dp)){
                 Text(if(trend.hourly)bucket.key.takeLast(2)+":00–"+(bucket.key.takeLast(2).toInt()+1).toString().padStart(2,'0')+":00" else bucket.key,fontSize=10.sp,color=muted)
                 shown.forEach{model->Row(verticalAlignment=Alignment.CenterVertically){

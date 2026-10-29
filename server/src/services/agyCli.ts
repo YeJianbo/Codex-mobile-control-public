@@ -2,8 +2,9 @@ import {execa} from 'execa';
 import {PassThrough} from 'node:stream';
 import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
+import {readAgyTurnCursor,reconcileAgyTurnResult,type AgyTurnCursor} from './agyTurnResult.js';
 
-type Turn={stdout:PassThrough;stderr:PassThrough;done:Promise<{exitCode:number}>;resolve:(value:{exitCode:number})=>void;terminal:boolean;usageBase?:Record<string,number>;seal?:ReturnType<typeof setImmediate>};
+type Turn={stdout:PassThrough;stderr:PassThrough;done:Promise<{exitCode:number}>;resolve:(value:{exitCode:number})=>void;terminal:boolean;cursor?:AgyTurnCursor;responses:Map<string,string>;seal?:ReturnType<typeof setImmediate>};
 class AgyConnection {
   readonly child:any;
   private current?:Turn;
@@ -13,9 +14,10 @@ class AgyConnection {
   private closing?:Promise<void>;
   private stderr='';
   private idleTimer?:ReturnType<typeof setTimeout>;
-  private usage?:Record<string,number>;
+  private session?:string;
   idleAt=0;
   constructor(readonly signature:string,command:string,args:string[],cwd:string|undefined,launch:typeof execa,private terminate:typeof execa,private removed:()=>void){
+    const conversation=args.indexOf('--conversation');if(conversation>=0)this.session=args[conversation+1];
     const worker=fileURLToPath(new URL('./agyCliWorker.js',import.meta.url));
     this.child=launch(process.execPath,[worker,command,...args],{cwd,windowsHide:true,reject:false,buffer:false,stdin:'pipe',ipc:true});
     this.child.stdin?.on('error',()=>{});
@@ -24,19 +26,14 @@ class AgyConnection {
     reader.on('line',line=>{
       const turn=this.current;if(!turn)return;
       let record;try{record=JSON.parse(line);}catch{turn.stdout.write(line+'\n');return;}
-      if(record.event==='result'&&record.result?.usage){
-        // AGY totals accumulate across turns in the same stream-json process.
-        // Expose only this turn's delta; repeated terminal snapshots use the same base.
-        const raw=record.result.usage,usage={...raw};
-        const keys=['input_tokens','output_tokens','thinking_tokens','cache_read_tokens','cache_read_input_tokens','total_tokens'];
-        let valid=true;
-        for(const key of keys)if(typeof raw[key]==='number'){
-          const delta=raw[key]-(turn.usageBase?.[key]||0);
-          if(!Number.isFinite(delta)||delta<0)valid=false;
-          usage[key]=delta;
-        }
-        this.usage={...raw};record.result.usage=valid?usage:undefined;
+      if(record.event==='init'&&typeof record.conversation_id==='string')this.session=record.conversation_id;
+      const update=record.step_update;
+      if(update?.step_type==='agent_response'&&typeof update.text_delta==='string'){
+        const id=String(update.step_index);turn.responses.set(id,(turn.responses.get(id)||'')+update.text_delta);
       }
+      if(record.event==='result')record.result=reconcileAgyTurnResult(record.result,turn.cursor,turn.responses);
+      // Keep AGY's conversation-wide usage snapshot intact across CLI restarts.
+      // The session owner replaces cumulative counters rather than adding them.
       turn.stdout.write(JSON.stringify(record)+'\n');
       if(record.event==='result'&&!turn.terminal){
         turn.terminal=true;
@@ -63,9 +60,14 @@ class AgyConnection {
     if(!this.usable||this.current)throw Error('AGY 进程已退出或仍有任务，保留消息后重试');
     clearTimeout(this.idleTimer);this.idleAt=0;this.stderr='';
     let resolve!:Turn['resolve'];const done=new Promise<{exitCode:number}>(r=>{resolve=r;});
-    const turn:Turn={stdout:new PassThrough(),stderr:new PassThrough(),done,resolve,terminal:false,usageBase:this.usage};this.current=turn;
+    const turn:Turn={stdout:new PassThrough(),stderr:new PassThrough(),done,resolve,terminal:false,cursor:readAgyTurnCursor(this.session),responses:new Map()};this.current=turn;
     this.child.stdin.write(input);
     return {pid:this.child.pid,stdout:turn.stdout,stderr:turn.stderr,then:done.then.bind(done),interrupt:()=>this.close(true)};
+  }
+  steer(input:string){
+    const turn=this.current;
+    if(!this.usable||!turn||turn.terminal)throw Error('AGY 当前轮次已结束，引导消息仍保留在队列中');
+    this.child.stdin.write(input);
   }
   idle(timeout:number,onExpired:()=>void){
     if(!this.usable)return;
@@ -106,6 +108,11 @@ export class AgyCliPool {
     }
     // Wrap the thenable turn handle so async return does not wait for its completion.
     return {process:connection.run(input)};
+  }
+  steer(id:string,input:string){
+    const connection=this.connections.get(id);
+    if(!connection)throw Error('AGY 当前轮次不可引导，引导消息仍保留在队列中');
+    connection.steer(input);
   }
   release(id:string){
     const connection=this.connections.get(id);if(!connection)return;

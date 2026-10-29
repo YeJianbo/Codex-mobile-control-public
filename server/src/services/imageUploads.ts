@@ -37,6 +37,17 @@ export async function imageInputs(images:ImageAttachment[]=[]) {
     return {type:'image',url:`data:${types[image.id.split('.').pop()!]};base64,${data.toString('base64')}`};
   }));
 }
+// CLIs that only accept text blocks (Antigravity) still read local files, so an
+// uploaded image can be handed over as a path instead of being rejected.
+export async function resolveImageFiles(images:ImageAttachment[]=[]){
+  if(images.length>8)throw new Error('每条消息最多 8 张图片');
+  return Promise.all(images.map(async image=>{
+    const file=imagePath(image.id);
+    const stat=await fs.stat(file);
+    if(!stat.isFile())throw new Error('无效的图片附件');
+    return {name:image.name||path.basename(file),absolutePath:path.resolve(file),mime:types[image.id.split('.').pop()!]||'image/png',size:stat.size};
+  }));
+}
 export async function codexImageInputs(images:ImageAttachment[]=[]) {
   return Promise.all(images.map(async image=>{
     const file=path.resolve(imagePath(image.id));

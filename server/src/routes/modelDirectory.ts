@@ -1,10 +1,10 @@
 import type {FastifyInstance} from 'fastify';
 import type {CodexAppServerClient} from '../codex/appServerClient.js';
-import type {AgentSessions} from '../services/agentSessions.js';
+import type {AgentSessionPort} from '../services/agentSessions.js';
 import {modelAgent,publicAgentAllowed} from '../services/agentProtocol.js';
 import {readPartialPickerCatalog,readPickerModelCatalog} from '../services/modelCatalog.js';
 
-export function registerModelDirectory(app:FastifyInstance,codex:CodexAppServerClient,agents:AgentSessions,publicProxySecret:string|undefined){
+export function registerModelDirectory(app:FastifyInstance,codex:CodexAppServerClient,agents:AgentSessionPort,publicProxySecret:string|undefined){
   app.get('/api/models',async request=>{
     const query=request.query as Record<string,string>;
     const refresh=query.refresh==='1';

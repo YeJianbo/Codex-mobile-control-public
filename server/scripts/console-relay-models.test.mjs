@@ -54,17 +54,20 @@ test('new relay threads and resumed relay threads retain their provider; source 
     if(method==='thread/resume')return {thread:{id:params.threadId,status:{type:'idle'}}};
     assert.fail('unexpected RPC '+method);
   };
-  const store={threads,approvals:[],eventsForThread:()=>[],upsertThread:async row=>{const entry={...row,title:row.title||'fixture'};threads.push(entry);return entry;}};
+  const store={threads,approvals:[],recentEventsForThread:()=>[],upsertThread:async row=>{const entry={...row,title:row.title||'fixture'};threads.push(entry);return entry;}};
   const manager=new SessionManager(rpc,{publish:()=>{}},store);
+  let resumed;
+  try{
   await manager.handleClientCommand({type:'thread.start',model:'official-fixture',projectPath:f.home});
   assert.equal(calls[0].params.modelProvider,undefined);
   await manager.handleClientCommand({type:'thread.start',model:'relay_fixture::model',projectPath:f.home});
   assert.equal(calls[1].params.modelProvider,'existing_relay');assert.equal(calls[1].params.config.model_catalog_json,path.join(f.directory,'model-catalog.json'));
-  const resumed=new SessionManager(rpc,{publish:()=>{}},store);await resumed.resumeThread('relay-thread');
+  resumed=new SessionManager(rpc,{publish:()=>{}},store);await resumed.resumeThread('relay-thread');
   assert.equal(calls[2].method,'thread/resume');assert.equal(calls[2].params.modelProvider,'existing_relay');assert.equal(calls[2].params.model,'relay_fixture::model');
   const count=calls.length;
   await assert.rejects(resumed.handleClientCommand({type:'turn.start',threadId:'relay-thread',model:'official-fixture',text:'must not send'}),/新建会话/);
   assert.equal(calls.length,count);assert.equal(await fs.readFile(f.configFile,'utf8'),f.text);
+  }finally{manager.receipts.close();resumed?.receipts.close();}
 }));
 
 test('speed readback restores the saved relay provider instead of the desktop default',async()=>fixture(async f=>{

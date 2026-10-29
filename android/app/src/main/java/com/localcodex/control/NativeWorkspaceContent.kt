@@ -19,11 +19,14 @@ import androidx.compose.ui.unit.sp
     LaunchedEffect(s.fileProjectId,s.filePath){fileList.scrollToItem(0)}
     Column(modifier){
     when(panel){
+        "后台终端"->NativeBackgroundTerminals(vm)
+        "审阅改动"->NativeReviewStart(vm)
+        "电脑浏览器"->NativeDesktopBrowser(vm)
         "文件"->{
             val file=s.file
             if(file!=null){
                 NativeWorkspaceEditorContent(NativeWorkspaceEditorState(file,s.fileDraft,s.fileBusy,s.fileMessage,s.fileError),
-                    vm::editFile,vm::saveFile,vm::backToFiles,vm::retryFile)
+                    vm::editFile,vm::saveFile,vm::backToFiles,vm::retryFile,onPreview=vm::previewWorkspaceFile)
             }
             else{
                 val files=remember(s.files,s.filePath,s.fileRootPath,s.fileBusy,s.fileMessage,s.fileError){
@@ -50,13 +53,14 @@ internal data class NativeWorkspaceEditorState(
 
 @Composable internal fun NativeWorkspaceEditorContent(
     state:NativeWorkspaceEditorState,onEdit:(String)->Unit,onSave:()->Unit,onBack:()->Unit,onRetry:()->Unit,
+    onPreview:(()->Unit)?=null,
 ){
     if(state.busy)StatusPulseText(state.message,true,Modifier.padding(vertical=8.dp))
     if(state.error.isNotBlank()){
         Text(state.error,color=MaterialTheme.colors.error,fontSize=13.sp)
         TextButton(onClick=onRetry,enabled=!state.busy){Text("重试")}
     }
-    NativeFileEditor(state.file,state.draft,state.busy,onEdit,onSave,onBack)
+    NativeFileEditor(state.file,state.draft,state.busy,onEdit,onSave,onBack,onPreview)
 }
 
 internal data class NativeTerminalState(
@@ -78,9 +82,12 @@ internal data class NativeTerminalState(
     }
 }
 
-@Composable internal fun NativeFileEditor(file:FileContent,draft:String,busy:Boolean,onEdit:(String)->Unit,onSave:()->Unit,onBack:()->Unit){
+@Composable internal fun NativeFileEditor(file:FileContent,draft:String,busy:Boolean,onEdit:(String)->Unit,onSave:()->Unit,onBack:()->Unit,onPreview:(()->Unit)?=null){
     Column(Modifier.fillMaxWidth(),verticalArrangement=Arrangement.spacedBy(10.dp)){
-        TextButton(onClick=onBack,enabled=!busy){Text("返回目录")}
+        Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){
+            ChromeButton(R.drawable.ic_lucide_arrow_left,"返回目录",onBack,enabled=!busy)
+            onPreview?.let{ChromeButton(R.drawable.ic_lucide_file_text,"阅读文件",it,enabled=!busy)}
+        }
         Text(nativeDisplayPath(file.path),fontSize=13.sp)
         if(file.editable){
             NativeTextEntry(draft,onEdit,"",Modifier.fillMaxWidth().testTag("fileEditor"),label="文件内容")

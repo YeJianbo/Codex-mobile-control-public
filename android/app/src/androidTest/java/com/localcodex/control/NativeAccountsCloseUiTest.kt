@@ -62,7 +62,7 @@ class NativeAccountsCloseUiTest {
         ui.onNodeWithText("正在处理…").assertIsDisplayed()
         assertEquals(original,card.fetchSemanticsNode().boundsInRoot)
         ui.runOnIdle{state.value=state.value.copy(busy="")}
-        ui.onNodeWithText("刷新").assertIsEnabled()
+        ui.onNodeWithContentDescription("刷新").assertIsEnabled()
         assertEquals(original,card.fetchSemanticsNode().boundsInRoot)
     }
 

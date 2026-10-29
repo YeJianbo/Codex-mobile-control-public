@@ -26,6 +26,8 @@ export function sessionUsageValues(tokens){
   const total=number(tokens?.total)??(input!==null&&output!==null?input+output:null);
   const context=value=>number(value)===null?'—':(value/1000).toLocaleString('zh-CN',{maximumFractionDigits:1})+'K';
   return {total:formatUsageTokens(total),input:formatUsageTokens(input),output:formatUsageTokens(output),cached:formatUsageTokens(cached),
+    selfTotal:formatUsageTokens(tokens?.self?.total),subagentTotal:formatUsageTokens(tokens?.subagents?.total),
+    subagentCount:String(tokens?.subagents?.count??0),
     cacheHit:input>0&&cached!==null&&cached<=input?(cached/input*100).toLocaleString('zh-CN',{maximumFractionDigits:1})+'%':'—',
     context:tokens?.contextState==='awaiting_usage'?'更新中':context(tokens?.context),contextWindow:context(tokens?.contextWindow),
     last:formatUsageTokens(tokens?.last),reasoning:formatUsageTokens(tokens?.reasoning)};
@@ -272,7 +274,30 @@ export function conversationBlocks(events, threadId, {showWarnings = false} = {}
       previous.text += event.text;
     } else blocks.push({ ...event });
   }
-  return blocks;
+  return blocks.map(block=>{
+    if(block.type!=='message.delta')return block;
+    const text=visibleAnswerText(block.text);
+    return text===block.text?block:{...block,text};
+  });
+}
+// Remove assistant reference metadata before Markdown strips its XML tags.
+// Fenced examples remain literal; history and clipboard use the same visible text.
+export function visibleAnswerText(source='') {
+  if(!/<\/?(?:oai-mem-citation|citation_entries|rollout_ids)\b/i.test(source))return source;
+  const output=[],prose=[];
+  let marker='',length=0;
+  const flush=()=>{
+    output.push(prose.join('').replace(/^ {0,3}<(oai-mem-citation|citation_entries|rollout_ids)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|(?![\s\S]))/gim,'')
+      .replace(/^ {0,3}<\/(?:oai-mem-citation|citation_entries|rollout_ids)\s*>[^\S\n]*(?:\n|$)/gim,''));
+    prose.length=0;
+  };
+  for(const line of source.match(/[^\n]*\n|[^\n]+$/g)||[]){
+    const fence=/^ {0,3}(`{3,}|~{3,})([^\n]*)/.exec(line);
+    if(!marker&&fence){flush();marker=fence[1][0];length=fence[1].length;output.push(line);}
+    else if(marker){output.push(line);if(fence&&fence[1][0]===marker&&fence[1].length>=length&&!fence[2].trim())marker='';}
+    else prose.push(line);
+  }
+  flush();return output.join('').trimEnd();
 }
 
 function stripAmbientBrowserContext(input) {
@@ -324,6 +349,14 @@ export function cleanActivityLabel(value='') {
     .replace(/^__(.*?)__$/, '$1').replace(/^`(.*?)`$/, '$1').trim();
 }
 
+export function activityTitle(activity) {
+  const title=cleanActivityLabel(activity.title||'');
+  if(/view_image|imageview/i.test(title))return '查看图片';
+  if(/apply_patch|edit_file|write_file|fileChange/i.test(title))return '编辑文件';
+  if(/^(?:["']?[A-Za-z]:[\\/]|["']?\/(?:usr|bin)\/|(?:functions\.)?exec(?:_command)?$|shell(?:_command)?$|(?:powershell|pwsh|cmd|bash|sh)(?:\.exe)?\s|运行命令(?:\s|$))/i.test(title))return '运行命令';
+  return title||'运行命令';
+}
+
 export function activityEntries(activities,{includeDetails=true}={}) {
   const entries=[],positions=new Map();
   activities.forEach((activity,index)=>{
@@ -334,10 +367,8 @@ export function activityEntries(activities,{includeDetails=true}={}) {
     const title=reasoning?cleanActivityLabel(raw)||'思考摘要':
       type==='context.compaction'?'压缩上下文':type==='file.changed'?'编辑文件':
       type==='diff.updated'?'查看改动':type==='plan.updated'?'更新计划':
-      /view_image|imageview/i.test(activity.title||'')?'查看图片':
-      /apply_patch|edit_file|write_file|fileChange/i.test(activity.title||'')?'编辑文件':
-      cleanActivityLabel(activity.title||'').replace(/^exec$/i,'')||'运行命令';
-    const key=reasoning?`reasoning:${title.toLowerCase()}`:
+      activityTitle(activity);
+    const key=reasoning?`reasoning:${activity.itemId||title.toLowerCase()}`:
       type==='plan.updated'?'plan:current':type==='diff.updated'?'diff:current':
       `${tool?'tool':type}:${activity.itemId||activity.commandId||activity.eventId||index}`;
     const previous=positions.get(key);

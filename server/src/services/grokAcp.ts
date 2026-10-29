@@ -18,6 +18,7 @@ export function grokAcp(options:{command?:string;cwd:string;session?:string;mode
   process.stderr?.pipe(stderr,{end:false});
   let sequence=0,session=options.session,stopped=false,settled=false,promptStarted=false;
   const pending=new Map<number,{resolve:(value:any)=>void;reject:(error:Error)=>void;timer?:NodeJS.Timeout}>();
+  const tools=new Map<string,any>(),completedTools=new Set<string>();
   const send=(message:any)=>{if(process.stdin?.writable)process.stdin.write(JSON.stringify({jsonrpc:'2.0',...message})+'\n');};
   const emit=(message:any)=>stdout.write(JSON.stringify(message)+'\n');
   const request=(method:string,params:any,timeout=30000)=>new Promise<any>((resolve,reject)=>{
@@ -38,14 +39,15 @@ export function grokAcp(options:{command?:string;cwd:string;session?:string;mode
       return;
     }
     if(message.id!==undefined&&message.method){send({id:message.id,error:{code:-32601,message:'Client method not supported'}});return;}
-    if(message.method!=='session/update'||!promptStarted||message.params?._meta?.isReplay)return;
+    if(message.method!=='session/update'||message.params?.sessionId!==session||!promptStarted||message.params?._meta?.isReplay||message.params?.update?._meta?.isReplay)return;
     const update=message.params?.update;if(!update)return;
     if(update.sessionUpdate==='plan')emit({type:'plan',entries:update.entries});
     if(update.sessionUpdate==='agent_message_chunk'&&update.content?.type==='text')emit({type:'assistant',message:{id:'reply',content:[{type:'text',text:update.content.text}]}});
-    if(update.sessionUpdate==='tool_call')emit({type:'assistant',message:{content:[{type:'tool_use',id:update.toolCallId,name:update.title||update.kind||'工具',input:update.rawInput||{}}]}});
-    if(update.sessionUpdate==='tool_call_update'){
-      const text=(update.content||[]).map((c:any)=>c.type==='content'&&c.content?.type==='text'?c.content.text:'').filter(Boolean).join('\n');
-      if(update.status==='completed'||update.status==='failed')emit({type:'user',message:{content:[{type:'tool_result',tool_use_id:update.toolCallId,content:text,is_error:update.status==='failed',file_change:update.status==='completed'?acpFileChanges(update.content||[]):undefined}]}});
+    if(update.sessionUpdate==='tool_call'||update.sessionUpdate==='tool_call_update'){
+      const id=update.toolCallId,previous=tools.get(id),tool={...previous,...update};tools.set(id,tool);
+      if(!previous||JSON.stringify([previous.title,previous.kind,previous.rawInput])!==JSON.stringify([tool.title,tool.kind,tool.rawInput]))emit({type:'assistant',message:{content:[{type:'tool_use',id,name:tool.title||tool.kind||'工具',input:tool.rawInput||{}}]}});
+      const text=(tool.content||[]).map((c:any)=>c.type==='content'&&c.content?.type==='text'?c.content.text:'').filter(Boolean).join('\n');
+      if(['completed','failed'].includes(tool.status)&&!completedTools.has(id)){completedTools.add(id);emit({type:'user',message:{content:[{type:'tool_result',tool_use_id:id,content:text,is_error:tool.status==='failed',file_change:tool.status==='completed'?acpFileChanges(tool.content||[]):undefined}]}});}
     }
   });
   void process.then(result=>{

@@ -20,8 +20,8 @@ android {
         applicationId = "com.localcodex.control"
         minSdk = 26
         targetSdk = 31
-        versionCode = 419
-        versionName = "0.6.447"
+        versionCode = 477
+        versionName = "0.6.505"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

@@ -51,10 +51,10 @@ private val claudeModelFields=listOf(
     NativeClaudeConfigurationContent(state,connected,editor,back,{vm.loadAccounts("claude-profile")},{editor=it}){action,body->
         if(action=="delete")deleting=body else send(action,body)
     }
-    deleting?.let{body->AlertDialog(onDismissRequest={deleting=null},title={Text("删除 Claude 配置")},text={Text("将删除此本机配置及其保存的密钥。当前正在使用的配置需要先切换后才能删除。")},confirmButton={TextButton(onClick={deleting=null;send("delete",body)},enabled=connected&&state.busy.isBlank()){Text("删除",color=MaterialTheme.colors.error)}},dismissButton={TextButton(onClick={deleting=null}){Text("取消")}})}
+    deleting?.let{body->NativeAlertDialog(onDismissRequest={deleting=null},title={Text("删除 Claude 配置")},text={Text("将删除此本机配置及其保存的密钥。当前正在使用的配置需要先切换后才能删除。")},confirmButton={TextButton(onClick={deleting=null;send("delete",body)},enabled=connected&&state.busy.isBlank()){Text("删除",color=MaterialTheme.colors.error)}},dismissButton={TextButton(onClick={deleting=null}){Text("取消")}})}
     state.confirmation?.let{preview->
         val allowed=preview.optBoolean("canSwitch",false)&&!preview.optBoolean("blocked")&&preview.accountText("planId").isNotBlank()
-        AlertDialog(onDismissRequest=vm::dismissAccountConfirmation,title={Text("切换 Claude 配置")},text={Column(verticalArrangement=Arrangement.spacedBy(10.dp)){
+        NativeAlertDialog(onDismissRequest=vm::dismissAccountConfirmation,title={Text("切换 Claude 配置")},text={Column(verticalArrangement=Arrangement.spacedBy(10.dp)){
             Text(preview.accountText("name").ifBlank{preview.accountText("label")}.ifBlank{"所选配置"},fontWeight=FontWeight.SemiBold)
             Text(preview.accountText("message").ifBlank{if(allowed)"将更新电脑上的 Claude 服务地址、认证和模型。其他设置保留，写入前保存备份。" else "仍有任务正在运行，请结束后重试。"})
             relayObjects(preview.optJSONArray("blockingThreads")).forEach{Text(it.accountText("name").ifBlank{it.accountText("id")},fontSize=12.sp)}
@@ -70,8 +70,8 @@ private val claudeModelFields=listOf(
     val claude=state.data?.optJSONObject("apps")?.optJSONObject("claude")
     val profiles=relayObjects(claude?.optJSONArray("profiles"))
     NativeManagementPage(if(editor==null)"Claude 中转配置" else if(editor.id.isBlank())"添加 Claude 配置" else "编辑 Claude 配置","",if(editor!=null)({edit(null)}) else back,
-        modifier=Modifier.testTag("claudeRelayConfiguration"),actions={TextButton(onClick=refresh,enabled=connected&&!busy&&editor==null){Text(if(state.loading)"加载中…" else "刷新")}}){
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(),contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
+        modifier=Modifier.testTag("claudeRelayConfiguration"),actions={ChromeButton(R.drawable.ic_lucide_rotate_cw,"刷新",refresh,enabled=connected&&!busy&&editor==null)}){
+        LazyColumn(Modifier.weight(1f).fillMaxWidth(),state=rememberNativeManagementListState(),contentPadding=nativeManagementPadding(PaddingValues(16.dp)),verticalArrangement=Arrangement.spacedBy(12.dp)){
             if(!connected)item{Text("连接电脑后管理 Claude 配置")}
             if(state.error.isNotBlank())item{Text(state.error,color=MaterialTheme.colors.error,fontSize=13.sp)}
             if(state.message.isNotBlank())item{Text(state.message,color=MaterialTheme.colors.primary,fontSize=13.sp)}

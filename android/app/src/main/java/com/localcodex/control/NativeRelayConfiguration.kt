@@ -87,16 +87,16 @@ private data class RelayModelSettingsDraft(val id:String,val displayName:String,
         })
     confirmation?.let{request->
         var acknowledged by remember(request){mutableStateOf(false)}
-        AlertDialog(onDismissRequest={if(state.busy.isBlank())confirmation=null},title={Text(request.title)},text={Column(verticalArrangement=Arrangement.spacedBy(12.dp)){
+        NativeAlertDialog(onDismissRequest={if(state.busy.isBlank())confirmation=null},title={Text(request.title)},text={Column(verticalArrangement=Arrangement.spacedBy(12.dp)){
             Text(request.detail)
             if(request.migration)Row(verticalAlignment=Alignment.CenterVertically){Checkbox(acknowledged,{acknowledged=it});Text("确认关闭相关进程并迁移会话")}
         }},confirmButton={TextButton(onClick={confirmation=null;send(request.action,request.body)},enabled=connected&&state.busy.isBlank()&&(!request.migration||acknowledged)){Text("确认")}},dismissButton={TextButton(onClick={confirmation=null}){Text("取消")}})
     }
-    profile?.let{result->AlertDialog(onDismissRequest={profile=null},title={Text("独立中转配置")},text={Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(8.dp)){
+    profile?.let{result->NativeAlertDialog(onDismissRequest={profile=null},title={Text("独立中转配置")},text={Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(8.dp)){
         Text(result.optString("message").ifBlank{"配置已生成，桌面默认连接方式保持原设置。"})
         listOf("command","minimumVersion").forEach{key->result.optString(key).takeIf{it.isNotBlank()}?.let{Text(it,fontSize=12.sp)}}
     }},confirmButton={TextButton(onClick={profile=null}){Text("完成")}})}
-    modelTest?.let{result->AlertDialog(onDismissRequest={modelTest=null},title={Text(if(result.optBoolean("completed"))"模型请求完成" else "模型请求未完成")},text={Column(verticalArrangement=Arrangement.spacedBy(8.dp)){
+    modelTest?.let{result->NativeAlertDialog(onDismissRequest={modelTest=null},title={Text(if(result.optBoolean("completed"))"模型请求完成" else "模型请求未完成")},text={Column(verticalArrangement=Arrangement.spacedBy(8.dp)){
         Text("HTTP ${result.optInt("status")} · ${result.optLong("ms")} ms")
         result.accountText("text").takeIf{it.isNotBlank()}?.let{Text(it,fontSize=13.sp)}
     }},confirmButton={TextButton(onClick={modelTest=null}){Text("完成")}})}
@@ -122,8 +122,8 @@ private data class RelayModelSettingsDraft(val id:String,val displayName:String,
         }
     }
     NativeManagementPage(if(editor==null)"Codex 中转配置" else if(editor.id.isBlank())"添加中转" else "编辑中转","",if(editor!=null)({edit(null)}) else back,
-        modifier=Modifier.testTag("codexRelayConfiguration"),actions={TextButton(onClick=refresh,enabled=connected&&!busy&&editor==null){Text(if(state.loading)"加载中…" else "刷新")}}){
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(),contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
+        modifier=Modifier.testTag("codexRelayConfiguration"),actions={ChromeButton(R.drawable.ic_lucide_rotate_cw,"刷新",refresh,enabled=connected&&!busy&&editor==null)}){
+        LazyColumn(Modifier.weight(1f).fillMaxWidth(),state=rememberNativeManagementListState(),contentPadding=nativeManagementPadding(PaddingValues(16.dp)),verticalArrangement=Arrangement.spacedBy(12.dp)){
             if(!connected)item{Text("连接电脑后管理中转服务")}
             if(state.error.isNotBlank())item{Text(state.error,color=MaterialTheme.colors.error,fontSize=13.sp)}
             if(state.message.isNotBlank())item{Text(state.message,color=MaterialTheme.colors.primary,fontSize=13.sp)}
@@ -152,12 +152,12 @@ private data class RelayModelSettingsDraft(val id:String,val displayName:String,
                     Row(verticalAlignment=Alignment.CenterVertically){Text("过滤 WebSearch 工具声明",Modifier.weight(1f),fontSize=13.sp);Switch(filterWeb,{onAction("compatibility",JSONObject().put("filterImages",filterImages).put("filterWebSearch",it))},enabled=connected&&!busy)}
                     Text("只过滤中转请求中的工具声明，保留图片输入和普通函数工具。",fontSize=12.sp)
                 }}
-                item{Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){Text("中转供应商",Modifier.weight(1f),fontWeight=FontWeight.SemiBold);TextButton(onClick={onAction("import-providers",JSONObject())},enabled=connected&&!busy){Text("导入")};TextButton(onClick={edit(RelayProviderDraft())},enabled=connected&&!busy){Text("添加")}}}
+                item{Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){Text("中转供应商",Modifier.weight(1f),fontWeight=FontWeight.SemiBold);TextButton(onClick={onAction("import-providers",JSONObject())},enabled=connected&&!busy){Text("导入")};ChromeButton(R.drawable.ic_lucide_plus,"添加供应商",{edit(RelayProviderDraft())},enabled=connected&&!busy)}}
                 items(providers,key={it.optString("id")}){provider->DashboardCard(Modifier.testTag("relayProvider:${provider.optString("id")}")){
                     Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){Text(provider.optString("name"),Modifier.weight(1f),fontWeight=FontWeight.SemiBold);Text(if(provider.optBoolean("enabled"))"已启用" else "已停用",fontSize=12.sp)}
                     Text(provider.optString("baseUrl"),fontSize=12.sp)
                     Text("${if(provider.optBoolean("hasKey"))"已保存密钥" else "未填写密钥"} · ${provider.optJSONArray("models")?.length()?:0} 个模型",fontSize=12.sp)
-                    Row{TextButton(onClick={edit(relayDraft(provider))},enabled=connected&&!busy){Text("编辑")};TextButton(onClick={onAction("delete-provider",JSONObject().put("id",provider.optString("id")))},enabled=connected&&!busy){Text("删除",color=MaterialTheme.colors.error)}}
+                    Row{ChromeButton(R.drawable.ic_lucide_pencil,"编辑供应商",{edit(relayDraft(provider))},enabled=connected&&!busy);TextButton(onClick={onAction("delete-provider",JSONObject().put("id",provider.optString("id")))},enabled=connected&&!busy){Text("删除",color=MaterialTheme.colors.error)}}
                 }}
                 if(providers.isEmpty()&&!state.loading)item{Text("尚未添加中转供应商",fontSize=13.sp)}
                 item{Column(verticalArrangement=Arrangement.spacedBy(8.dp)){
@@ -192,7 +192,7 @@ private data class RelayModelSettingsDraft(val id:String,val displayName:String,
     var error by remember(draft.id){mutableStateOf("")}
     var picker by remember{mutableStateOf(false)}
     val choices=providers.filter{it.optBoolean("enabled")&&it.optBoolean("hasKey")}.flatMap{provider->relayStrings(provider.optJSONArray("models")).filter{provider.optJSONObject("modelSettings")?.optJSONObject(it)?.optBoolean("enabled",true)!=false}.map{model->"${provider.optString("id")}::$model" to "${provider.optString("name")} / $model"}}
-    AlertDialog(onDismissRequest=dismiss,title={Text("模型设置")},text={Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(10.dp)){
+    NativeAlertDialog(onDismissRequest=dismiss,title={Text("模型设置")},text={Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(10.dp)){
         Text(draft.id,fontSize=12.sp)
         OutlinedTextField(draft.displayName,{edit(draft.copy(displayName=it))},label={Text("菜单显示名")},singleLine=true,enabled=enabled,modifier=Modifier.fillMaxWidth())
         OutlinedTextField(draft.context,{edit(draft.copy(context=it.filter(Char::isDigit)))},label={Text("上下文长度")},singleLine=true,enabled=enabled,modifier=Modifier.fillMaxWidth())
@@ -201,7 +201,7 @@ private data class RelayModelSettingsDraft(val id:String,val displayName:String,
             Text("请求来源",fontSize=12.sp)
             Box{
                 OutlinedButton(onClick={picker=true},enabled=enabled){Text(if(draft.route.isBlank())"OpenAI 官方上游" else choices.firstOrNull{it.first==draft.route}?.second?:draft.route)}
-                DropdownMenu(picker,{picker=false},modifier=Modifier.heightIn(max=280.dp)){
+                NativeDropdownMenu(picker,{picker=false},modifier=Modifier.heightIn(max=280.dp)){
                     DropdownMenuItem(onClick={edit(draft.copy(route=""));picker=false}){Text("OpenAI 官方上游")}
                     choices.forEach{(id,label)->
                         DropdownMenuItem(onClick={edit(draft.copy(route=id));picker=false}){Text(label)}

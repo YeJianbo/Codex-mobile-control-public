@@ -37,11 +37,15 @@ export class ChannelStore {
   putPrivate(accountId:string,key:string,value:unknown){this.db().prepare('INSERT INTO channel_private VALUES(?,?,?) ON CONFLICT(accountId,key) DO UPDATE SET value=excluded.value').run(accountId,key,JSON.stringify(value));}
   assignRequest(accountId:string,requestId:string,threadId:string){return Number(this.db().prepare("UPDATE channel_requests SET threadId=? WHERE accountId=? AND requestId=? AND threadId=''").run(threadId,accountId,requestId).changes)>0;}
   acceptThread(requestId:string,threadId:string){const row=this.db().prepare("SELECT accountId,chatId,senderId FROM channel_requests WHERE requestId=? AND threadId=''").get(requestId) as {accountId:string;chatId:string;senderId:string}|undefined;if(row&&this.account(row.accountId)&&this.assignRequest(row.accountId,requestId,threadId))this.bind({...row,threadId});}
+  findRequest(accountId:string,chatId:string,senderId:string,messageId:string){
+    return this.db().prepare('SELECT requestId,threadId FROM channel_requests WHERE accountId=? AND chatId=? AND senderId=? AND messageId=?').get(accountId,chatId,senderId,messageId) as {requestId:string;threadId:string}|undefined;
+  }
   request(binding:ChannelBinding,messageId:string){
     const db=this.db();
     // Persist the ID and original thread before submitting; replays never target a newly bound thread.
     db.prepare('INSERT OR IGNORE INTO channel_requests VALUES(?,?,?,?,?,?)').run(binding.accountId,messageId,binding.chatId,binding.senderId,binding.threadId,randomUUID());
-    return db.prepare('SELECT requestId,threadId FROM channel_requests WHERE accountId=? AND chatId=? AND senderId=? AND messageId=?').get(binding.accountId,binding.chatId,binding.senderId,messageId) as {requestId:string;threadId:string};
+    return this.findRequest(binding.accountId,binding.chatId,binding.senderId,messageId)!;
   }
   close(){this.database?.close();this.database=undefined;}
+  transaction<T>(operation:()=>T):T{const db=this.db();db.exec('BEGIN IMMEDIATE');try{const result=operation();db.exec('COMMIT');return result;}catch(error){db.exec('ROLLBACK');throw error;}}
 }

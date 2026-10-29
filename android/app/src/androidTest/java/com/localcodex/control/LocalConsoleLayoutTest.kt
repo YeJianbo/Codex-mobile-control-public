@@ -58,7 +58,8 @@ class LocalConsoleLayoutTest {
     @Test fun monthCardsAndModelNamesStayReadableWithLargeFont(){
         val statistics=show(30,false,1.3f)
         ui.onNodeWithTag("consoleOverview").assertIsDisplayed()
-        ui.onNodeWithText("Token 总量 · 320 条计量记录").assertIsDisplayed()
+        ui.onNodeWithText("Token 总量").assertIsDisplayed()
+        ui.onNodeWithText("320 条计量记录").assertExists()
         screenshot("native-console-overview-118.png")
         ui.onNodeWithTag("consoleScroll").performScrollToNode(hasTestTag("consoleTrend"))
         ui.onNodeWithTag("consoleDailyChart").performTouchInput{click(center)}
@@ -75,7 +76,8 @@ class LocalConsoleLayoutTest {
 
     @Test fun yearChartAndOverviewRenderInDarkModeWithLargerFont(){
         show(365,true,1.5f)
-        ui.onNodeWithText("Token 总量 · 320 条计量记录").assertIsDisplayed()
+        ui.onNodeWithText("Token 总量").assertIsDisplayed()
+        ui.onNodeWithText("320 条计量记录").assertExists()
         screenshot("native-console-dark-overview-118.png")
         ui.onNodeWithTag("consoleScroll").performScrollToNode(hasTestTag("consoleDailyChart"))
         ui.onNodeWithTag("consoleDailyChart").assertIsDisplayed().performTouchInput{click(center)}

@@ -147,15 +147,12 @@ private fun LazyListScope.nativePatchRows(rows:List<PatchLine>,start:Int,end:Int
     val codeWidth=prepared?.codeWidth?:0f
     val expandedContext=remember(detail){mutableStateMapOf<Int,Boolean>()}
     val horizontal=rememberScrollState()
-    Dialog(onDismissRequest=close,properties=DialogProperties(usePlatformDefaultWidth=false)){
-        NativeDialogSystemBars()
-        Column(Modifier.fillMaxSize().background(MaterialTheme.colors.background).testTag("changeDetail")){
-            Row(Modifier.fillMaxWidth().height(58.dp).padding(horizontal=10.dp),verticalAlignment=Alignment.CenterVertically){
-                ChromeButton(R.drawable.ic_lucide_x,"关闭改动",close)
-                Text(title,Modifier.weight(1f).padding(start=8.dp),fontSize=16.sp,fontWeight=FontWeight.Medium)
+    NativeReaderDialog(close=close,header={
+            NativeReaderToolbar(title,"关闭改动",close){
                 if(hasPatch)TextButton(onClick={clipboard.setText(AnnotatedString(detail))}){Text("复制补丁",fontSize=13.sp)}
             }
-            Divider(color=NativeInk.copy(alpha=0.08f))
+    }){topInset->
+        Column(Modifier.fillMaxSize().padding(top=topInset).testTag("changeDetail")){
             if(files.isNotEmpty())Text(files.joinToString("\n"),Modifier.fillMaxWidth().padding(horizontal=18.dp,vertical=10.dp),fontSize=12.sp,fontFamily=FontFamily.Monospace,color=NativeMuted)
             statusContent?.let{content->Box(Modifier.fillMaxWidth().padding(horizontal=18.dp,vertical=8.dp)){content()}}
             if(hasPatch)prepared?.let{Text("+${it.additions}  −${it.deletions}",Modifier.padding(horizontal=18.dp,vertical=8.dp),fontSize=12.sp,color=NativeMuted)}

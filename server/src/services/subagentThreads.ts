@@ -4,16 +4,16 @@ import type {ThreadRecord} from '../types.js';
 export function subagentMetadata(row:Record<string,unknown>):ThreadRecord['subagent'] {
   let source:unknown=row.source;
   if(typeof source==='string')try{source=JSON.parse(source);}catch{}
-  const agent=source&&typeof source==='object'?(source as any).subagent:undefined;
+  const agent=source&&typeof source==='object'?((source as any).subagent??(source as any).subAgent):undefined;
   const spawn=agent&&typeof agent==='object'?agent.thread_spawn??agent.threadSpawn:undefined;
   if(!agent&&row.thread_source!=='subagent'&&source!=='subagent')return undefined;
   const clean=(value:unknown,max=128)=>typeof value==='string'?value.replace(/[\x00-\x1f]/g,'').trim().slice(0,max):undefined;
   const parent=clean(spawn?.parent_thread_id??spawn?.parentThreadId,256);
-  const task=clean(row.agent_path??spawn?.agent_path)?.split('/').filter(Boolean).at(-1);
+  const task=clean(row.agent_path??row.agentPath??spawn?.agent_path??spawn?.agentPath)?.split('/').filter(Boolean).at(-1);
   return {
     ...(parent?{parentThreadId:parent}:{}),
-    nickname:clean(row.agent_nickname??spawn?.agent_nickname),
-    role:clean(row.agent_role??spawn?.agent_role,64),
+    nickname:clean(row.agent_nickname??row.agentNickname??spawn?.agent_nickname??spawn?.agentNickname),
+    role:clean(row.agent_role??row.agentRole??spawn?.agent_role??spawn?.agentRole,64),
     task,
   };
 }

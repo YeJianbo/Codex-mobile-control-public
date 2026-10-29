@@ -2,8 +2,8 @@ import {execa} from 'execa';
 import {randomUUID} from 'node:crypto';
 import {createInterface} from 'node:readline';
 import {agentNames,agentUpdates,modelAgent,threadAgent,publicAgentAllowed,type Agent} from './agentProtocol.js';
-import {imageInputs,type ImageAttachment} from './imageUploads.js';
-import {resolveFiles,filePrompt} from './fileUploads.js';
+import {imageInputs,resolveImageFiles,type ImageAttachment} from './imageUploads.js';
+import {resolveFiles,filePrompt,type FileAttachment} from './fileUploads.js';
 import type {StateStore} from './stateStore.js';
 import type {EventHub} from './eventHub.js';
 import type {PickerModel} from './modelCatalog.js';
@@ -13,23 +13,44 @@ import {findAgentExecutable,type AgentExecutable,type CliAgent} from './agentExe
 import {readAgentCatalog} from './agentCatalog.js';
 import {deepseekConfigStamp,canonicalDeepseekModel} from './deepseekDesktopConfig.js';
 import {deepseekNativeSessions} from './deepseekNativeSessions.js';
+import {zcodeNativeSessions} from './zcodeNativeSessions.js';
 import {AgyUsageReader} from './agyUsage.js';
 import {AgyCliPool} from './agyCli.js';
+import {readAgySessionTokens,agyContextWindow} from './agySessionTokens.js';
+export {agyContextWindow} from './agySessionTokens.js';
 import {officialAcp,readOfficialAcpCatalog} from './claudeAcp.js';
 import {opencodeConfigStamp,refreshOpencodeModels} from './opencodeConfig.js';
 import {catalogReadBudget} from './catalogReadBudget.js';
+import {readZcodeCatalog,zcodeRun} from './zcodeClient.js';
+import {readZcodeSessionTokens,zcodeSessionTokens} from './zcodeUsage.js';
+import {withZcodeRuntime} from './zcodeRuntime.js';
 
-const commands={claude:'claude',antigravity:'agy',grok:'grok',deepseek:'dsh',hermes:'hermes',opencode:'opencode'};
+const commands={claude:'claude',antigravity:'agy',grok:'grok',deepseek:'dsh',hermes:'hermes',opencode:'opencode',zcode:'zcode'};
 const agyEfforts=['low','medium','high','xhigh','max'];
 const agyVariant=/-(low|medium|high|xhigh|max)$/;
+// Antigravity's stream input only accepts text blocks. Handing over the local
+// file keeps camera/gallery attachments usable: its read_file tool loads images
+// (verified against the installed CLI with a PNG probe).
+export function imageFilePrompt(images:Awaited<ReturnType<typeof resolveImageFiles>>){
+  return images.length?'\n\n用户附加图片（已保存为本机文件，需要时用 read_file 打开查看）：\n'+images.map(image=>`- ${JSON.stringify(image.name)}: ${image.absolutePath} (${image.mime}, ${image.size} bytes)`).join('\n'):'';
+}
+// AGY does not report a context window. These are the documented windows of the
+// models its catalog exposes; an unknown model stays unlabelled instead of guessing.
+// Upstream transport noise from AGY's own retry loop. It is not a user-facing
+// task failure when the answer already streamed completely.
+const agyTransportNoise=/(API error \(attempt \d+\)|streamGenerateContent|request failed|: EOF\b|ECONNRESET|socket hang up)/i;
+export function agyTailRecovered(responded:boolean,failed:boolean,stderr:string):boolean{
+  return responded&&!failed&&agyTransportNoise.test(stderr);
+}
 const sortAgentModels=(models:PickerModel[])=>models.sort((a,b)=>modelAgent(a.model)==='opencode'&&modelAgent(b.model)==='opencode'?(a.providerId||'').localeCompare(b.providerId||'')||(a.model==='opencode::default'?-1:b.model==='opencode::default'?1:0)||(a.shortName||a.displayName).localeCompare(b.shortName||b.displayName):a.model.localeCompare(b.model));
 type Meta={session?:string;model?:string;effort?:string;actualModel?:string;transport?:'acp';tokens?:Record<string,number|null>};
 export class AgentSessions {
   onThreadCreated?:(requestId:string|undefined,threadId:string)=>Promise<void>;
-  private active=new Map<string,{process:any;stopped:boolean}>();
+  private active=new Map<string,{process:any;stopped:boolean;turnId:string}>();
   private starting=new Set<string>();
   private catalog?:{at:number;models:PickerModel[];deepseekStamp:string;opencodeStamp:string};
   private catalogRead?:Promise<PickerModel[]>;
+  private pickerReads=new Map<CliAgent,Promise<void>>();
   private readonly pickerSources=new Map<CliAgent,PickerModel[]>();
   private readonly pickerPending=new Set<CliAgent>();
   private permissions=new Map<string,{threadId:string;resolve:(accept:boolean)=>void}>();
@@ -59,7 +80,10 @@ export class AgentSessions {
   private agyUsage:AgyUsageReader;
   private agyCli:AgyCliPool;
   constructor(private store:StateStore,private hub:EventHub,private launch:typeof execa=execa,private discover:typeof execa=execa,private terminate:typeof execa=execa,private locate:typeof findAgentExecutable=findAgentExecutable){this.agyUsage=new AgyUsageReader(async()=>(await this.executable('antigravity')).command,this.discover);this.agyCli=new AgyCliPool(this.launch,this.terminate);}
-  async close(){await this.agyCli.close();}
+  async close(){
+    await Promise.all([...this.active.keys()].filter(id=>threadAgent(id)==='zcode').map(threadId=>this.handle({type:'turn.interrupt',threadId})));
+    await this.agyCli.close();
+  }
   async forget(id:string){if(this.owns(id))throw Error('任务仍在运行，请先停止再删除会话');await this.agyCli.forget(id);}
   private async executable(agent:CliAgent){const found=await this.locate(agent,this.discover);this.executables.set(agent,found);this.discoveryErrors.delete(agent);return found;}
   async backends(viaPublic=false){
@@ -105,7 +129,7 @@ export class AgentSessions {
           pending=(async()=>{
             let next:{command:string;version:string;error:string;at:number};
             try{
-              const result=await this.discover(command,['--version'],{timeout:agent==='hermes'?20000:10000,windowsHide:true,reject:false});
+              const result=await this.discover(command,[...(this.executables.get(agent)?.args||[]),'--version'],{timeout:agent==='hermes'?20000:10000,windowsHide:true,reject:false});
               next={command,version:result.exitCode===0?result.stdout.trim().split(/\r?\n/)[0].slice(0,160):version?.version||'',error:result.exitCode===0?'':'版本检查未成功',at:Date.now()};
             }catch{next={command,version:version?.version||'',error:'版本检查超时或不可用',at:Date.now()};}
             if(this.executables.get(agent)?.command===command)this.healthVersions.set(agent,next);
@@ -182,6 +206,12 @@ export class AgentSessions {
     if(this.catalog&&this.catalog.opencodeStamp!==opencodeConfigStamp())return this.models();
     return models;
   }
+  private async modelsForAgent(agent:CliAgent):Promise<PickerModel[]>{
+    const all=this.models();void all.catch(()=>{});
+    // A ready harness must not wait for another harness's CLI discovery timeout.
+    if(!this.catalog){const own=this.pickerReads.get(agent);if(own)await own;else return (await all).filter(model=>modelAgent(model.model)===agent);}
+    return this.pickerSources.get(agent)||this.catalog?.models.filter(model=>modelAgent(model.model)===agent)||[];
+  }
   private async discoverModels(refresh=false):Promise<PickerModel[]>{
     const deepseekStamp=deepseekConfigStamp();
     let opencodeStamp=opencodeConfigStamp();
@@ -189,12 +219,18 @@ export class AgentSessions {
     for(const agent of Object.keys(commands) as CliAgent[]){
       if(agents.includes(agent))this.pickerPending.add(agent);else this.pickerSources.delete(agent);
     }
-    await Promise.all(Object.entries(commands).map(async([engine])=>{
+    await Promise.all(Object.entries(commands).map(([engine])=>{
+      const read=(async()=>{
       if(process.env.CODEX_MOBILE_CONTROL_AGENTS&&!process.env.CODEX_MOBILE_CONTROL_AGENTS.split(',').includes(engine))return;
       const models:PickerModel[]=[];
       try{
         const agent=engine as Exclude<Agent,'codex'>;
         const command=(await this.executable(agent)).command;
+        if(agent==='zcode'){
+          try{const catalog=await readZcodeCatalog(this.executables.get(agent)!,process.cwd(),this.launch);this.protocolErrors.delete(agent);this.imageCapabilities.set(agent,catalog.supportsImages);this.planCapabilities.set(agent,true);models.push(...catalog.models);}
+          catch(error){this.protocolErrors.set(agent,(error as Error).message);}
+          return;
+        }
         if(agent==='deepseek'||agent==='hermes'||agent==='opencode'){
           try{
             if(agent==='opencode'){await refreshOpencodeModels(command,process.cwd(),this.discover,refresh);opencodeStamp=opencodeConfigStamp();}
@@ -269,6 +305,10 @@ export class AgentSessions {
         if(models.length||!this.pickerSources.has(agent))this.pickerSources.set(agent,models);
         this.pickerPending.delete(agent);
       }
+      })();
+      this.pickerReads.set(engine as CliAgent,read);
+      void read.finally(()=>{if(this.pickerReads.get(engine as CliAgent)===read)this.pickerReads.delete(engine as CliAgent);}).catch(()=>{});
+      return read;
     }));
     const models=[...this.pickerSources.values()].flat();
     sortAgentModels(models);this.catalog={at:Date.now(),models,deepseekStamp,opencodeStamp};return models;
@@ -283,37 +323,74 @@ export class AgentSessions {
       if(model&&!catalog.models.some(entry=>entry.model===model))throw Error('该模型不在 ACP 目录中');
       return;
     }
-    if(model&&!(await this.models()).some(m=>m.model===model)){
+    const models=model?await this.modelsForAgent(agent as CliAgent):[];
+    if(model&&!models.some(m=>m.model===model)){
       // Legacy AGY selections encode effort as a variant suffix (…-high); those collapse
       // into the base model with an explicit --effort, so accept them when the base exists.
       const legacy=/^(antigravity::[\w.-]+)-(low|medium|high|xhigh|max)$/.exec(model);
-      if(!legacy||!(await this.models()).some(m=>m.model===legacy[1]))throw Error(agent==='opencode'?'模型已不在当前可用目录，请重新选择':'此助手或模型不可用，请刷新模型列表');
+      if(!legacy||!models.some(m=>m.model===legacy[1]))throw Error(agent==='opencode'?'模型已不在当前可用目录，请重新选择':'此助手或模型不可用，请刷新模型列表');
     }
   }
   async usage(id:string,agent:Agent=threadAgent(id),selectedModel?:string){
     const meta:Meta=id?this.store.readAgentMeta(id)||{}:{};
     const model=selectedModel&&modelAgent(selectedModel)===agent?selectedModel:meta.actualModel||meta.model;
-    return {quota:agent==='antigravity'?await this.agyUsage.read(model):{windows:[],source:agent,stale:false},tokens:meta.tokens||null};
+    const nativeTokens=agent==='zcode'&&meta.session?readZcodeSessionTokens(meta.session,meta.tokens):agent==='antigravity'&&meta.transport!=='acp'&&meta.session?readAgySessionTokens(meta.session,undefined,meta.actualModel||meta.model):null;
+    const tokens=nativeTokens||meta.tokens||null;
+    let contextSnapshot:{context:number;contextWindow:number;contextState:string}|undefined;
+    if(agent==='zcode'&&meta.session){
+      const cwd=this.store.threads.find(thread=>thread.id===id)?.projectPath;
+      const live=cwd?await withZcodeRuntime(cwd,request=>request('session/read',{sessionId:meta.session,contentProfile:'index'})).catch(()=>null):null;
+      if(live?.projection?.contextWindow>0&&live.projection.contextUsed>=0)contextSnapshot={context:live.projection.contextUsed,contextWindow:live.projection.contextWindow,contextState:'reported'};
+    }
+    return {quota:agent==='antigravity'?await this.agyUsage.read(model):{windows:[],source:agent,stale:false},tokens:contextSnapshot?{...tokens,...contextSnapshot}:tokens};
+  }
+  async steer(id:string,text:string,images:ImageAttachment[]=[],files:FileAttachment[]=[]){
+    const meta:Meta=this.store.readAgentMeta(id)||{};
+    const run=this.active.get(id);
+    if(threadAgent(id)==='zcode'){
+      if(!run||run.stopped)throw Error('当前 ZCode 轮次不可引导，引导消息仍保留在队列中');
+      const [resolvedFiles,resolvedImages]=await Promise.all([resolveFiles(files),resolveImageFiles(images)]);
+      const prompt=text+filePrompt(resolvedFiles);
+      if(!prompt.trim()&&!resolvedImages.length)throw Error('引导消息不能为空');
+      await run.process.steer(prompt,resolvedImages);
+      this.hub.publish({type:'user.message',threadId:id,turnId:run.turnId,text,images,files});
+      return;
+    }
+    if(threadAgent(id)!=='antigravity'||meta.transport==='acp'||!run||run.stopped)throw Error('当前 AGY 轮次不可引导，引导消息仍保留在队列中');
+    const [resolvedFiles,resolvedImages]=await Promise.all([resolveFiles(files),resolveImageFiles(images)]);
+    const prompt=text+filePrompt(resolvedFiles)+imageFilePrompt(resolvedImages);
+    if(!prompt.trim())throw Error('引导消息不能为空');
+    this.agyCli.steer(id,JSON.stringify({event:'user',message:{content:prompt}})+'\n');
+    this.hub.publish({type:'user.message',threadId:id,text,images,files});
   }
   settings(id:string){
     const meta:Meta=this.store.readAgentMeta(id)||{};
+    const run=this.active.get(id);
+    const canSteer=!!run&&!run.stopped&&(typeof run.process.steer==='function'||threadAgent(id)==='antigravity'&&meta.transport!=='acp');
     const legacy=threadAgent(id)==='antigravity'&&meta.transport!=='acp'&&meta.model?agyVariant.exec(meta.model):null;
-    return {model:legacy?meta.model!.slice(0,-legacy[1].length-1):meta.model,effort:meta.effort||legacy?.[1],...(meta.actualModel?{actualModel:meta.actualModel}:{})};
+    return {model:legacy?meta.model!.slice(0,-legacy[1].length-1):meta.model,effort:meta.effort||legacy?.[1],canSteer,...(meta.actualModel?{actualModel:meta.actualModel}:{})};
   }
   private async ensureNativeDeepSeekThread(id:string){
     if(!id.startsWith('deepseek-'))return null;
     const session=await deepseekNativeSessions.read(id);if(!session)return null;
     if(!this.store.threads.some(thread=>thread.id===id)){
       await this.store.upsertThread({id,projectPath:session.thread.projectPath,title:session.thread.title,status:session.thread.status});
-      this.store.writeAgentMeta(id,{session:session.sessionId,model:session.model,effort:session.effort});
     }
+    const meta:Meta=this.store.readAgentMeta(id)||{};
+    if(!meta.session)this.store.writeAgentMeta(id,{...meta,session:session.sessionId,model:meta.model||session.model,effort:meta.effort||session.effort});
     return session;
   }
-  async resume(id:string){await this.ensureNativeDeepSeekThread(id);const thread=this.store.threads.find(t=>t.id===id);if(!thread)throw Error('会话不存在');this.hub.publish({type:'thread.started',threadId:id,thread});}
+  private async ensureNativeZcodeThread(id:string){
+    if(!id.startsWith('zcode-'))return null;
+    const meta:Meta=this.store.readAgentMeta(id)||{};
+    const session=(await zcodeNativeSessions.list()).find(session=>session.thread.id===id||session.sessionId===meta.session);if(!session)return null;
+    if(!this.store.threads.some(thread=>thread.id===id))await this.store.upsertThread({...session.thread,id});
+    this.store.writeAgentMeta(id,{...meta,session:session.sessionId,model:session.model||meta.model,effort:session.effort||meta.effort});
+    return session;
+  }
+  async resume(id:string){await this.ensureNativeDeepSeekThread(id);await this.ensureNativeZcodeThread(id);const thread=this.store.threads.find(t=>t.id===id);if(!thread)throw Error('会话不存在');this.hub.publish({type:'thread.started',threadId:id,thread});}
   async handle(command:any){
     if(command.permission==='custom')throw Error('自定义权限仅适用于 Codex');
-    // AGY 图片校验前置：否则 thread.start 先建线程、后因图片抛错，列表里会留下空会话。
-    if(command.agentTransport!=='acp'&&command.images?.length&&command.type==='thread.start'&&modelAgent(command.model)==='antigravity')throw Error('当前 Antigravity CLI 不支持图片消息；请改用文件附件或支持图片的后端');
     if(command.type==='turn.interrupt'){
       const run=this.active.get(command.threadId);if(!run)throw Error('当前没有运行中的任务');
       run.stopped=true;for(const [id,p] of this.permissions)if(p.threadId===command.threadId)await this.resolveApproval(id,'decline');
@@ -347,9 +424,11 @@ export class AgentSessions {
     let id=command.threadId;
     try{
     const native=id?await this.ensureNativeDeepSeekThread(id):null;
+    const nativeZcode=id?await this.ensureNativeZcodeThread(id):null;
     if(id&&!this.store.threads.some(t=>t.id===id))throw Error('会话不存在');
     if(this.active.has(id))throw Error('任务仍在运行，请将消息加入队列');
     if(native?.thread.status==='running')throw Error('DeepSeek 桌面会话仍在运行，请等待当前轮完成');
+    if(nativeZcode?.thread.status==='running')throw Error('ZCode 桌面会话仍在运行，请等待当前轮完成');
     const meta:Meta=id?this.store.readAgentMeta(id)||{}:{};
     let model=command.model||meta.model;
     if(model?.startsWith('deepseek::'))model='deepseek::'+canonicalDeepseekModel(model.slice('deepseek::'.length));
@@ -361,29 +440,35 @@ export class AgentSessions {
     else await this.validate(model,id);
     if(['grok','deepseek','hermes','opencode'].includes(agent)&&command.mode==='plan'&&this.planCapabilities.get(agent)!==true)throw Error(`${agentNames[agent]} 当前配置未提供计划模式`);
     if(command.fast===true)throw Error('当前助手未提供快速模式切换');
-    if(!official&&command.images?.length&&this.imageCapabilities.get(agent)===false)throw Error(`当前 ${agentNames[agent]} CLI 不支持图片消息；请使用支持图片的后端，或作为文件附件发送。`);
+    if(!official&&command.images?.length&&agent!=='antigravity'&&this.imageCapabilities.get(agent)===false)throw Error(`当前 ${agentNames[agent]} CLI 不支持图片消息；请使用支持图片的后端，或作为文件附件发送。`);
     const text=command.initialText??command.text??'';
     if(agent==='antigravity'&&!official&&(text.trim()||command.images?.length||command.files?.length)&&!['auto','full'].includes(command.permission)){
       throw Error('Antigravity CLI 无逐条审批能力，不能执行“询问”权限任务；请选择自动审批或完全访问，或改用支持审批的后端。');
     }
     const files=await resolveFiles(command.files);
-    if(agent==='antigravity'&&!official&&command.images?.length)throw Error('当前 Antigravity CLI 不支持图片消息；请改用文件附件或支持图片的后端');
-    const images=await imageInputs(command.images);
+    // Antigravity takes text blocks only; its read_file tool can open the stored
+    // image, so mobile camera/gallery attachments still reach the model.
+    const imageFiles=agent==='antigravity'&&!official?await resolveImageFiles(command.images):[];
+    const images=imageFiles.length?[]:await imageInputs(command.images);
     let effort=(command.effort||(model===meta.model?meta.effort:undefined)) as string|undefined;
-    if(agent==='deepseek'||agent==='hermes'||agent==='opencode'){
-      const entry=(await this.models()).find(m=>m.model===model);
+    if(agent==='deepseek'||agent==='hermes'||agent==='opencode'||agent==='zcode'){
+      const entry=(await this.modelsForAgent(agent)).find(m=>m.model===model);
       if(!command.effort&&effort&&!entry?.supportedReasoningEfforts.some(level=>level.reasoningEffort===effort))effort=entry?.defaultReasoningEffort;
+      if(agent==='zcode'){
+        effort||=entry?.defaultReasoningEffort;
+        if(effort&&!entry?.supportedReasoningEfforts.some(level=>level.reasoningEffort===effort))throw Error('此 ZCode 模型不支持所选思考等级，请刷新模型列表');
+      }
     }
     if(agent==='antigravity'&&!official){
       const legacy=model&&agyVariant.exec(model);
       const base=legacy?model.slice(0,-legacy[1].length-1):model;
       const oldBase=meta.model?.replace(agyVariant,'');
-      const entry=(await this.models()).find(m=>m.model===base);
+      const entry=(await this.modelsForAgent(agent)).find(m=>m.model===base);
       effort=effort||legacy?.[1]||(base===oldBase?meta.effort:undefined)||entry?.defaultReasoningEffort;
       if(effort&&(!agyEfforts.includes(effort)||(entry?.supportedReasoningEfforts?.length&&!entry.supportedReasoningEfforts.some(e=>e.reasoningEffort===effort))))throw Error('此模型不支持所选推理强度，请刷新模型列表');
       model=base;
     }
-    const executable=official?{command:''}:await this.executable(agent);
+    const executable:AgentExecutable=official?{command:'',source:'path'}:await this.executable(agent);
     if(model!==meta.model)delete meta.actualModel;
     if(command.type==='thread.start'){
       id=`${agent}-${randomUUID()}`;
@@ -395,14 +480,12 @@ export class AgentSessions {
       this.hub.publish({type:'thread.started',threadId:id,thread,requestId:command.requestId});
     }
     if(!text.trim()&&!command.images?.length&&!files.length)return;
-    const prompt=text+filePrompt(files);
+    const prompt=text+filePrompt(files)+imageFilePrompt(imageFiles);
     const content:any[]=[{type:'text',text:prompt}];
     for(const image of images){
       const match=/^data:([^;]+);base64,(.*)$/.exec(image.url)!;
       content.push({type:'image',source:{type:'base64',media_type:match[1],data:match[2]}});
     }
-    // AGY's documented stream input accepts text blocks only; never silently discard attachments.
-    if(agent==='antigravity'&&!official&&content.length>1)throw Error('当前 Antigravity CLI 不支持图片消息；请改用文件附件或支持图片的后端');
     const args:string[]=[];let input:string|undefined;
     const rawModel=model?.slice(model.indexOf('::')+2);
     if(agent==='claude'){
@@ -424,12 +507,12 @@ export class AgentSessions {
     else if(effort)args.push(agent==='grok'?'--reasoning-effort':'--effort',effort);
     const cwd=command.projectPath||this.store.threads.find(t=>t.id===id)?.projectPath;
     const acpOptions={command:executable.command,cwd,session:meta.session,model:rawModel,effort,mode:command.mode,permission:command.permission,content,approve:(params:any)=>this.approve(id,params)};
-    const child=official?officialAcp({agent,cwd,session:meta.session,model:rawModel,effort,permission:command.permission,mode:command.mode,content,approve:acpOptions.approve},this.launch,this.terminate):agent==='grok'?grokAcp(acpOptions,this.launch,this.terminate):agent==='deepseek'||agent==='hermes'||agent==='opencode'?harnessAcp({agent,...acpOptions},this.launch,this.terminate):agent==='antigravity'?(await this.agyCli.run(id,executable.command,args,cwd,input!)).process:this.launch(executable.command,args,{cwd,windowsHide:true,reject:false,buffer:false,stdin:'pipe'});
+    const child=agent==='zcode'?zcodeRun({executable,cwd:cwd||process.cwd(),session:meta.session,model:rawModel!,effort,mode:command.mode,permission:command.permission,prompt,images:await resolveImageFiles(command.images),approve:acpOptions.approve,ask:params=>this.askQuestions(id,params)},this.launch,this.terminate):official?officialAcp({agent,cwd,session:meta.session,model:rawModel,effort,permission:command.permission,mode:command.mode,content,approve:acpOptions.approve},this.launch,this.terminate):agent==='grok'?grokAcp(acpOptions,this.launch,this.terminate):agent==='deepseek'||agent==='hermes'||agent==='opencode'?harnessAcp({agent,...acpOptions},this.launch,this.terminate):agent==='antigravity'?(await this.agyCli.run(id,executable.command,args,cwd,input!)).process:this.launch(executable.command,args,{cwd,windowsHide:true,reject:false,buffer:false,stdin:'pipe'});
     if(agent==='claude'&&'stdin' in child)child.stdin?.write(input!);
-    const run={process:child,stopped:false};this.active.set(id,run);
+    const turnId=randomUUID();
+    const run={process:child,stopped:false,turnId};this.active.set(id,run);
     meta.model=model;meta.effort=effort;if(official||agent==='opencode')meta.transport='acp';this.store.writeAgentMeta(id,meta);
     await this.store.upsertThread({id,status:'running'});
-    const turnId=randomUUID();
     this.hub.publish({type:'user.message',threadId:id,turnId,text,images:command.images,files:command.files,requestId:command.requestId});
     this.hub.publish({type:'turn.started',threadId:id,turnId,requestId:command.requestId});
     void this.consume(id,agent,child,run,meta,model,turnId);
@@ -441,6 +524,8 @@ export class AgentSessions {
     const agyResponses=new Map<string,string>();
     let agyResponseId='',agyFinal:string|undefined,agyIntegrityError='';
     const seenTools=new Set<string>(),completedTools=new Set<string>(),toolOutput=new Map<string,string>();
+    const toolSignatures=new Map<string,string>();
+    let textSegment=0,textAfterTool=false;
     const toolFiles=new Map<string,string[]>();
     const assistantTextIds=new Set<string>();
     child.stderr?.on('data',(data:Buffer)=>{stderr=(stderr+data.toString()).slice(-6000);});
@@ -471,7 +556,7 @@ export class AgentSessions {
           continue;
         }
         if(record.type==='stream_event'&&record.event?.delta?.type==='text_delta'){
-          const text=record.event.delta.text;if(text){streamed=true;responded=true;this.hub.publish({type:'message.delta',threadId:id,turnId,itemId:turnId+':reply',text});}
+          const text=record.event.delta.text;if(text){if(textAfterTool){textSegment++;textAfterTool=false;}streamed=true;responded=true;this.hub.publish({type:'message.delta',threadId:id,turnId,itemId:turnId+':reply:'+textSegment,text});}
         }
         // Claude repeats completed messages after text deltas; ACP messages are distinct chunks
         // of the same reply and must all reach the timeline.
@@ -481,7 +566,8 @@ export class AgentSessions {
         if(assistantId)assistantTextIds.add(assistantId);
         if(record.type==='assistant')streamed=false;
         for(const event of updates){
-          const itemId=turnId+':'+(event.id||'reply');
+          if(event.kind==='text'&&textAfterTool){textSegment++;textAfterTool=false;}
+          const itemId=turnId+':'+(event.id||'reply')+(event.kind==='text'&&!legacyAgy?':'+textSegment:'');
           if(event.kind==='session'&&event.id){meta.session=event.id;meta.model=model;this.store.writeAgentMeta(id,meta);}
           if(event.kind==='plan'&&event.text)this.hub.publish({type:'plan.updated',threadId:id,turnId,title:'任务计划',text:event.text});
           if(event.kind==='retry'&&event.text)this.hub.publish({type:'error',threadId:id,turnId,title:'正在重试',message:event.text,willRetry:true});
@@ -491,17 +577,19 @@ export class AgentSessions {
             this.hub.publish({type:'message.delta',threadId:id,turnId,itemId,text:event.text});
           }
           if(event.kind==='tool'){
+            if(!seenTools.has(itemId))textAfterTool=true;
             if(event.files?.length)toolFiles.set(itemId,event.files);
-            if(!seenTools.has(itemId)){seenTools.add(itemId);this.hub.publish({type:'tool.started',threadId:id,itemId,title:event.name||'执行工具',detail:event.text});}
+            const signature=JSON.stringify([event.name,event.text]);
+            if(!completedTools.has(itemId)&&toolSignatures.get(itemId)!==signature){seenTools.add(itemId);toolSignatures.set(itemId,signature);this.hub.publish({type:'tool.started',threadId:id,turnId,itemId,title:event.name||'执行工具',detail:event.text});}
           }
           if(event.kind==='output'){
             const value=event.text||'',previous=toolOutput.get(itemId)||'';
             const delta=legacyAgy&&value.startsWith(previous)?value.slice(previous.length):value;
             toolOutput.set(itemId,value);
-            if(delta)this.hub.publish({type:'tool.output',threadId:id,itemId,text:delta});
+            if(delta)this.hub.publish({type:'tool.output',threadId:id,turnId,itemId,text:delta});
           }
           if(event.kind==='complete'&&!completedTools.has(itemId)){
-            completedTools.add(itemId);this.hub.publish({type:'tool.completed',threadId:id,itemId,status:event.error?'error':'ok'});
+            completedTools.add(itemId);this.hub.publish({type:'tool.completed',threadId:id,turnId,itemId,status:event.error?'error':'ok'});
             const files=event.files?.length?event.files:toolFiles.get(itemId);
             if(!event.error&&files?.length)this.hub.publish({type:'file.changed',threadId:id,turnId,itemId,files,summary:`${files.length} 个文件变更`,diff:event.diff});
           }
@@ -517,21 +605,32 @@ export class AgentSessions {
             if(failed&&event.text)stderr=event.text;
             if(event.usage){
               const u=event.usage,old=meta.tokens||{};
+              if(agent==='zcode'){
+                meta.tokens=zcodeSessionTokens(u,old);this.store.writeAgentMeta(id,meta);this.hub.publish({type:'usage.updated',threadId:id});continue;
+              }
               const metric=(value:unknown)=>typeof value==='number'&&Number.isFinite(value)&&value>=0?value:null;
               const cached=metric(u.cache_read_input_tokens??u.cache_read_tokens),rawOutput=metric(u.output_tokens),rawInput=metric(u.input_tokens);
               const output=rawOutput===null?null:rawOutput+(agent==='opencode'?(metric(u.thinking_tokens)??0):0);
               const input=rawInput===null?null:rawInput+((agent==='claude'||legacyAgy||agent==='opencode')?(cached??0)+(metric(u.cache_creation_input_tokens)??0):0);
               const total=input!==null&&output!==null?input+output:metric(u.total_tokens);
-              const accumulate=(previous:number|null|undefined,value:number|null)=>value===null?previous??null:(previous??0)+value;
-              const contextWindow=u.context_window??record.modelUsage?.[meta.actualModel||'']?.contextWindow??old.contextWindow??null;
-              meta.tokens={input:accumulate(old.input,input),cached:accumulate(old.cached,cached),output:accumulate(old.output,output),reasoning:accumulate(old.reasoning,metric(u.thinking_tokens)),total:accumulate(old.total,total),last:total,contextWindow,context:metric(u.context_used)??old.context??null};this.store.writeAgentMeta(id,meta);
+              const accumulate=(previous:number|null|undefined,value:number|null)=>value===null?previous??null:legacyAgy?value:(previous??0)+value;
+              // Stream totals span multiple model calls and cannot measure context.
+              // AGY context is read from the latest native generation instead.
+              const agyWindow=legacyAgy?agyContextWindow(meta.model||model):null;
+              const contextWindow=metric(u.context_window)??record.modelUsage?.[meta.actualModel||'']?.contextWindow??agyWindow??old.contextWindow??null;
+              const context=metric(u.context_used)??(legacyAgy?null:old.context??null);
+              meta.tokens={input:accumulate(old.input,input),cached:accumulate(old.cached,cached),output:accumulate(old.output,output),reasoning:accumulate(old.reasoning,metric(u.thinking_tokens)),total:accumulate(old.total,total),last:legacyAgy?null:total,contextWindow,context};this.store.writeAgentMeta(id,meta);
               this.hub.publish({type:'usage.updated',threadId:id});
             }
           }
         }
       }
       const result=await child;
-      if(!run.stopped&&(failed||result.exitCode!==0||!resultSeen))throw Error(stderr||`${agentNames[agent]} 未正常结束（${result.exitCode}）`);
+      // AGY retries transport failures internally and sometimes ends the process
+      // without a final result after the answer already streamed. That tail noise
+      // is not a task failure: retrying would duplicate a complete reply.
+      const recoveredTail=legacyAgy&&agyTailRecovered(responded,failed,stderr);
+      if(!run.stopped&&(failed||result.exitCode!==0||!resultSeen)&&!recoveredTail)throw Error(stderr||`${agentNames[agent]} 未正常结束（${result.exitCode}）`);
       // Reconcile after stdout drains: EOF may include an unterminated final line
       // or text arriving after the result. Never synthesize text on failed/cancelled runs.
       if(legacyAgy&&!run.stopped){
@@ -546,6 +645,19 @@ export class AgentSessions {
       await this.store.upsertThread({id,status:run.stopped?'interrupted':'completed'});
       this.hub.publish({type:'turn.completed',threadId:id,turnId,status:run.stopped?'interrupted':'completed'});
     }catch(error){if(legacyAgy)try{await this.agyCli.forget(id);}catch(closeError){error=Error(String((error as Error).message)+'；'+String((closeError as Error).message));}await this.store.upsertThread({id,status:run.stopped?'interrupted':'error'});if(!run.stopped){this.lastFailures.set(agent,{message:String((error as Error).message).slice(0,500),at:new Date().toISOString()});this.hub.publish({type:'error',threadId:id,message:String((error as Error).message)});}this.hub.publish({type:'turn.completed',threadId:id,turnId,status:run.stopped?'interrupted':'error'});}
-    finally{for(const itemId of seenTools)if(!completedTools.has(itemId))this.hub.publish({type:'tool.completed',threadId:id,itemId,status:run.stopped?'cancelled':'error'});for(const [approval,p] of this.permissions)if(p.threadId===id)await this.resolveApproval(approval,'decline');for(const [question,p] of this.questions)if(p.threadId===id)await this.resolveApproval(question,'decline');this.active.delete(id);if(legacyAgy)this.agyCli.release(id);}
+    finally{
+      if(legacyAgy&&meta.session){
+        const tokens=readAgySessionTokens(meta.session,undefined,meta.actualModel||model);
+        if(tokens){meta.tokens=tokens;this.store.writeAgentMeta(id,meta);this.hub.publish({type:'usage.updated',threadId:id});}
+      }
+      for(const itemId of seenTools)if(!completedTools.has(itemId))this.hub.publish({type:'tool.completed',threadId:id,turnId,itemId,status:run.stopped?'cancelled':'error'});
+      for(const [approval,p] of this.permissions)if(p.threadId===id)await this.resolveApproval(approval,'decline');
+      for(const [question,p] of this.questions)if(p.threadId===id)await this.resolveApproval(question,'decline');
+      this.active.delete(id);if(legacyAgy)this.agyCli.release(id);
+    }
   }
 }
+
+export type AgentSettings=ReturnType<AgentSessions['settings']>;
+export type AgentSessionPort=Omit<Pick<AgentSessions,'onThreadCreated'|'models'|'backends'|'pickerCatalog'|'officialModels'|'health'|'owns'|'resolveApproval'|'answerQuestions'|'validate'|'usage'|'steer'|'settings'|'resume'|'handle'|'forget'|'close'>,'settings'>&{settings:(id:string)=>AgentSettings|Promise<AgentSettings>};
+

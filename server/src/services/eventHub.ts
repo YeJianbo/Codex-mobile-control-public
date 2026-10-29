@@ -3,12 +3,13 @@ import type { GatewayEvent } from "../types.js";
 import type { StateStore } from "./stateStore.js";
 import { protocolMetadata } from "../protocol.js";
 import { randomUUID } from "node:crypto";
+import {performance} from 'node:perf_hooks';
 import {scheduledMessage} from './messageSource.js';
 import {deferLiveActivityDetails,mobileDeferredActivityTypes} from './mobileActivityDetails.js';
 import {encodeEventPayload,EventSocketWriter,type EventPayload,type EventDisconnectCause} from './eventSocketWriter.js';
 
 const heartbeatIntervalMs = Number(process.env.CODEX_MOBILE_CONTROL_WS_HEARTBEAT_MS || "25000");
-const focusedStreamTypes=new Set(['message.delta','context.compaction',...mobileDeferredActivityTypes]);
+const focusedStreamTypes=new Set(['message.delta','context.compaction','usage.updated','thread.settings.updated',...mobileDeferredActivityTypes]);
 
 type ConnectionRoute='local'|'public'|'unknown';
 type DisconnectCause=EventDisconnectCause;
@@ -18,6 +19,7 @@ export type EventConnectionDiagnostic={
   durationMs:number;bufferedBytes:number;heartbeatDelayMs:number;pongAgeMs?:number;pingAgeMs?:number;
   cause?:DisconnectCause;closeCode?:number;errorCode?:string;
 };
+export type EventLoopStall={at:string;delayMs:number;cpuUserMs:number;cpuSystemMs:number;utilization:number;rssMb:number;heapMb:number;connections:number};
 
 export class EventHub {
   private readonly listeners=new Set<(event:GatewayEvent)=>void>();
@@ -32,11 +34,19 @@ export class EventHub {
   private readonly heartbeatTimer: NodeJS.Timeout;
   private lastHeartbeatAt=performance.now();
   private heartbeatDelayMs=0;
+  private maxHeartbeatDelayMs=0;
+  private cpuSample=process.cpuUsage();
+  private loopSample=performance.eventLoopUtilization();
+  private lastStall?:EventLoopStall;
   private historyWriteError?:string;
   persistenceStatus(){return {ok:!this.historyWriteError,error:this.historyWriteError};}
+  performanceStatus(){
+    let bufferedBytes=0;for(const client of this.clients)bufferedBytes+=client.bufferedAmount;
+    return {connections:this.clients.size,bufferedBytes,heartbeatDelayMs:Math.round(this.heartbeatDelayMs),maxHeartbeatDelayMs:this.maxHeartbeatDelayMs,lastStall:this.lastStall,persistenceOk:!this.historyWriteError};
+  }
 
   constructor(private readonly store: StateStore,private readonly isSubagent:(threadId:string)=>boolean=()=>false,
-    private readonly diagnose:(record:EventConnectionDiagnostic)=>void=()=>{}) {
+    private readonly diagnose:(record:EventConnectionDiagnostic)=>void=()=>{},private readonly onStall:(record:EventLoopStall)=>void=()=>{}) {
     this.heartbeatTimer = setInterval(() => this.checkHeartbeats(), heartbeatIntervalMs);
     this.heartbeatTimer.unref?.();
   }
@@ -75,7 +85,13 @@ export class EventHub {
     this.socketWriter.send(client,encodeEventPayload({type:'thread.focused',threadId,requestId}));
   }
   private includes(client:WebSocket,event:GatewayEvent):boolean{
-    return !this.streamThreads.has(client)||!('threadId' in event)||!event.threadId||!focusedStreamTypes.has(event.type)||this.streamThreads.get(client)===event.threadId;
+    if('threadId' in event&&event.threadId&&this.store.isEphemeral?.(event.threadId)&&this.streamThreads.get(client)!==event.threadId)return false;
+    if(!this.streamThreads.has(client))return true;
+    // Command execution already has tool.output. Native terminals only consume
+    // commandId-addressed sessions; broadcasting the duplicate stream to every
+    // phone (including its notification socket) can exhaust the reader queue.
+    if(event.type==='terminal.output')return Boolean(event.commandId);
+    return !('threadId' in event)||!event.threadId||!focusedStreamTypes.has(event.type)||this.streamThreads.get(client)===event.threadId;
   }
 
   publish(event: GatewayEvent, persist=true): void {
@@ -121,7 +137,16 @@ export class EventHub {
   private checkHeartbeats(): void {
     const now=performance.now();
     this.heartbeatDelayMs=Math.max(0,Math.round(now-this.lastHeartbeatAt-heartbeatIntervalMs));
+    this.maxHeartbeatDelayMs=Math.max(this.maxHeartbeatDelayMs,this.heartbeatDelayMs);
     this.lastHeartbeatAt=now;
+    const cpu=process.cpuUsage(this.cpuSample);this.cpuSample=process.cpuUsage();
+    const loop=performance.eventLoopUtilization(this.loopSample);this.loopSample=performance.eventLoopUtilization();
+    if(this.heartbeatDelayMs>=1500){
+      const memory=process.memoryUsage();
+      this.lastStall={at:new Date().toISOString(),delayMs:this.heartbeatDelayMs,cpuUserMs:Math.round(cpu.user/1000),cpuSystemMs:Math.round(cpu.system/1000),
+        utilization:Math.round(loop.utilization*1000)/1000,rssMb:Math.round(memory.rss/1048576),heapMb:Math.round(memory.heapUsed/1048576),connections:this.clients.size};
+      this.onStall(this.lastStall);
+    }
     this.closeUnauthorized();
     for (const client of this.clients) {
       if (client.readyState !== client.OPEN) {
@@ -129,7 +154,9 @@ export class EventHub {
         continue;
       }
       const state=this.connectionState.get(client)!;
-      if (state.awaitingPong) {
+      // After a host stall, queued pongs may not have run before this timer.
+      // Give a fresh ping one normal interval; the next check still closes a dead peer.
+      if (state.awaitingPong&&this.heartbeatDelayMs<heartbeatIntervalMs/2) {
         this.remove(client,'heartbeat_timeout');
         client.terminate();
         continue;

@@ -1,18 +1,29 @@
 export function isPublicAndroidDownload(method,rawUrl){
-  return (method==='GET'||method==='HEAD')&&new URL(rawUrl||'/', 'http://localhost').pathname==='/downloads/android.apk';
+  return (method==='GET'||method==='HEAD')&&['/downloads/android.apk','/downloads/android.json'].includes(new URL(rawUrl||'/', 'http://localhost').pathname);
 }
 
 export function permittedPublicRequest(method,rawUrl) {
   const pathname=new URL(rawUrl||'/', 'http://localhost').pathname;
-  if(pathname==='/downloads/android.apk')return isPublicAndroidDownload(method,pathname);
+  if(pathname==='/downloads/android.apk'||pathname==='/downloads/android.json')return isPublicAndroidDownload(method,pathname);
   if(/^\/api\/console-management\/[a-zA-Z0-9/_-]+$/.test(pathname))return method==='GET'||method==='POST';
   if(pathname==='/ws')return method==='GET';
   if(pathname==='/health')return method==='GET';
+  if(pathname==='/api/diagnostics/performance')return method==='GET';
+  if(pathname==='/api/browser/tabs')return method==='GET';
+  if(pathname==='/api/browser/connection')return method==='PUT';
+  if(/^\/api\/browser\/[^/]+\/screenshot$/.test(pathname))return method==='GET';
+  if(/^\/api\/browser\/[^/]+\/action$/.test(pathname))return method==='POST';
+  if(/^\/api\/threads\/[^/]+\/(fork|side\/close|background-terminals\/terminate|review)$/.test(pathname))return method==='POST';
+  if(/^\/api\/threads\/[^/]+\/background-terminals$/.test(pathname))return method==='GET';
   if(pathname==='/api/settings/fast')return method==='GET';
   if(pathname==='/api/settings/capacity-retry'||pathname==='/api/settings/remote-approval'||pathname==='/api/settings/harness-access')return method==='GET'||method==='PUT';
   if(pathname==='/api/network/openai')return method==='GET';
   if(pathname==='/api/network/openai/node')return method==='PUT';
   if(pathname==='/api/network/openai/test')return method==='POST';
+  if(pathname==='/api/network/google')return method==='GET';
+  if(pathname==='/api/network/google/node')return method==='PUT';
+  if(pathname==='/api/network/google/test')return method==='POST';
+  if(pathname==='/api/agent-instructions')return method==='GET'||method==='PUT';
   if(/^\/api\/threads\/[^/]+\/fast$/.test(pathname))return method==='GET'||method==='PUT';
   if(/^\/raw\/projects\/[^/]+\/file$/.test(pathname))return method==='GET'||method==='HEAD';
   if(['/api/sidebar','/api/sidebar/pins','/api/projects','/api/threads','/api/threads/search','/api/models','/api/usage','/api/approvals','/api/codex/status','/api/codex/compatibility','/api/settings/approval-summary'].includes(pathname))return method==='GET';

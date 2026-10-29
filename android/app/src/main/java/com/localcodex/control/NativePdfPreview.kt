@@ -1,83 +1,51 @@
 package com.localcodex.control
 
 import android.graphics.Bitmap
-import android.graphics.Color as AndroidColor
-import android.graphics.pdf.PdfRenderer
-import android.os.ParcelFileDescriptor
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import java.io.File
+import kotlin.math.roundToInt
 
-private class PdfPages(file:File,checkActive:()->Unit) {
-    private val descriptor=ParcelFileDescriptor.open(file,ParcelFileDescriptor.MODE_READ_ONLY)
-    private val renderer=try{PdfRenderer(descriptor)}catch(error:Throwable){descriptor.close();throw error}
-    private val renderLock=Mutex()
-    val ratios:List<Float> = try{
-        require(renderer.pageCount>0){"PDF 没有页面"}
-        List(renderer.pageCount){index->
-            checkActive()
-            renderer.openPage(index).use{page->
-                require(page.width>0&&page.height>0){"PDF 页面尺寸无效"}
-                page.height.toFloat()/page.width
-            }
-        }
-    }catch(error:Throwable){renderer.close();descriptor.close();throw error}
-
-    // The caller owns the bitmap inside its IO block, including a cancelled delivery.
-    suspend fun render(index:Int,targetWidth:Int):Bitmap=renderLock.withLock{
-        renderer.openPage(index).use{page->
-            val scale=minOf(targetWidth.coerceIn(320,1800).toDouble()/page.width,
-                3600.0/page.height,kotlin.math.sqrt(2.0*1024*1024/(page.width.toDouble()*page.height)))
-            val width=(page.width*scale).toInt().coerceAtLeast(1)
-            val height=(page.height*scale).toInt().coerceAtLeast(1)
-            val bitmap=Bitmap.createBitmap(width,height,Bitmap.Config.ARGB_8888)
-            try{
-                bitmap.eraseColor(AndroidColor.WHITE)
-                page.render(bitmap,null,null,PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                bitmap
-            }catch(error:Throwable){bitmap.recycle();throw error}
-        }
-    }
-
-    suspend fun dispose()=withContext(Dispatchers.IO){renderLock.withLock{try{renderer.close()}finally{descriptor.close()}}}
-}
-
-@Composable fun NativePdfPreview(pdf:NativePdf,close:()->Unit) {
+@Composable fun NativePdfPreview(pdf:NativePdf,close:()->Unit,overlay:(@Composable ()->Unit)?=null) {
     val context=LocalContext.current
     val density=LocalDensity.current
-    val screenWidth=with(density){LocalConfiguration.current.screenWidthDp.dp.toPx()}
     val list=rememberLazyListState()
     val currentPage by remember(list){derivedStateOf{
         val layout=list.layoutInfo
@@ -85,20 +53,22 @@ private class PdfPages(file:File,checkActive:()->Unit) {
             (minOf(item.offset+item.size,layout.viewportEndOffset)-maxOf(item.offset,layout.viewportStartOffset)).coerceAtLeast(0)
         }?.index?.plus(1)?:1
     }}
-    val horizontal=rememberScrollState()
     var zoom by remember(pdf.path){mutableFloatStateOf(1f)}
-    var document by remember(pdf.path){mutableStateOf<PdfPages?>(null)}
+    var panX by remember(pdf.path){mutableFloatStateOf(0f)}
+    var touching by remember(pdf.path){mutableStateOf(false)}
+    var regions by remember(pdf.path){mutableStateOf<Map<Int,NativePdfRegion>>(emptyMap())}
+    var document by remember(pdf.path){mutableStateOf<NativePdfPages?>(null)}
     var failure by remember(pdf.path){mutableStateOf("")}
     val save=rememberNativeSaveAction{
         nativeSavePublicFile(context,pdf.name,"application/pdf"){output->File(pdf.path).inputStream().use{it.copyTo(output)}}
         "已保存到下载/Codex"
     }
     LaunchedEffect(pdf.path){
-        var opened:PdfPages?=null
+        var opened:NativePdfPages?=null
         try {
             withContext(Dispatchers.IO){
                 val loadingContext=currentCoroutineContext()
-                opened=PdfPages(File(pdf.path)){loadingContext.ensureActive()}
+                opened=NativePdfPages(File(pdf.path)){loadingContext.ensureActive()}
             }
             document=opened
             awaitCancellation()
@@ -110,39 +80,94 @@ private class PdfPages(file:File,checkActive:()->Unit) {
             opened?.let{withContext(NonCancellable){it.dispose()}}
         }
     }
-    Dialog(onDismissRequest=close,properties=DialogProperties(usePlatformDefaultWidth=false)){
-        NativeDialogSystemBars()
-        Column(Modifier.fillMaxSize().background(MaterialTheme.colors.background)){
-            Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal=8.dp),verticalAlignment=Alignment.CenterVertically){
-                IconButton(onClick=close){Icon(painterResource(R.drawable.ic_lucide_arrow_left),"关闭 PDF 预览")}
-                Text(pdf.name,Modifier.weight(1f),maxLines=1,overflow=TextOverflow.Ellipsis,fontSize=16.sp)
-                document?.let{Text("$currentPage / ${it.ratios.size}",fontSize=13.sp,color=MaterialTheme.colors.onSurface.copy(alpha=.6f))}
-                IconButton(onClick={zoom=(zoom-.25f).coerceAtLeast(1f)},enabled=zoom>1f){Icon(painterResource(R.drawable.ic_lucide_zoom_out),"缩小 PDF")}
-                IconButton(onClick={zoom=(zoom+.25f).coerceAtMost(2.5f)},enabled=zoom<2.5f){Icon(painterResource(R.drawable.ic_lucide_zoom_in),"放大 PDF")}
-                IconButton(onClick=save.save,enabled=!save.saving){Icon(painterResource(R.drawable.ic_lucide_arrow_down_to_line),"保存 PDF")}
-            }
-            BoxWithConstraints(Modifier.weight(1f).fillMaxWidth().background(if(MaterialTheme.colors.isLight)Color(0xffeceef0) else Color(0xff202124))){
+    NativeReaderDialog(close=close,overlay=overlay,header={
+        NativeReaderToolbar(pdf.name,"关闭 PDF 预览",close,subtitle=document?.let{"$currentPage / ${it.ratios.size}"}.orEmpty()){
+            ChromeButton(R.drawable.ic_lucide_arrow_down_to_line,"保存 PDF",save.save,enabled=!save.saving)
+        }
+    }){topInset->
+            NativeBackdropScrollMotion{31*list.firstVisibleItemIndex+list.firstVisibleItemScrollOffset}
+            BoxWithConstraints(Modifier.fillMaxSize()){
                 val viewportWidth=maxWidth
+                val viewportHeight=maxHeight
+                val widthPx=with(density){viewportWidth.toPx()}
                 val pages=document
+                LaunchedEffect(pages,widthPx,density.density){
+                    if(pages==null)return@LaunchedEffect
+                    snapshotFlow{
+                        if(touching||list.isScrollInProgress)null else {
+                            val info=list.layoutInfo
+                            info.visibleItemsInfo.mapNotNull{item->nativePdfVisibleRegion(
+                                widthPx-20f*density.density,pages.ratios[item.index],zoom,panX,10f*density.density,
+                                widthPx,item.offset,info.viewportStartOffset,info.viewportEndOffset)?.let{item.index to it}}.toMap()
+                        }
+                    }.collectLatest{request->
+                        if(request!=null){delay(100);regions=request}
+                    }
+                }
                 when {
                     failure.isNotEmpty()->Text(failure,Modifier.align(Alignment.Center).padding(24.dp))
                     pages==null->CircularProgressIndicator(Modifier.align(Alignment.Center))
-                    else->Box(Modifier.fillMaxSize().horizontalScroll(horizontal)){
-                        LazyColumn(state=list,modifier=Modifier.width(viewportWidth*zoom).fillMaxHeight().testTag("pdfPages"),
-                            contentPadding=PaddingValues(10.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){
+                    else->Box(Modifier.fillMaxSize().clipToBounds().testTag("pdfGestureSurface")
+                        .semantics{stateDescription="缩放 ${(zoom*100).roundToInt()}%"}
+                        .pointerInput(pdf.path,widthPx){
+                            awaitEachGesture{
+                                awaitFirstDown(requireUnconsumed=false,pass=PointerEventPass.Initial)
+                                touching=true
+                                var transforming=false
+                                var totalPan=Offset.Zero
+                                try{
+                                do{
+                                    // Claim transforms before the list scrolls. At 1x a single
+                                    // finger still belongs to LazyColumn, including its fling.
+                                    val event=awaitPointerEvent(PointerEventPass.Initial)
+                                    val movement=event.calculatePan()
+                                    totalPan+=movement
+                                    if(event.changes.count{it.pressed}>1 ||
+                                        (zoom>1f&&totalPan.getDistance()>viewConfiguration.touchSlop))transforming=true
+                                    if(transforming){
+                                        val previousZoom=zoom
+                                        val nextZoom=(previousZoom*event.calculateZoom()).coerceIn(1f,4f)
+                                        val centroid=event.calculateCentroid(useCurrent=false)
+                                        if(centroid!=Offset.Unspecified){
+                                            // Keep the document point under the pinch centroid
+                                            // stationary while using unscaled list coordinates.
+                                            panX=(centroid.x-(centroid.x-panX)*(nextZoom/previousZoom)+movement.x)
+                                                .coerceIn(widthPx*(1f-nextZoom),0f)
+                                            list.dispatchRawDelta(centroid.y/previousZoom-centroid.y/nextZoom-movement.y/nextZoom)
+                                        }
+                                        zoom=nextZoom
+                                        event.changes.forEach{if(it.positionChanged())it.consume()}
+                                    }
+                                }while(event.changes.any{it.pressed})
+                                // Refine visible pages after release, rather than rerendering
+                                // bitmaps on every pinch frame.
+                                }finally{touching=false}
+                            }
+                        }){
+                        LazyColumn(state=list,userScrollEnabled=zoom<=1f,
+                            modifier=Modifier.width(viewportWidth).height(viewportHeight/zoom)
+                                .graphicsLayer{
+                                    transformOrigin=TransformOrigin(0f,0f)
+                                    scaleX=zoom;scaleY=zoom
+                                    translationX=panX.coerceIn(widthPx*(1f-zoom),0f)
+                                }.testTag("pdfPages"),
+                            contentPadding=PaddingValues(start=10.dp,end=10.dp,top=10.dp+topInset/zoom,bottom=10.dp),verticalArrangement=Arrangement.spacedBy(8.dp)){
                             items(pages.ratios.size,key={it}){index->
-                                PdfPageImage(pages,index,screenWidth*zoom-20f*density.density,pages.ratios[index])
+                                PdfPageImage(pages,index,widthPx-20f*density.density,pages.ratios[index])
                             }
                         }
+                        regions.forEach{(index,region)->key(pages,index){
+                            PdfPageDetail(pages,index,region,widthPx-20f*density.density,10f*density.density,
+                                list,{zoom},{panX},Modifier.align(Alignment.TopStart))
+                        }}
                     }
                 }
             }
-        }
     }
 }
 
-@Composable private fun PdfPageImage(document:PdfPages,index:Int,widthPx:Float,ratio:Float){
-    var bitmap by remember(document,index,widthPx){mutableStateOf<Bitmap?>(null)}
+@Composable private fun PdfPageImage(document:NativePdfPages,index:Int,widthPx:Float,ratio:Float){
+    var bitmap by remember(document,index){mutableStateOf<Bitmap?>(null)}
     var failure by remember(document,index,widthPx){mutableStateOf(false)}
     LaunchedEffect(document,index,widthPx){
         var rendered:Bitmap?=null
@@ -162,4 +187,40 @@ private class PdfPages(file:File,checkActive:()->Unit) {
             else->CircularProgressIndicator(Modifier.size(22.dp),strokeWidth=2.dp)
         }
     }
+}
+
+/** Detail lives in the physical viewport, outside the scaled scrolling layer. */
+@Composable private fun PdfPageDetail(document:NativePdfPages,index:Int,region:NativePdfRegion,widthPx:Float,padding:Float,
+    list:LazyListState,zoom:()->Float,panX:()->Float,modifier:Modifier=Modifier){
+    val density=LocalDensity.current
+    var detail by remember(document,index){mutableStateOf<Pair<NativePdfRegion,Bitmap>?>(null)}
+    var failed by remember(document,index){mutableStateOf(false)}
+    var retry by remember(document,index){mutableIntStateOf(0)}
+    LaunchedEffect(document,index,region,retry){
+        var rendered:Bitmap?=null
+        failed=false
+        try{
+            withContext(Dispatchers.IO){rendered=document.renderRegion(index,region)}
+            detail=region to checkNotNull(rendered);rendered=null
+        }catch(error:Exception){
+            if(error is kotlinx.coroutines.CancellationException)throw error
+            failed=true
+        }finally{rendered?.recycle()}
+    }
+    detail?.let{(crop,image)->
+        Image(image.asImageBitmap(),null,modifier.requiredSize((image.width/density.density).dp,(image.height/density.density).dp)
+            .graphicsLayer{
+                val info=list.layoutInfo
+                val item=info.visibleItemsInfo.firstOrNull{it.index==index}
+                alpha=if(item==null)0f else 1f
+                val currentZoom=zoom()
+                val rasterScale=crop.pageWidth/widthPx
+                val displayScale=currentZoom/rasterScale
+                transformOrigin=TransformOrigin(0f,0f)
+                scaleX=displayScale;scaleY=displayScale
+                translationX=panX()+padding*currentZoom+crop.left*displayScale
+                translationY=((item?.offset?:0)-info.viewportStartOffset)*currentZoom+crop.top*displayScale
+            }.testTag("pdfDetail-$index-${crop.pageWidth}-${crop.left}-${crop.top}"),contentScale=ContentScale.FillBounds)
+    }
+    if(failed)TextButton(onClick={retry++},modifier=modifier){Text("重新加载页面")}
 }

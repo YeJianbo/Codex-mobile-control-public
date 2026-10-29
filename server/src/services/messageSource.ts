@@ -5,6 +5,31 @@ import {createHash} from 'node:crypto';
 import {codexHome,appHome} from './paths.js';
 
 const decode=(s:string)=>s.replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&apos;/g,"'").replace(/&amp;/g,'&');
+export function subagentNotificationEvent(input:unknown,threadId:string):GatewayEvent|undefined {
+  if(typeof input!=='string')return;
+  const wrapper=/<subagent_notification>\s*([\s\S]*?)\s*<\/subagent_notification>/g;
+  const matches=[...input.matchAll(wrapper)];
+  if(!matches.length||input.replace(wrapper,'').trim())return;
+  const results:{source:string;status:'ok'|'error'|'cancelled';title:string;detail:string}[]=[];
+  for(const match of matches){
+    let value:Record<string,unknown>;
+    try{value=JSON.parse(match[1]);}catch{return;}
+    if(!value||typeof value!=='object')return;
+    const source=value.agent_path??value.agent_id,status=value.status;
+    if(typeof source!=='string'||!source||!status||typeof status!=='object'||Array.isArray(status))return;
+    const row=status as Record<string,unknown>;
+    const key=['completed','errored','error','interrupted','shutdown'].find(key=>typeof row[key]==='string');
+    if(!key)return;
+    results.push({source,status:key==='completed'?'ok':key==='errored'||key==='error'?'error':'cancelled',
+      title:key==='completed'?'子代理已完成':key==='errored'||key==='error'?'子代理执行失败':'子代理已停止',detail:row[key] as string});
+  }
+  const first=results[0];
+  return {type:'tool.completed',threadId,itemId:`subagent-notification:${results.map(row=>row.source).join('|')}`,
+    title:results.length===1?first.title:`子代理结果 · ${results.length} 项`,
+    status:results.some(row=>row.status==='error')?'error':results.some(row=>row.status==='cancelled')?'cancelled':'ok',
+    detail:results.length===1?first.detail:results.map((row,index)=>`### ${row.title} ${index+1}\n\n${row.detail}`).join('\n\n'),
+    ...(results.length===1?{messageSource:{kind:'thread' as const,threadId:first.source,name:'子代理'}}:{})};
+}
 export function scheduledMessage(input:unknown){
   if(typeof input!=='string')return;
   const wrapper=/^\s*<heartbeat(?:\s[^>]*)?>\s*([\s\S]*?)\s*<\/heartbeat>\s*$/.exec(input);if(!wrapper)return;
@@ -29,7 +54,12 @@ async function cloudProfiles(){
   }catch{return {};}
 }
 export async function enrichMessageSources<T extends {type:string}>(events:T[],titles:Map<string,string>=new Map()){
-  events=events.map(event=>event.type==='user.message'?{...event,...scheduledMessage((event as GatewayEvent & {text?:string}).text)}:event);
+  events=events.map(event=>{
+    if(event.type!=='user.message')return event;
+    const row=event as GatewayEvent&{text?:string;threadId?:string};
+    const notification=subagentNotificationEvent(row.text,row.threadId??'');
+    return notification?{...event,...notification,text:undefined}:{...event,...scheduledMessage(row.text)};
+  });
   if(!events.some(e=>(e as GatewayEvent).messageSource?.threadId))return events;
   const profiles=await cloudProfiles();
   return events.map(event=>{

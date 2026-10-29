@@ -59,6 +59,16 @@ try {
     assert(health.capabilities.includes("websocket-heartbeat"), "websocket heartbeat capability missing");
   });
 
+  await check("performance diagnostics require authentication and return aggregate counters only",async()=>{
+    const denied=await fetch(`${baseUrl}/api/diagnostics/performance`);
+    assert(denied.status===401,"diagnostics must retain authentication");
+    const report=await json('/api/diagnostics/performance',{headers:admin});
+    assert(Array.isArray(report.history.lanes)&&report.history.lanes.length===2,"history lane counters missing");
+    assert(typeof report.events.bufferedBytes==='number',"event pressure missing");
+    const raw=JSON.stringify(report);
+    assert(!raw.includes('threadId')&&!raw.includes('token')&&!raw.includes(appHome),"diagnostics must not expose content identities");
+  });
+
   await check("console", async () => {
     const response = await fetch(`${baseUrl}/console`);
     const html = await response.text();

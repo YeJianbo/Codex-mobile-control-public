@@ -15,7 +15,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
@@ -57,14 +56,15 @@ import androidx.compose.ui.unit.sp
     }
 }
 
-@Composable internal fun NativeSettingsHome(connected:Boolean,capabilities:List<String>,onBack:()->Unit,onNavigate:(String)->Unit){
+@Composable internal fun NativeSettingsHome(connected:Boolean,capabilities:List<String>,onBack:()->Unit,onNavigate:(String)->Unit,updateVersion:String=""){
     NativeManagementPage("设置","",onBack,modifier=Modifier.testTag("settingsHome")){
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(start=16.dp,end=16.dp,top=22.dp,bottom=34.dp),verticalArrangement=Arrangement.spacedBy(24.dp)){
+        Column(Modifier.weight(1f).nativeManagementScroll(rememberScrollState()).padding(start=16.dp,end=16.dp,top=16.dp,bottom=28.dp),verticalArrangement=Arrangement.spacedBy(22.dp)){
             Column(verticalArrangement=Arrangement.spacedBy(8.dp)){
                 SettingsSectionLabel("账号与服务")
                 NativeSettingsGroup{
                     SettingsRow("账号","登录账号、切换账号与模型配置",R.drawable.ic_lucide_circle_user_round,"accounts",onNavigate)
-                    SettingsRow("用量与额度","账号额度、用量统计与模型服务",R.drawable.ic_lucide_gauge,"quota",onNavigate,divider=true)
+                    SettingsRow("全部额度","各助手的账号额度与重置时间",R.drawable.ic_lucide_gauge,"all-quotas",onNavigate,divider=true)
+                    SettingsRow("自动预热","额度重置后的空闲预热、5 小时与 7 天窗口",R.drawable.ic_lucide_zap,"quota-warmup",onNavigate,divider=true)
                     if(!connected||"agent-health" in capabilities)SettingsRow("助手管理","健康状态、版本与后端管理",R.drawable.ic_lucide_bot,"agents",onNavigate,divider=true)
                     if(!connected||"automations" in capabilities)SettingsRow("定时任务","安排任务与调整运行时间",R.drawable.ic_lucide_clock_3,"automations",onNavigate,divider=true)
                     SettingsRow("已归档与关闭","恢复归档、重新显示已关闭会话",R.drawable.ic_lucide_archive,"archives",onNavigate,divider=true)
@@ -79,6 +79,7 @@ import androidx.compose.ui.unit.sp
                     SettingsRow("会话管理","筛选、批量整理与恢复会话",R.drawable.ic_lucide_messages_square,"sessions",onNavigate,divider=true)
                     SettingsRow("渠道","管理消息渠道与会话绑定",R.drawable.ic_lucide_share_2,"channels",onNavigate,divider=true)
                     SettingsRow("Harness","运行方式与服务配置",R.drawable.ic_lucide_terminal,"harnesses",onNavigate,divider=true)
+                    SettingsRow("助手指令","编辑各助手的全局指令",R.drawable.ic_lucide_file_text,"agent-instructions",onNavigate,divider=true)
                     SettingsRow("详细统计","用量明细、请求表现与筛选",R.drawable.ic_lucide_chart_spline,"statistics",onNavigate,divider=true)
                 }
             }
@@ -86,7 +87,9 @@ import androidx.compose.ui.unit.sp
                 SettingsSectionLabel("应用")
                 NativeSettingsGroup{
                     SettingsRow("外观","主题、颜色与显示模式",R.drawable.ic_lucide_palette,"appearance",onNavigate)
+                    SettingsRow("助手显示","选择侧栏中显示的助手",R.drawable.ic_lucide_bot,"harness-visibility",onNavigate,divider=true)
                     SettingsRow("存储与缓存","本地缓存与上传文件",R.drawable.ic_lucide_hard_drive,"storage",onNavigate,divider=true)
+                    SettingsRow("应用更新",if(updateVersion.isNotBlank())"发现新版本 $updateVersion" else "当前版本 ${BuildConfig.VERSION_NAME}",R.drawable.ic_lucide_arrow_down_to_line,"app-update",onNavigate,divider=true)
                 }
             }
         }
@@ -97,9 +100,9 @@ import androidx.compose.ui.unit.sp
     refresh:()->Unit,restore:(ThreadRecord)->Unit,back:()->Unit){
     val muted=MaterialTheme.colors.onSurface.copy(alpha=.6f)
     NativeManagementPage("已归档与关闭","",back,modifier=Modifier.testTag("archivedThreadsPage"),actions={
-        TextButton(onClick=refresh,enabled=connected&&!loading){Text(if(loading)"加载中…" else "刷新")}
+        ChromeButton(R.drawable.ic_lucide_rotate_cw,"刷新",refresh,enabled=connected&&!loading)
     }){
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(),contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(10.dp)){
+        LazyColumn(Modifier.weight(1f).fillMaxWidth(),state=rememberNativeManagementListState(),contentPadding=nativeManagementPadding(PaddingValues(16.dp)),verticalArrangement=Arrangement.spacedBy(10.dp)){
             if(!connected)item{Text("连接电脑后查看已归档与关闭的会话",fontSize=14.sp,color=muted)}
             if(error.isNotBlank())item{Text(error,color=MaterialTheme.colors.error,fontSize=13.sp)}
             items(threads,key={it.id}){thread->
@@ -120,12 +123,9 @@ import androidx.compose.ui.unit.sp
 }
 
 /** A single inset group carries its rows, without giving every row another glass rim. */
-@Composable internal fun NativeSettingsGroup(modifier:Modifier=Modifier,content:@Composable ColumnScope.()->Unit){
-    val theme=LocalNativeTheme.current
-    val opacity=when(theme.definition.mode){NativeGlassMode.LIQUID->if(theme.dark).66f else .72f;NativeGlassMode.LIGHT->.92f;else->1f}
-    androidx.compose.material.Surface(modifier.fillMaxWidth(),shape=RoundedCornerShape((theme.geometry.card+4f).coerceIn(22f,32f).dp),
-        color=MaterialTheme.colors.surface.copy(alpha=opacity),
-        border=BorderStroke(.5.dp,MaterialTheme.colors.onSurface.copy(alpha=if(theme.dark).085f else .045f)),elevation=0.dp){
+@Composable internal fun NativeSettingsGroup(modifier:Modifier=Modifier,color:Color=MaterialTheme.colors.surface,content:@Composable ColumnScope.()->Unit){
+    NativeLiquidSurface(modifier.fillMaxWidth(),shape=Radius.Section,color=color,kind=NativeGlassKind.INSET,
+        border=BorderStroke(.5.dp,MaterialTheme.colors.onSurface.copy(alpha=if(MaterialTheme.colors.isLight).055f else .09f))){
         Column(content=content)
     }
 }
@@ -140,13 +140,26 @@ import androidx.compose.ui.unit.sp
 }
 
 @Composable private fun SettingsRow(title:String,description:String,icon:Int,route:String,onNavigate:(String)->Unit,divider:Boolean=false){
-    if(divider)Divider(Modifier.padding(start=60.dp,end=16.dp),color=MaterialTheme.colors.onSurface.copy(alpha=.07f),thickness=.5.dp)
-    Row(Modifier.fillMaxWidth().testTag("settings:$route").nativeSettingsRowClick{onNavigate(route)}.heightIn(min=72.dp).padding(horizontal=16.dp,vertical=12.dp),verticalAlignment=Alignment.CenterVertically){
-        Box(Modifier.size(32.dp).clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colors.primary.copy(alpha=.09f)),contentAlignment=Alignment.Center){Icon(painterResource(icon),null,Modifier.size(18.dp),tint=MaterialTheme.colors.primary)}
-        Column(Modifier.weight(1f).padding(start=12.dp,end=10.dp),verticalArrangement=Arrangement.spacedBy(3.dp)){
-            Text(title,fontSize=16.sp,fontWeight=FontWeight.Medium)
-            Text(description,fontSize=12.sp,lineHeight=17.sp,color=MaterialTheme.colors.onSurface.copy(alpha=.55f))
+    if(divider)Divider(Modifier.padding(start=64.dp,end=16.dp),color=MaterialTheme.colors.onSurface.copy(alpha=.065f),thickness=.5.dp)
+    NativeNavigationRow(title,description,icon,{onNavigate(route)},Modifier.testTag("settings:$route"))
+}
+
+/** Settings and file lists share typography, touch targets and quiet icon badges. */
+@Composable internal fun NativeNavigationRow(
+    title:String,description:String,icon:Int,onClick:()->Unit,modifier:Modifier=Modifier,
+    enabled:Boolean=true,iconTint:Color=NativeMuted,trailing:@Composable ()->Unit={
+        Icon(painterResource(R.drawable.ic_lucide_chevron_right),null,Modifier.size(16.dp),tint=NativeInk.copy(alpha=.30f))
+    },
+){
+    Row(modifier.fillMaxWidth().nativeSettingsRowClick(enabled=enabled,onClick=onClick).heightIn(min=68.dp)
+        .padding(horizontal=16.dp,vertical=12.dp),verticalAlignment=Alignment.CenterVertically){
+        Box(Modifier.size(36.dp).clip(Radius.Control).background(NativeInk.copy(alpha=.045f)),contentAlignment=Alignment.Center){
+            Icon(painterResource(icon),null,Modifier.size(20.dp),tint=iconTint.copy(alpha=if(enabled)iconTint.alpha else .35f))
         }
-        Icon(painterResource(R.drawable.ic_lucide_chevron_right),null,Modifier.size(16.dp),tint=MaterialTheme.colors.onSurface.copy(alpha=.3f))
+        Column(Modifier.weight(1f).padding(start=12.dp,end=12.dp),verticalArrangement=Arrangement.spacedBy(3.dp)){
+            Text(title,fontSize=15.sp,lineHeight=20.sp,fontWeight=FontWeight.Medium,color=NativeInk.copy(alpha=if(enabled)1f else .45f),maxLines=2,overflow=TextOverflow.Ellipsis)
+            if(description.isNotBlank())Text(description,fontSize=12.sp,lineHeight=16.sp,color=NativeMuted,maxLines=2,overflow=TextOverflow.Ellipsis)
+        }
+        trailing()
     }
 }

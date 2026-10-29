@@ -10,6 +10,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import okhttp3.*
@@ -21,6 +22,67 @@ import java.util.concurrent.CopyOnWriteArrayList
 
 @RunWith(AndroidJUnit4::class)
 class NativeFlowTest {
+    @Test fun otherConversationQuestionSnapshotNotifiesWithoutSwitchingTheChat(){
+        historyStatus="completed"
+        ui.runOnUiThread{vm.openThread(ThreadRecord("t"));vm.draft("保留当前草稿")}
+        ui.waitUntil(10000){!vm.state.historySyncing}
+        val detail=JSONObject().put("questions",org.json.JSONArray().put(JSONObject().put("id","0").put("question","后台会话的问题"))).toString()
+        approvalsJson=org.json.JSONArray().put(JSONObject().put("id","desktop-question:missed-other").put("threadId","background")
+            .put("approvalType","question").put("status","pending").put("detail",detail)).toString()
+        ui.runOnUiThread{vm.viewModelScope.launch{vm.refresh()}}
+        ui.waitUntil(10000){vm.state.taskNotice?.questionId=="desktop-question:missed-other"}
+        ui.onNodeWithTag("questionNotice").assertIsDisplayed()
+        Assert.assertEquals("t",vm.state.threadId)
+        Assert.assertEquals("保留当前草稿",vm.state.draft)
+        ui.runOnUiThread{vm.dismissTaskNotice(vm.state.taskNotice!!.key);vm.viewModelScope.launch{vm.refresh()}}
+        ui.waitUntil(10000){!vm.state.historySyncing}
+        Assert.assertNull(vm.state.taskNotice)
+    }
+    @Test fun linkedWorkbookOpensInTheFullChatAndReturns(){
+        ui.runOnUiThread{vm.openThread(vm.state.threads.first())}
+        ui.waitUntil(10000){!vm.state.loadingHistory&&vm.state.threadId=="t"}
+        ui.runOnUiThread{vm.openOutput("D:/comparison.xlsx","answer","t")}
+        ui.waitUntil(15000){!vm.state.fileBusy&&vm.state.markdown!=null}
+        Assert.assertTrue(vm.state.fileError,vm.state.fileError.isBlank())
+        Assert.assertEquals(2,vm.state.markdown!!.pages.size)
+        ui.onNodeWithTag("documentWebContent").assertIsDisplayed()
+        ui.waitUntil(15000){ui.onNodeWithTag("documentWebContent").fetchSemanticsNode().config.getOrNull(SemanticsProperties.StateDescription)=="文档已就绪"}
+        ui.onNodeWithText(vm.state.markdown!!.pages[1].name).performClick()
+        ui.onNodeWithTag("documentWebContent").performTouchInput{swipeUp()}
+        ui.onNodeWithContentDescription("关闭阅读器").performClick()
+        ui.waitUntil(5000){vm.state.markdown==null}
+        Assert.assertTrue(vm.state.connected)
+        Assert.assertTrue(requests.isEmpty())
+    }
+    @Test fun linkedOutputFolderBrowsesImagesAndDocumentsAndKeepsErrors(){
+        val root="F:/output/全部成片"
+        ui.waitUntil(10000){"local-thread-output-directories" in vm.state.capabilities}
+        ui.runOnUiThread{vm.openOutput(root,"answer","t")}
+        ui.waitUntil(10000){!vm.state.fileBusy&&vm.state.outputDirectory!=null}
+        ui.onNodeWithTag("workspaceFile:预览").performClick()
+        ui.waitUntil(10000){!vm.state.fileBusy&&vm.state.outputDirectory?.path=="预览"}
+        ui.onNodeWithTag("workspaceFile:预览/图 #20%.png").performClick()
+        ui.waitUntil(10000){!vm.state.fileBusy&&vm.state.openedImage!=null}
+        Assert.assertTrue(vm.state.openedImage!!.endpoint.contains("directory="))
+        ui.runOnUiThread{vm.closeImage()}
+        ui.onNodeWithContentDescription("上一级").performClick()
+        ui.waitUntil(10000){!vm.state.fileBusy&&vm.state.outputDirectory?.path==""}
+        ui.onNodeWithTag("workspaceFile:notes.txt").performClick()
+        ui.waitUntil(10000){!vm.state.fileBusy&&vm.state.markdown!=null}
+        Assert.assertEquals("文件夹中的正文",vm.state.markdown!!.content)
+        ui.runOnUiThread{vm.closeMarkdown();vm.closeOutputDirectory()}
+        val api=vm.client!!
+        kotlinx.coroutines.runBlocking(kotlinx.coroutines.Dispatchers.IO){
+            val temp=java.io.File(ui.activity.cacheDir,"failed-file.part")
+            for(read in listOf<suspend ()->Unit>({api.nativeBytes("/file-error");Unit},{api.nativeImageBytes("/file-error");Unit},{api.nativeDownload("/file-error",temp)})){
+                try{read();Assert.fail("应保留服务端读取错误")}catch(error:NativeFileReadException){Assert.assertEquals("文件不是这条可见回复中的链接",error.message)}
+            }
+            Assert.assertFalse(temp.exists())
+        }
+        Assert.assertNull(vm.state.outputDirectory)
+        Assert.assertTrue(vm.state.connected)
+        Assert.assertTrue(requests.isEmpty())
+    }
     @get:Rule val ui=createAndroidComposeRule<ComponentActivity>()
     @get:Rule val testName=org.junit.rules.TestName()
 
@@ -39,7 +101,7 @@ class NativeFlowTest {
         ui.waitUntil(5000){!vm.accountsState.loading&&vm.accountsState.data?.optString("fixture")=="claude"}
         val retained=vm.accountsState.data
         stalledAccountService="claude"
-        ui.onNodeWithText("刷新",substring=false).performClick()
+        ui.onNodeWithContentDescription("刷新").performClick()
         var refresh:Call?=null
         ui.waitUntil(5000){refresh=transport.dispatcher.runningCalls().firstOrNull{it.request().url.encodedPath=="/api/local-console/accounts/claude"&&!it.isCanceled()};refresh!=null}
         Assert.assertSame(retained,vm.accountsState.data)
@@ -118,6 +180,73 @@ class NativeFlowTest {
         Assert.assertEquals(1,vm.state.events.count{it.type=="user.message"&&it.text=="修改后新文"})
         Assert.assertTrue(vm.state.events.any{it.text=="上一条保留"})
         screenshot("native-last-message-edit-320.png")
+    }
+
+    @Test fun liveQuestionsNotifyInSettingsAndResolveAcrossConversations(){
+        historyStatus="completed"
+        ui.runOnUiThread{vm.openThread(ThreadRecord("t",title="需要回答的会话"))}
+        ui.waitUntil(10000){!vm.state.loadingHistory&&chatSockets.isNotEmpty()}
+        ui.onNodeWithContentDescription("展开侧栏").performClick()
+        ui.onNodeWithText("设置").performClick()
+        val detail=JSONObject().put("questions",org.json.JSONArray().put(JSONObject().put("id","0").put("question","选择连接方式"))).toString()
+        fun question(thread:String,id:String,eventId:String)=JSONObject().put("type","approval.requested").put("threadId",thread)
+            .put("approvalId",id).put("approvalType","question").put("eventId",eventId).put("detail",detail)
+        val current=question("t","desktop-question:notice-current","question-live-current")
+        approvalsJson=org.json.JSONArray().put(JSONObject().put("id",current.getString("approvalId")).put("threadId","t").put("status","pending").put("approvalType","question").put("detail",detail)).toString()
+        history=org.json.JSONArray().put(current).toString()
+        chatSockets.last().send(current.toString())
+        ui.waitUntil(5000){vm.state.taskNotice?.questionId==current.getString("approvalId")}
+        ui.onNodeWithTag("questionNotice").assertIsDisplayed()
+        ui.onNodeWithText("回答").performClick()
+        ui.waitUntil(5000){ui.onAllNodesWithTag("questionAnswer:0").fetchSemanticsNodes().isNotEmpty()}
+        ui.onNodeWithTag("questionAnswer:0").assertExists()
+        val resolved=JSONObject().put("type","approval.resolved").put("threadId","t").put("eventId","question-resolved-current")
+            .put("approvalId",current.getString("approvalId")).put("decision","answered")
+        chatSockets.last().send(resolved.toString())
+        ui.waitUntil(5000){current.getString("approvalId") in vm.state.approvals}
+        chatSockets.last().send(current.put("eventId","question-duplicate-current").toString())
+        val other=question("background","desktop-question:notice-other","question-live-other")
+        chatSockets.last().send(other.toString())
+        ui.waitUntil(5000){vm.state.taskNotice?.questionId==other.getString("approvalId")}
+        ui.onNodeWithTag("questionNotice").assertIsDisplayed()
+        Assert.assertEquals("t",vm.state.threadId)
+        chatSockets.last().send(JSONObject().put("type","approval.resolved").put("threadId","background")
+            .put("eventId","question-resolved-other").put("approvalId",other.getString("approvalId")).put("decision","answered").toString())
+        ui.waitUntil(5000){vm.state.taskNotice==null}
+        chatSockets.last().send(other.put("eventId","question-replayed").put("replayed",true).toString())
+        chatSockets.last().send(JSONObject().put("type","message.delta").put("threadId","t").put("eventId","question-notice-sentinel").put("text","已确认回答状态").toString())
+        ui.waitUntil(5000){vm.state.events.any{it.eventId=="question-notice-sentinel"}}
+        Assert.assertNull(vm.state.taskNotice)
+        Assert.assertTrue(vm.state.pendingApprovals.none{it.approvalId==current.getString("approvalId")})
+    }
+
+    @Test fun questionNoticeStaysAboveDocumentPdfAndImageAndOpensTheAnswer(){
+        historyStatus="completed"
+        ui.runOnUiThread{vm.openThread(ThreadRecord("t",title="预览中的提问"));vm.draft("保留这段未发送的草稿")}
+        ui.waitUntil(10000){!vm.state.loadingHistory&&chatSockets.isNotEmpty()}
+        for((index,file) in listOf("guide.md","report.pdf","photo.png").withIndex()){
+            ui.runOnUiThread{vm.openOutput("F:/Code/Codex-mobile-control/$file")}
+            ui.waitUntil(10000){!vm.state.fileBusy&&when(index){0->vm.state.markdown!=null;1->vm.state.pdf!=null;else->vm.state.openedImage!=null}}
+            val id="desktop-question:preview-$index"
+            val detail=JSONObject().put("questions",org.json.JSONArray().put(JSONObject().put("id","0").put("question","阅读后如何继续"))).toString()
+            val question=JSONObject().put("type","approval.requested").put("threadId","t").put("approvalId",id)
+                .put("approvalType","question").put("eventId","preview-question-$index").put("detail",detail)
+            approvalsJson=org.json.JSONArray().put(JSONObject().put("id",id).put("threadId","t").put("status","pending").put("approvalType","question").put("detail",detail)).toString()
+            history=org.json.JSONArray().put(question).toString()
+            chatSockets.last().send(question.toString())
+            ui.waitUntil(5000){ui.onAllNodesWithTag("questionNotice").fetchSemanticsNodes().size==1}
+            ui.onNodeWithTag("questionNotice").assertIsDisplayed()
+            ui.onNodeWithTag("questionAnswer:0").assertDoesNotExist()
+            ui.onNodeWithText("回答").performClick()
+            ui.waitUntil(10000){ui.onAllNodesWithTag("questionAnswer:0").fetchSemanticsNodes().isNotEmpty()}
+            Assert.assertNull(vm.state.markdown);Assert.assertNull(vm.state.pdf);Assert.assertNull(vm.state.openedImage)
+            Assert.assertEquals("保留这段未发送的草稿",vm.state.draft)
+            approvalsJson="[]";history="[]"
+            chatSockets.last().send(JSONObject().put("type","approval.resolved").put("threadId","t").put("approvalId",id)
+                .put("eventId","preview-resolved-$index").put("decision","answered").toString())
+            ui.waitUntil(5000){id in vm.state.approvals&&vm.state.pendingApprovals.none{it.approvalId==id}}
+            ui.waitUntil(5000){ui.onAllNodesWithTag("questionAnswer:0").fetchSemanticsNodes().isEmpty()}
+        }
     }
 
     @Test fun currentCompletionIsSilentAndBackgroundCompletionIsTransientAndDeduplicated(){
@@ -538,7 +667,7 @@ class NativeFlowTest {
         ui.onNodeWithTag("workspaceFile:nested/note.txt").performClick()
         ui.waitUntil(10000){vm.state.file?.content=="工作区文件正文"}
         ui.onNodeWithTag("fileEditor").assertExists()
-        ui.onNodeWithText("返回目录").performScrollTo().performClick()
+        ui.onNodeWithContentDescription("返回目录").performScrollTo().performClick()
         ui.waitUntil(10000){vm.state.file==null&&!vm.state.fileBusy}
         ui.onNodeWithContentDescription("上一级").performClick()
         ui.waitUntil(10000){vm.state.filePath.isEmpty()&&!vm.state.fileBusy}
@@ -589,7 +718,8 @@ class NativeFlowTest {
         ui.waitUntil(10000){!vm.state.localConsole.statisticsLoading&&vm.state.localConsole.pricing=="codex"}
         Assert.assertEquals(before,position(),1f)
         Assert.assertTrue(consoleQueries.contains("codex:week:api"))
-        ui.onNodeWithTag("consoleDailyChart").performScrollTo().performTouchInput{down(center);advanceEventTime(100)}
+        ui.onNodeWithTag("consoleDailyChart").performScrollTo().performTouchInput{down(center);advanceEventTime(200)}
+        ui.waitUntil(2000){ui.onAllNodesWithTag("chartCallout").fetchSemanticsNodes().isNotEmpty()}
         ui.onNodeWithTag("chartCallout").assertExists()
         ui.onNodeWithTag("consoleDailyChart").performTouchInput{up()}
         ui.onNodeWithTag("chartCallout").assertDoesNotExist()
@@ -620,7 +750,7 @@ class NativeFlowTest {
         ui.onNodeWithTag("accountQuotaCard").assertIsDisplayed()
         ui.onNodeWithText("统计").performClick()
         ui.waitUntil(10000){vm.state.localConsole.statistics!=null}
-        ui.onNodeWithText("Token 总量 · 12 条计量记录").assertExists()
+        ui.onNodeWithText("12 条计量记录").assertExists()
         ui.onNodeWithTag("consoleScroll").performTouchInput{swipeUp()}
         val statisticsPosition=ui.onNodeWithTag("consoleScroll").fetchSemanticsNode().config[SemanticsProperties.VerticalScrollAxisRange].value()
         Assert.assertTrue(statisticsPosition>0f)
@@ -950,11 +1080,12 @@ class NativeFlowTest {
         ui.onNodeWithContentDescription("展开侧栏").performClick()
         ui.onNodeWithText("设置").performClick();ui.onNodeWithTag("settings:quota").performClick();ui.onNodeWithText("统计").performClick()
         ui.waitUntil(10000){vm.state.localConsole.statistics!=null&&vm.state.localConsole.info!=null}
-        ui.onNodeWithText("Token 总量 · 12 条计量记录").assertExists()
+        ui.onNodeWithText("12 条计量记录").assertExists()
         ui.onNodeWithText("本月").performClick()
         ui.waitUntil(10000){consoleQueries.contains("codex:month:codex")&&!vm.state.localConsole.statisticsLoading}
         ui.onNodeWithTag("consoleScroll").performScrollToNode(hasTestTag("consoleDailyChart"))
-        ui.onNodeWithTag("consoleDailyChart").performTouchInput{down(center);advanceEventTime(100)}
+        ui.onNodeWithTag("consoleDailyChart").performTouchInput{down(center);advanceEventTime(200)}
+        ui.waitUntil(2000){ui.onAllNodesWithTag("chartCallout").fetchSemanticsNodes().isNotEmpty()}
         ui.onNodeWithTag("chartCallout").assertExists()
         screenshot("native-console-statistics.png")
         ui.onNodeWithTag("consoleDailyChart").performTouchInput{up()}
@@ -995,7 +1126,7 @@ class NativeFlowTest {
         consoleOffline=false
         ui.onNodeWithContentDescription("刷新电脑控制台").performClick()
         ui.waitUntil(10000){vm.state.localConsole.statistics!=null&&vm.state.localConsole.statisticsError.isBlank()}
-        ui.onNodeWithText("Token 总量 · 12 条计量记录").assertExists()
+        ui.onNodeWithText("12 条计量记录").assertExists()
     }
 
     @Test fun compactCommandUsesDedicatedEndpointAndShowsContext(){
@@ -1374,6 +1505,7 @@ class NativeFlowTest {
             pdfBytes=java.io.ByteArrayOutputStream().use{output->document.writeTo(output);output.toByteArray()}
         } finally {document.close()}
         application.getSharedPreferences("appearance",0).edit().clear().commit()
+        if(testName.methodName=="linkedWorkbookOpensInTheFullChatAndReturns")application.getSharedPreferences("appearance",0).edit().putString("themeId","liquid").commit()
         application.getSharedPreferences("native",0).edit().clear().commit()
         application.getSharedPreferences("connection",0).edit().clear().commit()
         // Isolate persisted sidebar choices so prior cases cannot change the fixture layout.
@@ -1387,6 +1519,29 @@ class NativeFlowTest {
         server.dispatcher=object:okhttp3.mockwebserver.Dispatcher(){override fun dispatch(r:RecordedRequest):MockResponse {
             fun json(s:String)=MockResponse().setHeader("Content-Type","application/json").setBody(s)
             val path=r.requestUrl!!.encodedPath
+            if(testName.methodName=="linkedWorkbookOpensInTheFullChatAndReturns"){
+                if(path=="/health")return json("""{"ok":true,"minAndroidProtocolVersion":1,"capabilities":["local-thread-output-files","queue-draft-recovery"]}""")
+                if(path.startsWith("/api/threads/t/output-file/")){
+                    val fixture=nativeOfficePreviewFixture(application)
+                    return MockResponse().setHeader("Content-Type","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet").setBody(okio.Buffer().write(fixture.readBytes()))
+                }
+            }
+            if(testName.methodName=="linkedOutputFolderBrowsesImagesAndDocumentsAndKeepsErrors"){
+                if(path=="/file-error")return json("""{"error":"文件不是这条可见回复中的链接"}""").setResponseCode(400)
+                if(path.startsWith("/api/threads/t/output-file/")){
+                    val target=r.requestUrl!!.queryParameter("path").orEmpty()
+                    if(r.requestUrl!!.queryParameter("browse")=="1")return if(target=="预览")
+                        json("""{"files":[{"name":"图 #20%.png","path":"预览/图 #20%.png","kind":"file"}]}""")
+                    else json("""{"files":[{"name":"预览","path":"预览","kind":"directory"},{"name":"notes.txt","path":"notes.txt","kind":"file"}]}""")
+                    if(r.requestUrl!!.queryParameter("directory")!=null){
+                        if(target=="notes.txt")return MockResponse().setBody("文件夹中的正文")
+                        Assert.assertEquals("预览/图 #20%.png",target)
+                        return MockResponse().setHeader("Content-Type","image/png").setBody(okio.Buffer().write(android.util.Base64.decode("iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAJUlEQVR4AYXBAQEAIAyAMCSN6QxrId9AtrXPfXxIkCBBggQJEgZ8KAJ3pT0W6wAAAABJRU5ErkJggg==",0)))
+                    }
+                    return json("""{"error":"链接指向目录","kind":"directory"}""").setResponseCode(409)
+                }
+                if(path=="/health")return json("""{"ok":true,"minAndroidProtocolVersion":1,"capabilities":["local-thread-output-files","local-thread-output-directories","queue-draft-recovery"]}""")
+            }
             if(path.startsWith("/api/local-console/accounts/")){
                 val service=path.removePrefix("/api/local-console/accounts/")
                 if(r.method=="GET")return if(service==stalledAccountService)MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE) else json(JSONObject().put("fixture",service).put("items",org.json.JSONArray()).toString())
@@ -1707,7 +1862,8 @@ if(m.optString("text").contains("WRITER")){queue="""[{"id":"$id","text":"WRITER 
         ui.onAllNodesWithText("7d 额度").onFirst().assertIsDisplayed()
         ui.onNodeWithText("配额剩余趋势").assertIsDisplayed()
         ui.onNodeWithTag("quota-trend").performScrollTo()
-        ui.onNodeWithTag("quota-trend").performScrollTo().performTouchInput{down(Offset(width.toFloat()-1,centerY));advanceEventTime(100)}
+        ui.onNodeWithTag("quota-trend").performScrollTo().performTouchInput{down(Offset(width.toFloat()-1,centerY));advanceEventTime(200)}
+        ui.waitUntil(2000){ui.onAllNodesWithTag("quotaSelection").fetchSemanticsNodes().isNotEmpty()}
         ui.onNodeWithTag("quotaSelection").assertIsDisplayed()
         ui.onNodeWithText("7d 额度 · 剩余 77%",substring=true).assertExists()
         screenshot("native-quota-selected.png")
@@ -1789,7 +1945,7 @@ if(m.optString("text").contains("WRITER")){queue="""[{"id":"$id","text":"WRITER 
         ui.runOnUiThread{vm.openThread(ThreadRecord("t"))}
         ui.waitUntil(10000){!vm.state.historySyncing&&vm.state.threads.first().goal?.status=="blocked"}
         ui.onNodeWithTag("goalExpand").performClick()
-        ui.onNodeWithText("编辑").performClick()
+        ui.onNodeWithTag("goalEdit").assertTextContains("修改").performClick()
         ui.onNode(hasSetTextAction() and hasAnyAncestor(hasTestTag("goalEditor"))).performTextReplacement("修改后的受阻目标")
         ui.onNodeWithTag("goalSave").performClick()
         ui.waitUntil(10000){!vm.goalWorkBusy("t")&&vm.state.threads.first().goal?.objective=="修改后的受阻目标"}
@@ -1810,7 +1966,7 @@ if(m.optString("text").contains("WRITER")){queue="""[{"id":"$id","text":"WRITER 
         ui.runOnUiThread{vm.openThread(ThreadRecord("t"))}
         ui.waitUntil(10000){!vm.state.historySyncing&&vm.state.threads.first().goal!=null}
         ui.onNodeWithTag("goalExpand").performClick()
-        ui.onNodeWithText("编辑").performClick()
+        ui.onNodeWithTag("goalEdit").performClick()
         ui.onNode(hasSetTextAction() and hasAnyAncestor(hasTestTag("goalEditor"))).performTextReplacement("失败后仍保留这个目标")
         ui.onNodeWithTag("goalSave").performClick()
         ui.waitUntil(10000){goalSaveRequests.get()==1&&!vm.currentWorkBusy()&&ui.onAllNodesWithTag("goalSaveError").fetchSemanticsNodes().isNotEmpty()}
@@ -1856,7 +2012,7 @@ if(m.optString("text").contains("WRITER")){queue="""[{"id":"$id","text":"WRITER 
         ui.runOnUiThread{androidx.core.view.WindowCompat.setDecorFitsSystemWindows(ui.activity.window,false);vm.openThread(ThreadRecord("t"))}
         ui.waitUntil(10000){!vm.state.historySyncing&&vm.state.threads.first().goal!=null}
         ui.onNodeWithTag("goalExpand").performClick()
-        ui.onNodeWithText("编辑").performClick()
+        ui.onNodeWithTag("goalEdit").performClick()
         ui.onNode(hasSetTextAction() and hasAnyAncestor(hasTestTag("goalEditor"))).performClick().performTextReplacement("继续核对输入框位置")
         ui.waitUntil(10000){ui.activity.window.decorView.rootWindowInsets?.isVisible(android.view.WindowInsets.Type.ime())==true}
         ui.onNodeWithText("编辑目标").assertIsDisplayed()
@@ -2904,7 +3060,13 @@ if(m.optString("text").contains("WRITER")){queue="""[{"id":"$id","text":"WRITER 
         ui.onNodeWithTag("pdfPages").performScrollToIndex(1)
         ui.waitUntil(10000){runCatching{ui.onNodeWithContentDescription("PDF 第 2 页").assertIsDisplayed();true}.getOrDefault(false)}
         ui.onNodeWithContentDescription("下一页").assertDoesNotExist()
-        ui.onNodeWithContentDescription("放大 PDF").performClick()
+        ui.onNodeWithContentDescription("放大 PDF").assertDoesNotExist()
+        ui.onNodeWithTag("pdfGestureSurface").performTouchInput{
+            pinch(start0=center-Offset(width/8f,0f),end0=center-Offset(width/4f,0f),
+                start1=center+Offset(width/8f,0f),end1=center+Offset(width/4f,0f))
+        }
+        ui.onNodeWithTag("pdfGestureSurface").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"缩放 200%"))
+        ui.onNodeWithTag("pdfGestureSurface").performTouchInput{swipe(center,center+Offset(width/5f,height/8f))}
         ui.onNodeWithContentDescription("保存 PDF").assertIsDisplayed()
         screenshot("native-pdf-preview.png")
         ui.onNodeWithContentDescription("关闭 PDF 预览").performClick()
@@ -2912,7 +3074,7 @@ if(m.optString("text").contains("WRITER")){queue="""[{"id":"$id","text":"WRITER 
         ui.runOnUiThread{vm.openOutput("F:/Code/Codex-mobile-control/artifacts/report.pdf")}
         ui.waitUntil(10000){runCatching{ui.onNodeWithContentDescription("PDF 第 1 页").assertIsDisplayed();true}.getOrDefault(false)}
         ui.onNodeWithText("1 / 2").assertIsDisplayed()
-        ui.onNodeWithContentDescription("缩小 PDF").assertIsNotEnabled()
+        ui.onNodeWithTag("pdfGestureSurface").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription,"缩放 100%"))
         ui.onNodeWithContentDescription("关闭 PDF 预览").performClick()
         ui.waitUntil(5000){vm.state.pdf==null}
         Assert.assertTrue(rawFileCount.get()>0)
@@ -2922,9 +3084,9 @@ if(m.optString("text").contains("WRITER")){queue="""[{"id":"$id","text":"WRITER 
         ui.runOnUiThread{vm.openOutput("F:/Code/Codex-mobile-control/artifacts/report.md")}
         ui.waitUntil(10000){vm.state.markdown?.content?.contains("阅读器标题")==true}
         ui.onNodeWithText("report.md").assertIsDisplayed()
-        ui.onNodeWithText("源码").performClick()
+        ui.onNodeWithContentDescription("查看源码").performClick()
         ui.onNodeWithText("# 阅读器标题",substring=true).assertIsDisplayed()
-        ui.onNodeWithText("阅读").performClick()
+        ui.onNodeWithContentDescription("阅读文档").performClick()
         screenshot("native-markdown-preview.png")
         ui.onNodeWithContentDescription("关闭阅读器").performClick()
         ui.waitUntil(5000){vm.state.markdown==null}
@@ -2993,14 +3155,14 @@ if(m.optString("text").contains("WRITER")){queue="""[{"id":"$id","text":"WRITER 
                     ui.onNodeWithText(name).assertHasClickAction().performClick()
                     ui.waitUntil(10000){vm.state.markdown?.content==content}
                     ui.onNodeWithText(content).assertIsDisplayed()
-                    ui.onNodeWithText("源码").assertDoesNotExist()
+                    ui.onNodeWithContentDescription("查看源码").assertDoesNotExist()
                     Assert.assertEquals(if(name.endsWith(".txt"))"text/plain" else "application/json",vm.state.markdown?.mime)
                     if(name.endsWith(".JSON")&&android.os.Build.VERSION.SDK_INT>=29){
-                        ui.onNodeWithText("保存").performClick()
+                        ui.onNodeWithContentDescription("保存文档").performClick()
                         ui.waitUntil(10000){savedJson()?.also{saved=it}!=null}
                         Assert.assertEquals("application/json",resolver.getType(saved!!))
                         Assert.assertEquals(content,resolver.openInputStream(saved!!)?.bufferedReader(Charsets.UTF_8)?.use{it.readText()})
-                        ui.waitUntil(5000){runCatching{ui.onNodeWithText("保存").assertIsEnabled();true}.getOrDefault(false)}
+                        ui.waitUntil(5000){runCatching{ui.onNodeWithContentDescription("保存文档").assertIsEnabled();true}.getOrDefault(false)}
                     }
                     ui.onNodeWithContentDescription("关闭阅读器").performClick()
                     ui.waitUntil(5000){vm.state.markdown==null}
@@ -3035,15 +3197,15 @@ if(m.optString("text").contains("WRITER")){queue="""[{"id":"$id","text":"WRITER 
                 ui.waitUntil(15000){vm.state.uploads.size==1&&!vm.state.uploading}
                 ui.onNodeWithText(name).assertHasClickAction().performClick()
                 ui.waitUntil(10000){vm.state.markdown?.content==content}
-                if(name.endsWith(".md"))ui.onNodeWithText("源码").performClick()
+                if(name.endsWith(".md"))ui.onNodeWithContentDescription("查看源码").performClick()
                 ui.onNodeWithText(content).assertIsDisplayed()
                 Assert.assertTrue(vm.state.markdown?.hasBom==true)
                 Assert.assertEquals(if(name.endsWith(".md"))NativeTextEncoding.UTF16_LE else NativeTextEncoding.UTF16_BE,vm.state.markdown?.encoding)
                 if(android.os.Build.VERSION.SDK_INT>=29){
-                    ui.onNodeWithText("保存").performClick()
+                    ui.onNodeWithContentDescription("保存文档").performClick()
                     ui.waitUntil(10000){savedFile(name)?.also{saved=it}!=null}
                     Assert.assertArrayEquals(bytes,resolver.openInputStream(saved!!)?.use{it.readBytes()})
-                    ui.waitUntil(5000){runCatching{ui.onNodeWithText("保存").assertIsEnabled();true}.getOrDefault(false)}
+                    ui.waitUntil(5000){runCatching{ui.onNodeWithContentDescription("保存文档").assertIsEnabled();true}.getOrDefault(false)}
                 }
                 ui.onNodeWithContentDescription("关闭阅读器").performClick()
                 ui.waitUntil(5000){vm.state.markdown==null}
@@ -3135,10 +3297,10 @@ if(m.optString("text").contains("WRITER")){queue="""[{"id":"$id","text":"WRITER 
                         val document=checkNotNull(vm.state.markdown)
                         Assert.assertTrue(document.mime.startsWith("text/"))
                         ui.onNodeWithText(document.content).assertIsDisplayed()
-                        ui.onNodeWithText("保存").performClick()
+                        ui.onNodeWithContentDescription("保存文档").performClick()
                         ui.waitUntil(10000){savedFile(name)!=null}
                         Assert.assertEquals("application/octet-stream",resolver.getType(savedFile(name)!!))
-                        ui.waitUntil(5000){runCatching{ui.onNodeWithText("保存").assertIsEnabled();true}.getOrDefault(false)}
+                        ui.waitUntil(5000){runCatching{ui.onNodeWithContentDescription("保存文档").assertIsEnabled();true}.getOrDefault(false)}
                         ui.onNodeWithContentDescription("关闭阅读器").performClick()
                         ui.waitUntil(5000){vm.state.markdown==null}
                     }else{

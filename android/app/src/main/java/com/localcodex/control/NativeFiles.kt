@@ -44,7 +44,7 @@ fun nativeIsMarkdownFile(name:String,mime:String=""):Boolean =
 
 internal fun nativeIsTextFile(name:String,mime:String):Boolean =
     mime.startsWith("text/") || mime in setOf("application/json","application/xml","application/yaml","application/x-yaml","application/toml","application/javascript") ||
-        name.substringAfterLast('.',"").lowercase() in setOf("txt","log","json","csv","yaml","yml","toml","xml","html","htm","css","js","ts","py","sh","kt","java","go","rs","c","h","cpp","hpp","sql","ps1","bat","ini","cfg","tex","bib","r")
+        name.substringAfterLast('.',"").lowercase() in setOf("txt","log","json","csv","tsv","yaml","yml","toml","xml","html","htm","css","js","ts","py","sh","kt","java","go","rs","c","h","cpp","hpp","sql","ps1","bat","ini","cfg","tex","bib","r")
 
 internal fun nativeUploadedMime(name:String,mime:String):String {
     val type=mime.substringBefore(';').trim().lowercase()
@@ -79,6 +79,8 @@ fun nativeThreadOutputEndpoint(threadId:String,eventId:String,href:String,source
     val name=nativeOutputLinkName(href)
     return "/api/threads/${Uri.encode(threadId)}/output-file/${Uri.encode(name)}?eventId=${Uri.encode(eventId)}&path=${Uri.encode(href)}"+if(sourcePath.isBlank())"" else "&source=${Uri.encode(sourcePath)}"
 }
+internal fun nativeThreadDirectoryEndpoint(directory:NativeOutputDirectory,path:String,browse:Boolean=false):String =
+    nativeThreadOutputEndpoint(directory.threadId,directory.eventId,path)+"&directory=${Uri.encode(directory.href)}"+if(browse)"&browse=1" else ""
 internal fun nativeOpenSavedFile(context:Context,uri:Uri,mime:String){
     android.widget.Toast.makeText(context,if(mime.startsWith("image/"))"图片已保存到相册/Codex" else "已保存到下载/Codex",android.widget.Toast.LENGTH_SHORT).show()
     val view=Intent(Intent.ACTION_VIEW).setDataAndType(uri,mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)

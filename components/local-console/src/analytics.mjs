@@ -1,6 +1,22 @@
 import {skillAnalytics} from './skill-analytics.mjs';
 import fs from 'node:fs';import path from 'node:path';import {Worker} from 'node:worker_threads';import {analyticsDb} from './analytics-db.mjs';import {calendarRange,classifyTool} from './analytics-core.mjs';
 import {tokenAnalytics} from './token-analytics.mjs';
+
+function activitySummary(db,since,until){
+  // The activity page loads its token calendar separately. Restrict this query
+  // to activity records so opening it never scans tool calls or prices tokens.
+  const daily=db.prepare("SELECT strftime('%Y-%m-%d',time/1000,'unixepoch','localtime') date,COUNT(DISTINCT session) activeSessions,COUNT(DISTINCT time) activeMinutes FROM events WHERE kind='activity' AND time>=? AND time<=? GROUP BY date ORDER BY date").all(since,until);
+  const byDay=new Map(daily.map(row=>[row.date,row]));
+  const series=[];
+  for(let date=new Date(since);date.getTime()<=until;date.setDate(date.getDate()+1)){
+    const key=[date.getFullYear(),String(date.getMonth()+1).padStart(2,'0'),String(date.getDate()).padStart(2,'0')].join('-');
+    series.push({date:key,activeSessions:0,activeMinutes:0,...byDay.get(key)});
+  }
+  const activeSessions=db.prepare("SELECT COUNT(DISTINCT session) n FROM events WHERE kind='activity' AND time>=? AND time<=?").get(since,until).n;
+  const scope=db.prepare('SELECT COUNT(*) files,COUNT(DISTINCT session) sessions,COALESCE(SUM(size),0) bytes,COALESCE(SUM(skipped),0) skippedRecords,COALESCE(SUM(size-offset),0) pendingBytes,SUM(CASE WHEN session IS NULL THEN 1 ELSE 0 END) unknownFiles FROM files').get();
+  return {series,totals:{activeMinutes:daily.reduce((sum,row)=>sum+row.activeMinutes,0),activeDays:daily.filter(row=>row.activeMinutes>0).length,activeSessions},scope,tools:[]};
+}
+
 export class Analytics {
   constructor(home,dir){this.home=home;this.dir=dir;fs.mkdirSync(dir,{recursive:true});this.file=path.join(dir,'activity.sqlite');this.db=analyticsDb(this.file);for(const r of this.db.prepare("SELECT DISTINCT tool,category FROM events WHERE kind='tool'").all()){const category=classifyTool(r.tool||'');if(category!==r.category)this.db.prepare('UPDATE events SET category=? WHERE tool=?').run(category,r.tool);}this.summaryCache=new Map();this.worker=null;this.progress={running:false};try{this.progress={...JSON.parse(fs.readFileSync(path.join(dir,'status.json'),'utf8')),running:false};}catch{}}
   start(rebuild=false){if(this.worker)return {...this.progress,running:true};this.paused=false;this.progress={running:true,totalBytes:0,doneBytes:0,readBytes:0,completedFiles:0};this.worker=new Worker(new URL('./analytics-worker.mjs',import.meta.url),{workerData:{home:this.home,db:this.file,rebuild},resourceLimits:{maxOldGenerationSizeMb:128}});this.worker.on('message',m=>{if(m.type==='progress')this.progress={...this.progress,...m};else if(m.type==='done')this.progress={...this.progress,running:false,cancelled:m.cancelled,at:m.at};else if(m.type==='failure')this.progress={...this.progress,running:false,error:m.message};});this.worker.on('error',e=>{this.progress={...this.progress,running:false,error:e.message};});this.worker.on('exit',()=>{this.worker=null;this.progress.running=false;fs.writeFileSync(path.join(this.dir,'status.json'),JSON.stringify(this.progress));});return this.progress;}
@@ -10,6 +26,10 @@ export class Analytics {
   summary(range='week',filters={},bounds={}){
     const version=this.db.prepare('PRAGMA data_version').get().data_version,cacheKey=JSON.stringify([range,filters,bounds,version,Math.floor(Date.now()/30000)]),cached=this.summaryCache.get(cacheKey);if(cached)return {...cached,progress:this.progress};
     const {since,until}=calendarRange(range,Date.now(),bounds);const day="strftime('%Y-%m-%d',time/1000,'unixepoch','localtime')";
+    if(filters.view==='activity'){
+      const result={range,since,until,...activitySummary(this.db,since,until),progress:this.progress,retention:{enabled:true,refreshSeconds:300},scopeLabel:'本机已采集历史；删除会话后保留计量记录',activityDefinition:'含日志事件的分钟数（估算，不是连续工作时长）'};
+      if(this.summaryCache.size>=24)this.summaryCache.clear();this.summaryCache.set(cacheKey,result);return result;
+    }
     if(filters.view==='calendar'||filters.view==='tokens'){
       const tokens=filters.view==='calendar'?{modelSeries:this.db.prepare("SELECT strftime('%Y-%m-%d',time/1000,'unixepoch','localtime') date,model,SUM(input) input,SUM(output) output FROM events WHERE kind='token' AND time>=? AND time<=? GROUP BY date,model").all(since,until)}:tokenAnalytics(this.db,since,until,filters);
       const scope=this.db.prepare('SELECT COUNT(*) files,COALESCE(SUM(skipped),0) skippedRecords FROM files').get();

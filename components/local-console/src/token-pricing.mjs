@@ -1,9 +1,10 @@
-export const PRICE_DATE='2026-10-12';
+export const PRICE_DATE='2026-10-27';
 export const PRICE_SOURCE='https://developers.openai.com/api/docs/pricing';
 // USD per million tokens; current list prices, not historical billing or reseller charges.
 export const TOKEN_PRICES={
   'gpt-6-astra':{input:10,cached:1,output:50,fast:2},
   'gpt-6.1-sol':{input:2,cached:.1,output:10,fast:2},
+  'gpt-6.1-terra':{input:1,cached:.05,output:5,fast:2},
   'gpt-6-sol':{input:2,cached:.2,output:10,fast:2},
   'gpt-6-luna':{input:.1,cached:.01,output:.5,fast:2},
   'gpt-5.6-sol':{input:4,cached:.4,output:20,fast:2},

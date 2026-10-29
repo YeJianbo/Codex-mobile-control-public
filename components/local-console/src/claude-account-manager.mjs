@@ -68,7 +68,7 @@ export class ClaudeAccountManager{
     const ownerId=selectedId==='current'?(active?.id||(native?owner(native):'no-login')):selectedId;
     const history=points.filter(point=>point.accountId===ownerId).slice(-720),latest=history.at(-1)||null;
     let externalProfiles=[];try{externalProfiles=this.harnessProfiles.rows('claude').map(row=>{let settings={};try{settings=JSON.parse(row.settings_config);}catch{}return {id:row.id,name:text(row.name),category:row.category,baseUrl:text(settings.env?.ANTHROPIC_BASE_URL),model:text(settings.model)||text(settings.env?.ANTHROPIC_MODEL)};});}catch{}
-    return {app:'claude',name:'Claude Code',current,items,externalProfiles,selectedId,selected,latest,history,canSwitch:!AUTH_KEYS.some(key=>!!this.environment[key]),switchReason:AUTH_KEYS.some(key=>!!this.environment[key])?'Claude 认证被当前进程环境变量覆盖，请先在启动环境中移除对应变量再切换':null,source:{name:'CodexBar · MIT',url:'https://github.com/steipete/CodexBar'}};
+    return {app:'claude',name:'Claude Code',current,currentAccountId:active?.id||(native?owner(native):null),items,externalProfiles,selectedId,selected,latest,history,canSwitch:!AUTH_KEYS.some(key=>!!this.environment[key]),switchReason:AUTH_KEYS.some(key=>!!this.environment[key])?'Claude 认证被当前进程环境变量覆盖，请先在启动环境中移除对应变量再切换':null,source:{name:'CodexBar · MIT',url:'https://github.com/steipete/CodexBar'}};
   }
   act(action,input={}){const operation=this.pending.then(()=>this.perform(action,input));this.pending=operation.catch(()=>{});return operation;}
   async perform(action,input){

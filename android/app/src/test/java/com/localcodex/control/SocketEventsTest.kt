@@ -7,6 +7,21 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class SocketEventsTest {
+    @Test fun consumerFailureIsIdentifiedBeforeTheSocketIsCancelled()=runBlocking {
+        val connected=CompletableDeferred<(Int)->Boolean>();val failed=CompletableDeferred<Throwable>()
+        val cleanup=CompletableDeferred<Boolean>();val expected=IllegalStateException("fixture")
+        val collector=launch{
+            try{socketEvents<Int>(onConsumerFailure={failed.complete(it)}){emit,_->
+                connected.complete(emit);{cleanup.complete(failed.isCompleted);Unit}
+            }.collect{throw expected}}catch(error:IllegalStateException){assertEquals(expected.message,error.message)}
+        }
+        try{
+            val emit=withTimeout(2000){connected.await()};assertTrue(emit(1))
+            val actual=withTimeout(2000){failed.await()}
+            assertEquals(expected.javaClass,actual.javaClass);assertEquals(expected.message,actual.message)
+            assertTrue(withTimeout(2000){cleanup.await()})
+        }finally{collector.cancelAndJoin()}
+    }
     @Test fun replayAndLiveBurstDoNotBlockTheSocketReaderWhileUiIsPaused() = runBlocking {
         val connected = CompletableDeferred<(Int) -> Boolean>()
         val firstReceived = CompletableDeferred<Unit>()
@@ -45,7 +60,8 @@ class SocketEventsTest {
         val releaseUi = CompletableDeferred<Unit>()
         val disconnected = CompletableDeferred<Unit>()
         val failure = CompletableDeferred<Throwable>()
-        val flow = socketEvents<Int> { emit, _ -> connected.complete(emit); { disconnected.complete(Unit); Unit } }
+        var overflows=0
+        val flow = socketEvents<Int>(onBufferOverflow={overflows++}) { emit, _ -> connected.complete(emit); { disconnected.complete(Unit); Unit } }
         val collector = launch(Dispatchers.Default) {
             try { flow.collect { if (it == 0) { firstReceived.complete(Unit); releaseUi.await() } } }
             catch (error: IOException) { failure.complete(error) }
@@ -58,6 +74,7 @@ class SocketEventsTest {
             releaseUi.complete(Unit)
             assertTrue(withTimeout(2000) { failure.await() } is IOException)
             withTimeout(2000) { disconnected.await() }
+            assertEquals(1,overflows)
         } finally { releaseUi.complete(Unit); collector.cancelAndJoin() }
     }
 

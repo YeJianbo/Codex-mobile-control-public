@@ -50,9 +50,9 @@ internal fun parseNativeAgentHealth(row:JSONObject):NativeAgentHealth{
 
 @Composable internal fun NativeAgentManagementContent(state:NativeAgentHealthState,connected:Boolean,back:()->Unit,onRefresh:()->Unit,onCheckUpdates:()->Unit,restart:NativeBackendRestart=NativeBackendRestart(),canRestart:Boolean=false,onRestart:()->Unit={},canManagePublic:Boolean=false,onPublicAccess:(String,Boolean)->Unit={_,_->}){
     NativeManagementPage("助手管理","",back,modifier=Modifier.testTag("agentManagement"),actions={
-        TextButton(onClick=onRefresh,enabled=connected&&!state.loading){Text(if(state.loading)"检查中…" else "刷新")}
+        ChromeButton(R.drawable.ic_lucide_rotate_cw,"刷新",onRefresh,enabled=connected&&!state.loading)
     }){
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
+        Column(Modifier.weight(1f).nativeManagementScroll(rememberScrollState()).padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
             if(!connected)Text("连接电脑后查看助手状态",fontSize=14.sp)
             DashboardAction(if(state.checkingUpdates)"正在检查更新…" else "检查更新",onCheckUpdates,Modifier.fillMaxWidth().testTag("checkHarnessUpdates"),connected&&!state.checkingUpdates)
             if(state.error.isNotBlank())Text(state.error,color=MaterialTheme.colors.error,fontSize=13.sp)

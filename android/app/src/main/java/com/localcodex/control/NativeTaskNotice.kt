@@ -4,7 +4,6 @@ import androidx.compose.animation.*
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -25,6 +24,8 @@ import kotlinx.coroutines.delay
 
 @Composable internal fun NativeTaskNotice(notice:TaskNotification?,onDismiss:(String)->Unit,onOpen:(TaskNotification)->Unit){
     if(notice==null)return
+    val backdrop=LocalNativeOverlayBackdrop.current?:LocalNativeGlassBackdrop.current
+    val question=notice.questionId.isNotBlank()
     key(notice.key){
         val visible=remember{MutableTransitionState(false).apply{targetState=true}}
         val accessibility=LocalAccessibilityManager.current
@@ -36,20 +37,22 @@ import kotlinx.coroutines.delay
             dismiss(notice.key)
         }
         Popup(alignment=Alignment.TopCenter,properties=PopupProperties(focusable=false,dismissOnClickOutside=false,dismissOnBackPress=false)){
+            CompositionLocalProvider(LocalNativeGlassBackdrop provides backdrop){
             AnimatedVisibility(visibleState=visible,enter=fadeIn(tween(180))+slideInVertically(tween(180)){ -it/3 },exit=fadeOut(tween(160))+slideOutVertically(tween(160)){ -it/3 }){
-                NativeGlassSurface(Modifier.statusBarsPadding().padding(horizontal=16.dp,vertical=12.dp).widthIn(max=480.dp).fillMaxWidth().testTag("taskCompletionNotice")
-                    .semantics{liveRegion=LiveRegionMode.Polite},shape=RoundedCornerShape((LocalNativeTheme.current.geometry.panel+2f).coerceIn(28f,36f).dp),color=MaterialTheme.colors.surface,elevation=4.dp){
+                NativeGlassSurface(Modifier.statusBarsPadding().padding(horizontal=16.dp,vertical=12.dp).widthIn(max=480.dp).fillMaxWidth().testTag(if(question)"questionNotice" else "taskCompletionNotice")
+                    .semantics{liveRegion=LiveRegionMode.Polite},shape=Radius.Notice,color=MaterialTheme.colors.surface,kind=NativeGlassKind.MENU,elevation=4.dp){
                     Row(Modifier.padding(start=18.dp,top=10.dp,bottom=10.dp,end=8.dp),verticalAlignment=Alignment.CenterVertically){
-                        Icon(painterResource(if(notice.failureReason.isBlank())R.drawable.ic_lucide_check else R.drawable.ic_lucide_circle_alert),null,Modifier.size(20.dp),tint=if(notice.failureReason.isBlank())MaterialTheme.colors.primary else MaterialTheme.colors.error)
+                        Icon(painterResource(if(question)R.drawable.ic_lucide_circle_question_mark else if(notice.failureReason.isBlank())R.drawable.ic_lucide_check else R.drawable.ic_lucide_circle_alert),null,Modifier.size(20.dp),tint=if(notice.failureReason.isBlank())MaterialTheme.colors.primary else MaterialTheme.colors.error)
                         Column(Modifier.weight(1f).padding(start=12.dp),verticalArrangement=Arrangement.spacedBy(4.dp)){
                             Text(notice.title.substringBefore(" · "),fontSize=15.sp,fontWeight=FontWeight.SemiBold,maxLines=1,overflow=TextOverflow.Ellipsis)
-                            val summary=notice.title.substringAfter(" · ","").ifBlank{notice.body.lineSequence().firstOrNull().orEmpty()}
-                            if(summary.isNotBlank())Text(summary,fontSize=12.sp,color=MaterialTheme.colors.onSurface.copy(alpha=.7f),maxLines=1,overflow=TextOverflow.Ellipsis)
+                            val summary=if(question)notice.body else notice.title.substringAfter(" · ","").ifBlank{notice.body.lineSequence().firstOrNull().orEmpty()}
+                            if(summary.isNotBlank())Text(summary,fontSize=12.sp,color=MaterialTheme.colors.onSurface.copy(alpha=.7f),maxLines=if(question)2 else 1,overflow=TextOverflow.Ellipsis)
                         }
-                        TextButton(onClick={onOpen(notice)},contentPadding=PaddingValues(horizontal=12.dp,vertical=8.dp)){Text("查看",fontSize=13.sp)}
-                        IconButton(onClick={onDismiss(notice.key)}){Icon(painterResource(R.drawable.ic_lucide_x),"关闭完成提示",Modifier.size(18.dp))}
+                        TextButton(onClick={onOpen(notice)},contentPadding=PaddingValues(horizontal=12.dp,vertical=8.dp)){Text(if(question)"回答" else "查看",fontSize=13.sp)}
+                        IconButton(onClick={onDismiss(notice.key)}){Icon(painterResource(R.drawable.ic_lucide_x),if(question)"关闭提问提示" else "关闭完成提示",Modifier.size(18.dp))}
                     }
                 }
+            }
             }
         }
     }

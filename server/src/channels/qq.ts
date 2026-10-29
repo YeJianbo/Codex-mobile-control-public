@@ -9,7 +9,7 @@ export function qqDriver(service:ChannelService,createBot:(options:ConstructorPa
   const details=new Map<string,Record<string,unknown>>();
   return {
     kind:'qq',
-    state:id=>({configured:!!service.store.privateValue(id,'qq'),appId:service.store.privateValue<{appId:string}>(id,'qq')?.appId,...details.get(id)}),
+    state:id=>({configured:!!service.store.privateValue(id,'qq'),appId:service.store.privateValue<{appId:string}>(id,'qq')?.appId,authorizedCount:service.qqAccess.senders(id).length,...details.get(id)}),
     async configure(id,value){const parsed=credentials.parse(value);const previous=service.store.privateValue<{appId:string}>(id,'qq');if(previous&&previous.appId!==parsed.appId)service.store.resetIdentity(id);service.store.putPrivate(id,'qq',parsed);details.delete(id);},
     forget:id=>{details.delete(id);},
     async connect({account,signal,receive,failed}){
@@ -29,6 +29,8 @@ export function qqDriver(service:ChannelService,createBot:(options:ConstructorPa
       bot.on('error',()=>{details.set(account.id,{transport:'reconnecting',lastError:'QQ 连接出现错误，正在重连；请核对机器人权限和凭据。'});});
       bot.on('message',async(_context,message)=>{
         if(signal.aborted||message.kind!=='c2c'||!message.replyTarget)return;
+        const access=service.qqAccess.check(account.id,message.senderId,message.content);
+        if(!access.allowed){if(access.reply&&!signal.aborted)await bot.sendText(message.replyTarget,access.reply).catch(()=>report('QQ 授权提示未获平台确认'));return;}
         const chatId=`c2c:${message.senderId}`;
         targets.set(message.senderId,message.replyTarget);
         service.store.putPrivate(account.id,`qq-reply:${message.senderId}`,{target:message.replyTarget,at:Date.now()});

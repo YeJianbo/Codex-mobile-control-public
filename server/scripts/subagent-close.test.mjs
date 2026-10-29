@@ -3,7 +3,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {archiveOrCloseSubagent,isCrossVolumeArchiveError} from '../dist/services/subagentClose.js';
+import {archiveOrCloseSubagent,isCrossVolumeArchiveError,subagentCanArchive} from '../dist/services/subagentClose.js';
+
+test('only confirmed inactive subagents may be archived, including ended system errors',()=>{
+ for(const status of ['idle','notLoaded','systemError']){
+  assert.equal(subagentCanArchive(status,false),true);assert.equal(subagentCanArchive(status,true),false);
+ }
+ for(const status of ['active','futureStatus',''])assert.equal(subagentCanArchive(status,false),false);
+});
 
 const parent='parent',root={id:'child',title:'Sol',status:'idle',subagent:{parentThreadId:parent},createdAt:'2026-10-15T00:00:00Z',updatedAt:'2026-10-15T00:00:00Z'};
 const nested={...root,id:'nested',subagent:{parentThreadId:root.id}};

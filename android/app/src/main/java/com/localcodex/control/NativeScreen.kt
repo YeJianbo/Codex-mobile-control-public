@@ -145,9 +145,8 @@ import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 import kotlin.math.min
 
-private enum class ComposerAction { Send, Stop, Progress }
 private val sidebarModuleKeys=listOf("projects","goals","pinned","recent","agents")
-@Composable private fun PopupMenuRow(icon:Int,label:String,danger:Boolean=false,compact:Boolean=false,action:()->Unit){
+@Composable internal fun PopupMenuRow(icon:Int,label:String,danger:Boolean=false,compact:Boolean=false,action:()->Unit){
     val color=if(danger)AppColor.Danger else Ink
     val feedback=rememberHaptics()
     Row(Modifier.fillMaxWidth().heightIn(min=48.dp).clip(Radius.MenuItem).clickable{feedback.keyTap();action()}.padding(horizontal=if(compact)12.dp else 16.dp,vertical=if(compact)8.dp else 12.dp),verticalAlignment=Alignment.CenterVertically){ModernIcon(icon,null,Modifier.size(if(compact)18.dp else 20.dp),color);Text(label,Modifier.padding(start=if(compact)10.dp else 14.dp),fontSize=if(compact)14.sp else 15.sp,color=color)}
@@ -166,7 +165,7 @@ private val sidebarModuleKeys=listOf("projects","goals","pinned","recent","agent
         }
     }
 }
-@Composable internal fun ModernDropdown(expanded:Boolean,dismiss:()->Unit,width:Dp,scrollable:Boolean=true,edgeMargin:Dp=8.dp,placement:NativePopupPlacement=NativePopupPlacement.OVER_ANCHOR,content:@Composable ColumnScope.()->Unit){
+@Composable internal fun ModernDropdown(expanded:Boolean,dismiss:()->Unit,width:Dp,scrollable:Boolean=true,edgeMargin:Dp=8.dp,placement:NativePopupPlacement=NativePopupPlacement.OVER_ANCHOR,modifier:Modifier=Modifier,content:@Composable ColumnScope.()->Unit){
     var mounted by remember{mutableStateOf(expanded)}
     var layoutReady by remember{mutableStateOf(false)}
     val visibility=remember{Animatable(0f)}
@@ -200,7 +199,7 @@ private val sidebarModuleKeys=listOf("projects","goals","pinned","recent","agent
     // 键盘事件仍由宿主处理，返回键经 BackHandler(expanded) 关闭菜单。
     Popup(onDismissRequest={if(expanded)dismiss()},popupPositionProvider=positioner,properties=PopupProperties(focusable=false,dismissOnClickOutside=true)){
         CompositionLocalProvider(LocalNativeGlassBackdrop provides backdrop,LocalNativeGlassMotion provides samplingMotion){
-        NativeGlassSurface(shape=Radius.Panel,kind=NativeGlassKind.MENU,elevation=0.dp,border=BorderStroke(1.dp,GlassEdge),color=MaterialTheme.colors.surface,modifier=Modifier.padding(6.dp).width(contentWidth).graphicsLayer{transformOrigin=origin.value;alpha=visibility.value;scaleX=0.95f+0.05f*visibility.value;scaleY=scaleX}){
+        NativeGlassSurface(shape=Radius.Panel,kind=NativeGlassKind.MENU,elevation=0.dp,border=BorderStroke(1.dp,GlassEdge),color=MaterialTheme.colors.surface,modifier=modifier.padding(6.dp).width(contentWidth).graphicsLayer{transformOrigin=origin.value;alpha=visibility.value;scaleX=0.95f+0.05f*visibility.value;scaleY=scaleX}){
             Column(Modifier.testTag("modernDropdown").onSizeChanged{if(it.width>0&&it.height>0)layoutReady=true}.heightIn(max=maxHeight).then(if(scrollable)Modifier.verticalScroll(rememberScrollState()) else Modifier),content=content)
         }
         }
@@ -320,7 +319,7 @@ private fun nativeCommandIcon(name:String)=when(name){
 }
 @Composable internal fun NativeModelControls(
     models:List<NativeModel>,model:NativeModel?,effort:String,fast:Boolean?,showFast:Boolean,fastEnabled:Boolean,
-    showModels:Boolean,onShowModels:(Boolean)->Unit,onModel:(String)->Unit,onEffort:(String)->Unit,onFast:()->Unit,onSettings:()->Unit
+    showModels:Boolean,onShowModels:(Boolean)->Unit,onModel:(String)->Unit,onEffort:(String)->Unit,onFast:()->Unit,onSettings:(()->Unit)?
 ){
     val routeHints=remember(models){nativeModelRouteHints(models)}
     AnimatedContent(showModels,Modifier.padding(8.dp).testTag("modelControls"),transitionSpec={
@@ -375,27 +374,31 @@ private fun nativeCommandIcon(name:String)=when(name){
                 }
             }
             EffortSlider(model?.efforts.orEmpty(),effort,onEffort,compact=true,showLabel=false)
+            if(onSettings!=null){
             Divider(Modifier.padding(top=3.dp,bottom=2.dp),color=Ink.copy(alpha=0.06f))
             Row(Modifier.fillMaxWidth().height(34.dp).clip(Radius.Button).clickable(onClick=onSettings).padding(horizontal=10.dp),verticalAlignment=Alignment.CenterVertically){
                 ModernIcon(R.drawable.ic_lucide_sliders_horizontal,null,Modifier.size(15.dp),Muted)
                 Text("权限与更多设置",Modifier.padding(start=7.dp),fontSize=12.sp,color=Muted)
             }
+            }
         }
     }}
 }
 @Composable internal fun NativeSubmissionNotice(message:String,check:()->Unit,dismiss:()->Unit,clear:()->Unit){
-    Row(Modifier.fillMaxWidth().padding(horizontal=12.dp).testTag("submissionNotice"),verticalAlignment=Alignment.CenterVertically){
+    NativeNoticeSurface(AppColor.StatusWarning,Modifier.fillMaxWidth().padding(horizontal=12.dp).testTag("submissionNotice")){
+    Row(Modifier.fillMaxWidth().padding(start=12.dp),verticalAlignment=Alignment.CenterVertically){
         Text(message,Modifier.weight(1f),fontSize=12.sp,color=Muted,maxLines=2,overflow=TextOverflow.Ellipsis)
         TextButton(onClick=check,contentPadding=PaddingValues(horizontal=7.dp)){Text("检查",fontSize=12.sp)}
         TextButton(onClick=clear,contentPadding=PaddingValues(horizontal=7.dp)){Text("清除待发",fontSize=12.sp)}
         IconButton(onClick=dismiss,modifier=Modifier.size(48.dp)){ModernIcon(R.drawable.ic_lucide_x,"关闭提交提示",Modifier.size(16.dp),Muted)}
+    }
     }
 }
 @Composable private fun ActionRow(icon:Int,label:String,danger:Boolean=false,modifier:Modifier=Modifier,action:()->Unit){
     val color=if(danger)AppColor.Danger else Ink
     Row(modifier.fillMaxWidth().clip(Radius.Button).clickable(onClick=action).padding(vertical=7.dp,horizontal=8.dp),verticalAlignment=Alignment.CenterVertically){Box(Modifier.size(38.dp).clip(Radius.MenuItem).background(Wash),contentAlignment=Alignment.Center){ModernIcon(icon,null,Modifier.size(19.dp),color)};Text(label,color=color,fontSize=15.sp,modifier=Modifier.padding(start=12.dp))}
 }
-@Composable internal fun Sheet(title:String,close:()->Unit,stableHeight:Boolean=false,inPlace:Boolean=false,dismissEnabled:Boolean=true,bodyScrollState:ScrollState?=rememberScrollState(),onBack:(()->Boolean)?=null,onEntered:()->Unit={},contentHorizontalPadding:androidx.compose.ui.unit.Dp=20.dp,body:@Composable ColumnScope.()->Unit){
+@Composable internal fun Sheet(title:String,close:()->Unit,stableHeight:Boolean=false,inPlace:Boolean=false,dismissEnabled:Boolean=true,bodyScrollState:ScrollState?=rememberScrollState(),onBack:(()->Boolean)?=null,onEntered:()->Unit={},contentHorizontalPadding:androidx.compose.ui.unit.Dp=20.dp,titleContent:(@Composable ()->Unit)?=null,bodyPadding:PaddingValues=PaddingValues(top=8.dp,bottom=24.dp),body:@Composable ColumnScope.()->Unit){
     val height=LocalConfiguration.current.screenHeightDp.dp*0.85f
     val density=LocalDensity.current
     val bottomGap=with(density){16.dp.toPx()}
@@ -464,9 +467,14 @@ private fun nativeCommandIcon(name:String)=when(name){
                     Column(Modifier.fillMaxWidth().testTag("sheetDragHeader")){
                         Box(Modifier.fillMaxWidth().height(14.dp).then(dragHandle),contentAlignment=Alignment.TopCenter){Box(Modifier.size(32.dp,4.dp).clip(Radius.Tiny).background(Ink.copy(alpha=0.14f)))}
                         // Keep the close button outside the immediate drag region during entry.
-                        Row(Modifier.padding(bottom=8.dp),verticalAlignment=Alignment.CenterVertically){Text(title,Modifier.weight(1f).heightIn(min=48.dp).wrapContentHeight().then(dragHandle),fontSize=20.sp,fontWeight=FontWeight.SemiBold);NativeOverlayClose({dismiss()},enabled=canDismiss)}
+                        Row(Modifier.padding(bottom=8.dp),verticalAlignment=Alignment.CenterVertically){
+                            Box(Modifier.weight(1f).heightIn(min=48.dp).wrapContentHeight().then(dragHandle)){
+                                if(titleContent!=null)titleContent() else Text(title,fontSize=20.sp,fontWeight=FontWeight.SemiBold)
+                            }
+                            NativeOverlayClose({dismiss()},enabled=canDismiss)
+                        }
                     }
-                    Column(Modifier.weight(1f,fill=bodyScrollState==null).then(bodyScrollState?.let{Modifier.verticalScroll(it)}?:Modifier).padding(top=8.dp,bottom=24.dp),content=body)
+                    Column(Modifier.weight(1f,fill=bodyScrollState==null).then(bodyScrollState?.let{Modifier.verticalScroll(it)}?:Modifier).padding(bodyPadding),content=body)
                 }
             }
             }
@@ -532,8 +540,17 @@ private fun nativeCommandIcon(name:String)=when(name){
     LaunchedEffect(s.storagePermissionRequired){if(s.storagePermissionRequired)storagePermission.launch(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)}
     val picker=rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()){result->if(result.resultCode==android.app.Activity.RESULT_OK)vm.uploadMedia(nativePickedUris(result.data))}
     val filePicker=rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()){result->if(result.resultCode==android.app.Activity.RESULT_OK)vm.uploadFiles(nativePickedUris(result.data))}
+    fun supportsCameraImage():Boolean {
+        // Antigravity takes text blocks only, but the gateway hands uploaded images
+        // over as local files its read_file tool can open, so camera and gallery
+        // stay available there.
+        if(vm.state.harness!="antigravity"&&vm.state.backends.find{it.agent==vm.state.harness}?.supportsImages==false){vm.error("当前助手不支持图片消息；可作为文件附件发送");return false}
+        return true
+    }
+    val takePhoto=rememberNativeCamera(listOf(s.address,s.harness,s.threadId,s.projectId).joinToString("\n"),
+        {uri,cleanup->vm.uploadMedia(listOf(uri),cleanup)},vm::error)
     fun chooseAttachment(kind:NativePickKind){
-        if(kind==NativePickKind.MEDIA&&(vm.state.harness=="antigravity"||vm.state.backends.find{it.agent==vm.state.harness}?.supportsImages==false)){vm.error("当前助手不支持图片消息；可作为文件附件发送");return}
+        if(kind==NativePickKind.MEDIA&&!supportsCameraImage())return
         val launcher=if(kind==NativePickKind.MEDIA)picker else filePicker
         val target=nativePickerIntent(context,kind)
         runCatching{launcher.launch(target)}.onFailure{
@@ -567,6 +584,8 @@ private fun nativeCommandIcon(name:String)=when(name){
     var connectionOpen by remember{mutableStateOf(false)}
     var connectionReady by remember(connectionOpen){mutableStateOf(false)}
     var sessionTab by remember{mutableStateOf("connection")}
+    var instructionThread by remember{mutableStateOf("")}
+    var instructionAgent by remember{mutableStateOf("codex")}
     var quotaOpen by remember{mutableStateOf(false)}
     var automationSheetThread by remember{mutableStateOf<String?>(null)}
     fun openAutomationSheet(threadId:String){automationSheetThread=threadId}
@@ -576,9 +595,11 @@ private fun nativeCommandIcon(name:String)=when(name){
     val manageThread:(ThreadRecord,String)->Unit={thread,action->when(action){
         "move"->{movingThread=thread;vm.loadThreadSections()}
         "unread"->vm.markThreadUnread(thread)
+        "read"->vm.markThreadRead(thread)
         "archive"->vm.archiveThread(thread)
     }}
     var managementPage by rememberSaveable{mutableStateOf("")}
+    var quotaUsageSource by rememberSaveable{mutableStateOf("all")}
     fun openManagement(page:String){
         managementPage=page
         if(page=="quota")vm.loadUsage()
@@ -630,8 +651,8 @@ private fun nativeCommandIcon(name:String)=when(name){
         val pendingIds=s.pendingApprovals.filter{s.approvalResults[nativeApprovalKey(it.threadId,it.approvalId)].isNullOrEmpty()}.map{it.approvalId}.toSet()
         (s.pendingApprovals+s.events).lastOrNull{it.type=="approval.requested"&&it.threadId==s.threadId&&it.approvalId.isNotBlank()&&it.approvalId !in s.approvals&&it.approvalId in pendingIds}
     }
-    val pendingApprovalKey=pendingApproval?.eventId?.ifBlank{pendingApproval.approvalId}.orEmpty()
-    val approvalSheetVisible=pendingApproval!=null&&pendingApprovalKey!=dismissedApprovalKey&&goalEditor==null&&!settings&&!pairing&&!harnessOpen&&managementPage.isEmpty()&&!networkOpen&&!s.automationsVisible&&workPanel.isEmpty()&&s.pdf==null&&s.markdown==null
+    val pendingApprovalKey=pendingApproval?.let{nativeApprovalKey(it.threadId,it.approvalId)}.orEmpty()
+    val approvalSheetVisible=pendingApproval!=null&&pendingApprovalKey!=dismissedApprovalKey&&goalEditor==null&&!settings&&!pairing&&!harnessOpen&&managementPage.isEmpty()&&!networkOpen&&!s.automationsVisible&&workPanel.isEmpty()&&s.pdf==null&&s.markdown==null&&s.openedImage==null
     val questionSheetVisible=approvalSheetVisible&&pendingApproval?.approvalType=="question"
     val sidebarPrefs=remember{context.getSharedPreferences("sidebar",0)}
     var sidebarModuleOrder by remember{mutableStateOf((sidebarPrefs.getString("moduleOrder","").orEmpty().split(',').filter{it in sidebarModuleKeys}+sidebarModuleKeys).distinct())}
@@ -707,30 +728,34 @@ private fun nativeCommandIcon(name:String)=when(name){
             }
         },drawerState=drawer,gesturesEnabled=!imeVisible,drawerBackgroundColor=colors.background,contentBackgroundColor=activeTheme.palette.chat,contentCornerRadius=drawerTopRadius,scrimColor=Color.Black.copy(alpha=0.06f),drawerContent={
             Column(Modifier.fillMaxSize().systemBarsPadding().padding(horizontal=12.dp,vertical=8.dp)){
+                var query by remember{mutableStateOf("")}
+                var searchOpen by remember{mutableStateOf(false)}
+                var searchFocused by remember{mutableStateOf(false)}
+                val searchFocus=remember{FocusRequester()}
+                val searchAvailable=sidebarIsVisible&&(wideLayout||drawer.targetValue==DrawerValue.Open)
+                NativeSidebarReachability(enabled=sidebarIsVisible&&!imeVisible&&!searchOpen,modifier=Modifier.weight(1f)){
                 Row(Modifier.fillMaxWidth().padding(bottom=6.dp),verticalAlignment=Alignment.CenterVertically){
                     Box(Modifier.weight(1f)){
                         Row(Modifier.heightIn(min=48.dp).clip(Radius.Field).clickable{harnessOpen=true}.padding(horizontal=12.dp,vertical=8.dp),verticalAlignment=Alignment.CenterVertically){NativeHarnessIcon(s.harness,Modifier.padding(end=10.dp).size(22.dp),Ink);Text(nativeAgentName(s.harness),Modifier.weight(1f,fill=false),fontSize=17.sp,fontWeight=FontWeight.SemiBold,maxLines=1,overflow=TextOverflow.Ellipsis);ModernIcon(R.drawable.ic_lucide_chevron_down,"切换助手",Modifier.padding(start=8.dp).size(16.dp),Muted)}
                         ModernDropdown(harnessOpen,{harnessOpen=false},240.dp){
-                            Column(Modifier.padding(6.dp)){
-                                nativeHarnesses.forEach{key->
-                                    val available=nativeBackendAvailable(key,s.models,s.backends)
-                                    Row(Modifier.fillMaxWidth().clip(Radius.MenuItem).clickable(enabled=available){vm.switchHarness(key);workPanel="";harnessOpen=false;scope.launch{drawer.close()}}.padding(horizontal=10.dp,vertical=10.dp),verticalAlignment=Alignment.CenterVertically){
-                                        NativeHarnessIcon(key,Modifier.size(23.dp),if(available)Ink else Muted)
-                                        Text(nativeAgentName(key),Modifier.weight(1f).padding(start=12.dp),fontSize=14.sp,color=if(available)Ink else Muted)
-                                        if(!available)Text(if(nativeBackendReason(key,s.models,s.backends).contains("公网"))"公网不支持" else "不可用",fontSize=10.sp,color=Muted) else if(key==s.harness)ModernIcon(R.drawable.ic_lucide_check,null,Modifier.size(17.dp))
-                                    }
-                                    if(!available)Text(nativeAgentName(key)+"："+nativeBackendReason(key,s.models,s.backends),Modifier.padding(start=10.dp,end=10.dp,bottom=8.dp),fontSize=11.sp,color=Muted)
+                            Column(Modifier.padding(6.dp),verticalArrangement=Arrangement.spacedBy(4.dp)){
+                                nativeHarnesses.filter{it !in vm.hiddenHarnesses}.forEach{key->
+                                        val available=nativeBackendAvailable(key,s.models,s.backends)
+                                        val selected=key==s.harness
+                                        Row(Modifier.fillMaxWidth().heightIn(min=48.dp).clip(Radius.MenuItem).background(if(selected)Ink.copy(alpha=.07f) else Color.Transparent).clickable(enabled=available){if(vm.switchHarness(key)){workPanel="";harnessOpen=false}}.padding(horizontal=12.dp,vertical=8.dp),verticalAlignment=Alignment.CenterVertically){
+                                            NativeHarnessIcon(key,Modifier.size(22.dp),if(available)Ink else Muted)
+                                            Column(Modifier.weight(1f).padding(start=8.dp)){
+                                                Text(nativeAgentName(key),fontSize=16.sp,color=if(available)Ink else Muted,maxLines=1,overflow=TextOverflow.Ellipsis)
+                                                if(!available)Text(nativeBackendStatusLabel(nativeBackendReason(key,s.models,s.backends)),fontSize=10.sp,color=Muted,maxLines=1)
+                                            }
+                                            if(selected)ModernIcon(R.drawable.ic_lucide_check,null,Modifier.size(14.dp),Muted)
+                                        }
                                 }
                             }
                         }
                     }
                     IconButton(onClick={if(wideLayout)wideSidebarOpen=false else scope.launch{drawer.close()}}){ModernIcon(R.drawable.ic_lucide_arrow_left,"收起侧栏",Modifier.size(20.dp),Muted)}
                 }
-                var query by remember{mutableStateOf("")}
-                var searchOpen by remember{mutableStateOf(false)}
-                var searchFocused by remember{mutableStateOf(false)}
-                val searchFocus=remember{FocusRequester()}
-                val searchAvailable=sidebarIsVisible&&(wideLayout||drawer.targetValue==DrawerValue.Open)
                 Row(Modifier.fillMaxWidth().heightIn(min=48.dp).padding(bottom=6.dp),verticalAlignment=Alignment.CenterVertically){
                     if(searchOpen){
                         Entry(query,{query=it},"搜索会话",modifier=Modifier.weight(1f).focusProperties{canFocus=searchAvailable}
@@ -848,6 +873,7 @@ private fun nativeCommandIcon(name:String)=when(name){
                         Text(when{!s.connected->"连接电脑后搜索正文";!remoteEnabled->"输入至少 2 个字符搜索正文";else->"没有找到会话"},color=Muted,fontSize=14.sp,modifier=Modifier.padding(16.dp))
                     }
                 }
+                }
                 Spacer(Modifier.height(8.dp))
                 NativeSidebarAction(R.drawable.ic_lucide_gauge,"账号额度"){quotaOpen=true}
                 if(!s.connected||"automations" in s.capabilities)NativeSidebarAction(R.drawable.ic_lucide_clock_3,"定时任务"){openAutomationSheet("")}
@@ -860,7 +886,11 @@ private fun nativeCommandIcon(name:String)=when(name){
                 }
             }
         }) {
-            Column(Modifier.fillMaxSize().background(activeTheme.palette.chat).nativeGlassBackdrop()){
+            val sideVisible by remember(vm.sideChat){derivedStateOf{vm.sideChat.state.visible}}
+            val sideController=vm.sideChat.current
+            val splitSide=wideLayout&&!wideSidebarOpen&&sideVisible
+            Row(Modifier.fillMaxSize()){
+            Column(Modifier.weight(1f).fillMaxHeight().background(activeTheme.palette.chat).nativeGlassBackdrop()){
                 NativeConversationBody(effectiveGlass.floatingChrome,header={
                 val floating=LocalNativeFloatingChrome.current
                 Row(Modifier.fillMaxWidth().statusBarsPadding().heightIn(min=56.dp).padding(horizontal=if(floating)12.dp else 8.dp,vertical=6.dp),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(if(floating)6.dp else 0.dp)){
@@ -904,9 +934,17 @@ private fun nativeCommandIcon(name:String)=when(name){
                         ChromeControl({val now=android.os.SystemClock.uptimeMillis();if(more){more=false;moreDismissedAt=now}else if(now-moreDismissedAt>300)more=true},false){Crossfade(more,animationSpec=tween(150,easing=ControlEase),label="menuIcon"){open->ModernIcon(if(open)R.drawable.ic_lucide_x else R.drawable.ic_lucide_ellipsis,if(open)"关闭会话菜单" else "会话菜单",Modifier.size(21.dp))}}
                         ModernDropdown(more,{more=false;moreDismissedAt=android.os.SystemClock.uptimeMillis()},250.dp,placement=NativePopupPlacement.ADJACENT){
                             Column(Modifier.padding(6.dp)){
+                                if(s.connected&&s.harness=="codex"&&s.threadId.isNotBlank()&&!readOnly){
+                                    if("thread-side-chat" in s.capabilities)PopupMenuRow(R.drawable.ic_lucide_messages_square,"侧聊"){more=false;vm.sideChat.open(s.threadId,s.model,s.effort,s.permission)}
+                                    if("thread-fork" in s.capabilities)PopupMenuRow(R.drawable.ic_lucide_git_branch,"创建会话分支"){more=false;vm.forkConversation()}
+                                    if("codex-background-terminals" in s.capabilities)PopupMenuRow(R.drawable.ic_lucide_terminal,"后台终端"){more=false;workPanel="后台终端"}
+                                    if("codex-review" in s.capabilities&&!s.running)PopupMenuRow(R.drawable.ic_lucide_file_diff,"审阅改动"){more=false;workPanel="审阅改动"}
+                                    if("desktop-browser" in s.capabilities)PopupMenuRow(R.drawable.ic_lucide_globe,"电脑浏览器"){more=false;workPanel="电脑浏览器"}
+                                }
                                 if(s.threadId.isNotBlank()&&s.harness=="codex"&&"automations" in s.capabilities&&!readOnly)PopupMenuRow(R.drawable.ic_lucide_clock_3,"本会话定时任务"){more=false;openAutomationSheet(s.threadId)}
                                 PopupMenuRow(R.drawable.ic_lucide_gauge,"上下文与连接"){more=false;sessionTab=if(s.threadId.isBlank())"connection" else "context";connectionOpen=true}
                                 if(s.harness=="codex"&&s.threadId.isNotBlank()&&!readOnly)PopupMenuRow(R.drawable.ic_lucide_target,"会话目标"){more=false;executeCommand("goal")}
+                                if(s.connected&&s.threadId.isNotBlank()&&!readOnly)PopupMenuRow(R.drawable.ic_lucide_file_text,"工作区指令"){more=false;instructionThread=s.threadId;instructionAgent=s.harness;openManagement("session-instructions")}
                                 if(!readOnly)PopupMenuRow(R.drawable.ic_lucide_sliders_horizontal,"模型与权限"){more=false;if(s.connected)vm.loadRemoteApproval();settings=true}
                                 if(!readOnly&&s.harness!="codex"&&nativePlanAvailable(s.harness,s.backends))PopupMenuRow(R.drawable.ic_lucide_list_todo,if(s.nextMode=="plan")"退出计划模式" else "计划模式"){more=false;vm.togglePlan()}
                                 if(s.connected&&"files" in s.capabilities&&!readOnly)PopupMenuRow(R.drawable.ic_lucide_folder,"工作区文件"){more=false;vm.files();workPanel="文件"}
@@ -921,6 +959,8 @@ private fun nativeCommandIcon(name:String)=when(name){
                     if(home){Box(Modifier.fillMaxSize().padding(top=topInset,bottom=bottomInset),contentAlignment=Alignment.Center){NativeWelcome(s.harness)}} else key(s.address,s.harness,s.threadId){NativeMessages(vm,sendScrollRequest,drawer.currentValue==DrawerValue.Closed&&drawer.targetValue==DrawerValue.Closed,bottomInset,topInset){dismissedApprovalKey=""}}
                 }){
                 NativeQueuedDraftRecovery(s.queueDrafts){q->vm.restoreQueued(q);scope.launch{composerFocus.requestFocus()}}
+                if(vm.threadToolBusy)Text("正在创建分支…",Modifier.padding(horizontal=16.dp),fontSize=12.sp,color=Muted)
+                if(vm.threadToolError.isNotBlank())Text(vm.threadToolError,Modifier.padding(horizontal=16.dp),fontSize=12.sp,color=MaterialTheme.colors.error)
                 NativeQueueDock(vm,s.queue,s.running){q->vm.restoreQueued(q);scope.launch{composerFocus.requestFocus()}}
                 if(readOnly&&s.threadId.startsWith("cloud:"))Text("云端会话 · 自动刷新 · 在桌面继续",Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=8.dp).testTag("cloudThreadNotice"),fontSize=12.sp,color=Muted)
                 if(readOnly&&!s.threadId.startsWith("cloud:"))s.threads.find{it.id==s.threadId}?.let{snapshot->
@@ -948,15 +988,17 @@ private fun nativeCommandIcon(name:String)=when(name){
                 androidx.compose.animation.AnimatedVisibility(!s.connected&&!s.connecting&&s.threadId.isNotBlank()&&!bannerDismissed.value,
                     enter=expandVertically(expandFrom=Alignment.Bottom,animationSpec=tween(150,easing=ControlEase))+fadeIn(tween(120)),
                     exit=shrinkVertically(shrinkTowards=Alignment.Bottom,animationSpec=tween(150,easing=ControlEase))+fadeOut(tween(120))){
-                    Row(Modifier.fillMaxWidth().padding(horizontal=12.dp).clip(Radius.Field).background(AppColor.StatusError.copy(alpha=0.10f)).padding(start=12.dp,end=4.dp,top=6.dp,bottom=6.dp),verticalAlignment=Alignment.CenterVertically){
-                        ModernIcon(R.drawable.ic_lucide_rotate_cw,null,Modifier.size(15.dp),AppColor.StatusError)
-                        Text(if(s.error.isNotBlank())s.error else "与电脑的连接已断开",Modifier.weight(1f).padding(horizontal=8.dp),fontSize=12.sp,lineHeight=17.sp,color=Ink,maxLines=2,overflow=TextOverflow.Ellipsis)
-                        TextButton(onClick={vm.retryConnect()},enabled=!s.sending){Text("重连",fontSize=12.sp)}
-                        IconButton(onClick={bannerDismissed.value=true},modifier=Modifier.size(48.dp)){ModernIcon(R.drawable.ic_lucide_x,"关闭提醒",Modifier.size(14.dp))}
+                    NativeNoticeSurface(AppColor.StatusError,Modifier.fillMaxWidth().padding(horizontal=12.dp).testTag("connectionNotice")){
+                        Row(Modifier.fillMaxWidth().padding(start=12.dp,end=4.dp,top=6.dp,bottom=6.dp),verticalAlignment=Alignment.CenterVertically){
+                            ModernIcon(R.drawable.ic_lucide_rotate_cw,null,Modifier.size(15.dp),AppColor.StatusError)
+                            Text(if(s.error.isNotBlank())s.error else "与电脑的连接已断开",Modifier.weight(1f).padding(horizontal=8.dp),fontSize=12.sp,lineHeight=17.sp,color=Ink,maxLines=2,overflow=TextOverflow.Ellipsis)
+                            TextButton(onClick={vm.retryConnect()},enabled=!s.sending){Text("重连",fontSize=12.sp)}
+                            IconButton(onClick={bannerDismissed.value=true},modifier=Modifier.size(48.dp)){ModernIcon(R.drawable.ic_lucide_x,"关闭提醒",Modifier.size(14.dp))}
+                        }
                     }
                 }
                 s.modelServiceNotice?.let{ModelServiceNoticeBanner(it,vm::dismissModelServiceNotice)}
-                NativeGlassSurface(Modifier.padding(horizontal=12.dp,vertical=8.dp).fillMaxWidth(),shape=Radius.Composer,color=Wash,elevation=0.dp,kind=if(effectiveGlass.floatingChrome)NativeGlassKind.DOCK else NativeGlassKind.CHROME){Column(Modifier.padding(horizontal=9.dp,vertical=7.dp)){
+                NativeComposerSurface(Modifier.padding(horizontal=12.dp,vertical=8.dp).fillMaxWidth(),kind=if(effectiveGlass.floatingChrome)NativeGlassKind.DOCK else NativeGlassKind.CHROME){
                     val composerIntoView=remember{BringIntoViewRequester()}
                     var composerFocused by remember{mutableStateOf(false)}
                     LaunchedEffect(s.threadId,imeVisible,composerFocused){
@@ -966,7 +1008,6 @@ private fun nativeCommandIcon(name:String)=when(name){
                     // Reserve the editor before measuring scrollable attachment/status content.
                     Column(Modifier.weight(1f,fill=false).verticalScroll(rememberScrollState()).testTag("composerAttachments")){
                     if(s.threadId.isBlank())NativeWorkspaceControl(s.projects.find{it.id==s.projectId},s.connected&&!s.sending,{projectMenu=true},Modifier.padding(horizontal=3.dp))
-                    if(s.sendingStage.isNotBlank())Text(s.sendingStage,Modifier.padding(horizontal=6.dp,vertical=4.dp),fontSize=12.sp,color=Muted)
                     if(s.stopping||s.stopError.isNotBlank())Text(if(s.stopping)"正在停止，等待电脑确认…" else s.stopError,Modifier.padding(horizontal=6.dp,vertical=4.dp),fontSize=12.sp,color=if(s.stopping)Muted else MaterialTheme.colors.error)
                     nativeModelSelectionError(s.harness,s.model,s.models).takeIf{it.isNotBlank()}?.let{Text(it,Modifier.padding(horizontal=6.dp,vertical=4.dp).testTag("modelSelectionUnavailable"),fontSize=12.sp,color=MaterialTheme.colors.error)}
                     if(s.uploading)NativeUploadStatus(s.uploadMessage,s.uploadProgress,vm::cancelUpload)
@@ -977,19 +1018,12 @@ private fun nativeCommandIcon(name:String)=when(name){
                     if(s.images.isNotEmpty())NativeImageGallery(vm,s.images.map{"/api/uploads/images/${it.id}"}){endpoint->vm.removeImage(endpoint.substringAfterLast('/'))}
                     if(s.uploads.isNotEmpty())Row(Modifier.horizontalScroll(rememberScrollState())){s.uploads.forEach{file->Surface(shape=Radius.Card,color=MaterialTheme.colors.surface,modifier=Modifier.padding(4.dp).heightIn(min=44.dp).clickable(enabled=!s.fileBusy){vm.openUpload(file)}){Row(verticalAlignment=Alignment.CenterVertically){ModernIcon(if(file.mime.startsWith("video/"))R.drawable.ic_lucide_video else R.drawable.ic_lucide_file_text,null,Modifier.padding(start=9.dp).size(18.dp));Text(file.name,Modifier.widthIn(max=170.dp).padding(8.dp),maxLines=1,overflow=TextOverflow.Ellipsis,fontSize=13.sp);IconButton(onClick={vm.removeUpload(file.id)},modifier=Modifier.size(48.dp)){ModernIcon(R.drawable.ic_lucide_x,"移除文件",Modifier.size(16.dp))}}}}}
                     val backendNotice=if(s.backends.isEmpty()&&s.modelsFallback)"" else nativeBackendReason(s.harness,s.models,s.backends)
-                    if(backendNotice.isNotBlank())Text(backendNotice,Modifier.padding(horizontal=12.dp,vertical=4.dp).testTag("backend-availability-notice"),fontSize=11.sp,color=Muted)
+                    if(backendNotice.isNotBlank())NativeBackendNotice(backendNotice,Modifier.padding(horizontal=12.dp,vertical=4.dp).testTag("backend-availability-notice"))
                     }
-                    val composerTextStyle=TextStyle(fontSize=16.sp,lineHeight=20.sp,color=Ink,platformStyle=PlatformTextStyle(includeFontPadding=false))
-                    BasicTextField(
-                        s.draft,vm::draft,
-                        textStyle=composerTextStyle,
-                        keyboardOptions=KeyboardOptions(capitalization=KeyboardCapitalization.Sentences),
+                    NativeComposerTextField(
+                        s.draft,vm::draft,if(s.running)"添加下一步任务…" else "描述任务…",
                         maxLines=if(imeVisible)4 else 6,
                         modifier=Modifier.fillMaxWidth().padding(start=12.dp,end=12.dp,top=10.dp,bottom=6.dp).testTag("composer").semantics{contentDescription="消息输入框"}.focusProperties{canFocus=!openingDrawer&&drawer.currentValue==DrawerValue.Closed&&drawer.targetValue==DrawerValue.Closed}.focusRequester(composerFocus).onFocusChanged{composerFocused=it.isFocused}.bringIntoViewRequester(composerIntoView).heightIn(min=26.dp,max=if(imeVisible)80.dp else 120.dp),
-                        decorationBox={field->Box(contentAlignment=Alignment.TopStart){
-                            if(s.draft.isEmpty())Text(if(s.running)"添加下一步任务…" else "描述任务…",style=composerTextStyle.copy(color=Muted),maxLines=1,overflow=TextOverflow.Ellipsis)
-                            field()
-                        }}
                     )
                     }
                     Row(Modifier.fillMaxWidth().heightIn(min=48.dp).testTag("composerActions"),verticalAlignment=Alignment.CenterVertically){
@@ -997,6 +1031,7 @@ private fun nativeCommandIcon(name:String)=when(name){
                             ChromeButton(R.drawable.ic_lucide_plus,"添加附件",{val now=android.os.SystemClock.uptimeMillis();if(attachmentOpen){attachmentOpen=false;attachmentDismissedAt=now}else if(now-attachmentDismissedAt>300)attachmentOpen=true})
                             ModernDropdown(attachmentOpen,{attachmentOpen=false;attachmentDismissedAt=android.os.SystemClock.uptimeMillis()},220.dp){
                                 Column(Modifier.padding(6.dp)){
+                                    PopupMenuRow(R.drawable.ic_lucide_camera,"拍照"){attachmentOpen=false;if(supportsCameraImage())takePhoto()}
                                     PopupMenuRow(R.drawable.ic_lucide_images,"图片与视频"){attachmentOpen=false;chooseAttachment(NativePickKind.MEDIA)}
                                     PopupMenuRow(R.drawable.ic_lucide_folder_open,"文件"){attachmentOpen=false;chooseAttachment(NativePickKind.FILES)}
                                 }
@@ -1028,33 +1063,30 @@ private fun nativeCommandIcon(name:String)=when(name){
                                 )
                             }
                         }
-                        val stop=s.running&&!hasInput&&!s.sending&&!s.uploading
-                        val enabled=s.connected&&!s.sending&&!s.uploading&&!s.stopping&&(hasInput||stop)&&(stop||nativeModelSelectionError(s.harness,s.model,s.models).isBlank())
-                        val sendInteraction=remember{MutableInteractionSource()}
-                        val actionPressed by sendInteraction.collectIsPressedAsState()
-                        val actionScale=animateFloatAsState(if(actionPressed)0.94f else 1f,nativePressMotion(actionPressed),label="composerPress")
-                        val action=when {s.sending||s.uploading||s.stopping->ComposerAction.Progress;stop->ComposerAction.Stop;else->ComposerAction.Send}
-                        val actionFill=animateColorAsState(if(enabled)Accent else Ink.copy(alpha=0.15f),tween(140,easing=ControlEase),label="composerActionFill")
-                        Box(Modifier.padding(start=4.dp).size(48.dp).semantics{contentDescription=if(s.stopping)"正在停止任务" else if(stop)"停止任务" else if(s.running)"加入队列" else "发送消息"}.clickable(interactionSource=sendInteraction,indication=null,enabled=enabled){if(stop)vm.stop() else{haptics.virtualKey();val command=if(s.harness=="codex")nativeExactCommand(s.draft) else null;if(command!=null)executeCommand(command.name,true) else {val jumpToLatest=!s.running;vm.send();if(jumpToLatest)sendScrollRequest++}}},contentAlignment=Alignment.Center){
-                            Box(Modifier.size(36.dp).graphicsLayer{scaleX=actionScale.value;scaleY=actionScale.value}.clip(CircleShape).drawBehind{drawCircle(actionFill.value)},contentAlignment=Alignment.Center){
-                                Crossfade(targetState=action,modifier=Modifier.fillMaxSize(),animationSpec=tween(120,easing=ControlEase),label="composerAction"){target->
-                                    Box(Modifier.fillMaxSize(),contentAlignment=Alignment.Center){
-                                    when(target){
-                                        ComposerAction.Progress->CircularProgressIndicator(Modifier.size(16.dp),color=MaterialTheme.colors.onPrimary,strokeWidth=2.dp)
-                                        ComposerAction.Stop->Box(Modifier.size(13.dp).clip(Radius.Tiny).background(MaterialTheme.colors.onPrimary))
-                                        ComposerAction.Send->ModernIcon(R.drawable.ic_lucide_arrow_up,null,Modifier.size(18.dp),MaterialTheme.colors.onPrimary)
-                                    }
-                                    }
-                                }
-                            }
+                        val stop=s.running&&!hasInput
+                        val composerGate=nativeComposerGate(s.connected,s.sending,s.uploading,s.stopping,hasInput,stop){
+                            nativeModelSelectionError(s.harness,s.model,s.models).isBlank()
                         }
+                        val enabled=composerGate.enabled
+                        RecordNativeComposerState(composerGate,vm.uiForeground)
+                        val action=when {s.stopping->ComposerAction.Progress;stop->ComposerAction.Stop;s.sending||s.uploading->ComposerAction.Progress;else->ComposerAction.Send}
+                        NativeComposerAction(action,if(s.stopping)"正在停止任务" else if(stop)"停止任务" else if(s.running)"加入队列" else "发送消息",enabled,
+                            {if(stop)vm.stop() else{haptics.virtualKey();val command=if(s.harness=="codex")nativeExactCommand(s.draft) else null;if(command!=null)executeCommand(command.name,true) else {val jumpToLatest=!s.running;vm.send();if(jumpToLatest)sendScrollRequest++}}},Modifier.padding(start=4.dp))
                     }
-                }}}
+                }}
                 NativeSlashCommandPopup(commands){executeCommand(it,true)}
                 }
                 Spacer(Modifier.height(2.dp))
                 }
             }
+            if(splitSide&&sideController!=null)key(sideController){NativeManagementPage("侧聊","",vm::returnFromSideChat,modifier=Modifier.width(360.dp).fillMaxHeight(),actions={NativeSideChatMenu(sideController)}){
+                NativeSideChatContent(sideController,Modifier.weight(1f).padding(top=LocalNativeManagementTopInset.current),vm,s.models)
+            }
+            }
+            }
+            if(sideVisible&&!splitSide&&sideController!=null)key(sideController){Sheet("侧聊",vm::returnFromSideChat,stableHeight=true,bodyScrollState=null,contentHorizontalPadding=16.dp,
+                titleContent={NativeSideChatTitle(sideController)},
+                bodyPadding=PaddingValues(0.dp)){NativeSideChatContent(sideController,Modifier.weight(1f),vm,s.models)}}
         }
         if(commandPanel.isNotEmpty())Sheet(when(commandPanel){"help"->"命令";"goal"->"会话目标";"pin"->"置顶会话";else->"会话状态"},{commandPanel=""},inPlace=commandPanel=="goal",dismissEnabled=!goalCommandSaving){
             when(commandPanel){
@@ -1075,8 +1107,11 @@ private fun nativeCommandIcon(name:String)=when(name){
         NativeSettingsNavigation(managementPage){page->
             val back={openManagement("home")}
             when(page){
-                "home"->NativeSettingsHome(s.connected,s.capabilities,{managementPage=""},::openManagement)
+                "home"->NativeSettingsHome(s.connected,s.capabilities,{managementPage=""},::openManagement,
+                    vm.appUpdates.state.release?.takeIf{it.code>vm.appUpdates.currentCode}?.version.orEmpty())
                 "accounts"->NativeAccountsRoute(vm,back)
+                "all-quotas"->NativeAllQuotas(vm,back){source->quotaUsageSource=source;openManagement("quota-usage")}
+                "quota-usage"->NativeStatisticsManagement(vm,{openManagement("all-quotas")},initialSource=quotaUsageSource)
                 "agents"->NativeAgentManagement(vm,back)
                 "assistant"->NativeAssistantManagement(vm,back)
                 "extensions"->NativeExtensionsManagement(vm,back)
@@ -1084,6 +1119,8 @@ private fun nativeCommandIcon(name:String)=when(name){
                 "sessions"->NativeSessionManagement(vm,back)
                 "channels"->NativeChannelManagement(vm,back)
                 "harnesses"->NativeHarnessManagement(vm,back)
+                "agent-instructions"->NativeAgentInstructions(vm,s.harness,""){openManagement("home")}
+                "session-instructions"->NativeAgentInstructions(vm,instructionAgent,instructionThread){managementPage=""}
                 "statistics"->NativeStatisticsManagement(vm,back)
                 "archives"->{
                     val active=LocalManagementPageActive.current
@@ -1091,9 +1128,12 @@ private fun nativeCommandIcon(name:String)=when(name){
                     NativeArchivedThreads(vm.archivedThreads,vm.archivedThreadsLoading,vm.archivedThreadsError,s.connected,
                         vm::loadArchivedThreads,vm::restoreArchivedThread,back)
                 }
-                "quota"->if("local-console-management" in s.capabilities)LocalConsoleRoute(vm,back){NativeUsage(vm)} else NativeManagementPage("用量与额度","",back){Column(Modifier.weight(1f).clipToBounds().verticalScroll(rememberScrollState()).padding(16.dp)){NativeUsage(vm)}}
+                "quota"->if("local-console-management" in s.capabilities)LocalConsoleRoute(vm,back){NativeUsage(vm)} else NativeManagementPage("用量与额度","",back){Column(Modifier.weight(1f).clipToBounds().nativeManagementScroll(rememberScrollState()).padding(16.dp)){NativeUsage(vm)}}
                 "automations"->NativeAutomations(vm,back)
+                "quota-warmup"->NativeQuotaWarmupPage(vm,back)
                 "console"->LocalConsoleRoute(vm,back)
+                "app-update"->NativeAppUpdatePage(vm.appUpdates,back)
+                "harness-visibility"->NativeHarnessVisibilityPage(vm.hiddenHarnesses,vm::setHarnessVisible,back)
                 "appearance"->NativeAppearancePage(appearance,themeStore.state,
                     onAppearance=::changeAppearance,onTheme=themeStore::select,
                     onImport={themePicker.launch(arrayOf("application/json","text/plain","application/octet-stream"))},
@@ -1101,7 +1141,7 @@ private fun nativeCommandIcon(name:String)=when(name){
                     onRemove={scope.launch{themeStore.removeSelected()}},onBack=back)
                 "storage"->NativeManagementPage("存储与缓存","",back){
                     LaunchedEffect(vm,s.connected,s.address){vm.refreshStorage();vm.refreshUploadStorage()}
-                    Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(16.dp)){
+                    Column(Modifier.weight(1f).nativeManagementScroll(rememberScrollState()).padding(16.dp)){
                         key(s.address,s.certificateSha256){NativeStorageContent(vm.storageState.copy(busy=vm.storageState.busy||s.fileBusy),vm::setCacheLimit,vm::clearStorage,
                             vm.uploadStorageState.copy(busy=vm.uploadStorageState.busy||s.uploading),{vm.refreshUploadStorage()},{vm.refreshUploadStorage(it)})}
                     }
@@ -1109,7 +1149,7 @@ private fun nativeCommandIcon(name:String)=when(name){
             }
         }
         val closing=vm.subagentClose
-        if(closing.thread!=null)AlertDialog(onDismissRequest=vm::dismissSubagentClose,
+        if(closing.thread!=null)NativeAlertDialog(onDismissRequest=vm::dismissSubagentClose,
             title={Text(if(closing.confirmStop)"停止并关闭子代理" else "关闭子代理")},
             text={Column(verticalArrangement=Arrangement.spacedBy(10.dp)){
                 Text(subagentLabel(closing.thread))
@@ -1161,7 +1201,7 @@ private fun nativeCommandIcon(name:String)=when(name){
         }}
         LaunchedEffect(s.threadId,s.connected,s.harness){vm.loadFast()}
         LaunchedEffect(harnessOpen,s.connected){if(harnessOpen&&s.connected)vm.refreshBackends()}
-        if(networkOpen)Sheet("Clash · OpenAI 节点",{networkOpen=false},stableHeight=true){NativeNetworkPanel(vm.networkState,s.connected,vm::loadNetwork,vm::selectNetworkNode,vm::testNetworkNode)}
+        if(networkOpen)Sheet("Clash 节点",{networkOpen=false},stableHeight=true){NativeNetworkPanel(vm.networkState,s.connected,{vm.loadNetwork()},vm::loadNetwork,vm::selectNetworkNode,vm::testNetworkNode)}
         LaunchedEffect(s.threadId,s.connected,s.harness,s.running){if(s.connected&&s.threadId.isNotBlank()&&(!s.running||s.usage==null))vm.loadUsage(changed=!s.running)}
         LaunchedEffect(connectionReady,s.connected,s.harness){if(connectionReady&&connectionOpen&&s.connected){
             if(s.harness=="codex")vm.refreshCodex() else vm.refreshBackends()
@@ -1196,7 +1236,7 @@ private fun nativeCommandIcon(name:String)=when(name){
             if(s.connected&&s.harness!="codex"){
                 val ready=nativeBackendAvailable(s.harness,s.models,s.backends)
                 Text(when{ s.backendStatusLoading->"正在检查 ${nativeAgentName(s.harness)}…";s.backendStatusError.isNotBlank()->s.backendStatusError;ready->"${nativeAgentName(s.harness)} 已就绪";else->"${nativeAgentName(s.harness)} 不可用"},fontSize=14.sp,color=if(s.backendStatusError.isNotBlank())MaterialTheme.colors.error else Muted,modifier=Modifier.testTag("harnessConnectionStatus"))
-                if(!ready)Text(nativeBackendReason(s.harness,s.models,s.backends),fontSize=12.sp,color=Muted)
+                if(!ready)NativeBackendNotice(nativeBackendReason(s.harness,s.models,s.backends))
                 TextButton(onClick={vm.refreshBackends(force=true)},enabled=!s.backendStatusLoading){Text("重新检查 ${nativeAgentName(s.harness)}")}
             }
             if(s.error.isNotBlank())Text(s.error,fontSize=12.sp,color=MaterialTheme.colors.error)
@@ -1204,7 +1244,7 @@ private fun nativeCommandIcon(name:String)=when(name){
                 Divider(Modifier.padding(vertical=8.dp),color=Muted.copy(alpha=.12f))
                 Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
                     Column(Modifier.weight(1f).padding(end=12.dp),verticalArrangement=Arrangement.spacedBy(4.dp)){
-                        Text("容量不足自动重试",fontSize=14.sp,fontWeight=FontWeight.Medium)
+                        Text("模型繁忙自动重试",fontSize=14.sp,fontWeight=FontWeight.Medium)
                         Text("持续等待容量恢复，可随时停止",fontSize=11.sp,color=Muted)
                     }
                     DashboardSwitch(s.capacityAutoRetry,vm::setCapacityAutoRetry,enabled=s.connected&&!s.capacityRetryBusy,modifier=Modifier.testTag("capacityAutoRetry"))
@@ -1212,7 +1252,10 @@ private fun nativeCommandIcon(name:String)=when(name){
                 if(s.capacityRetryError.isNotBlank())Text(s.capacityRetryError,color=MaterialTheme.colors.error,fontSize=12.sp)
             }
             NativeConnectionRoutes(s.route,s.connecting,s.publicUrl.isNotBlank()&&s.remotePassword.isNotBlank(),vm::connectRoute)
-            TextButton(onClick={connectionOpen=false;networkOpen=true;vm.loadNetwork()}){Text("Clash · OpenAI 节点")}
+            Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
+                TextButton(onClick={connectionOpen=false;networkOpen=true;vm.loadNetwork("openai")},enabled=s.connected){Text("OpenAI 节点")}
+                TextButton(onClick={connectionOpen=false;networkOpen=true;vm.loadNetwork("google")},enabled=s.connected){Text("Google 节点")}
+            }
             PublicConnectionTest(vm,s.publicUrl,s.remotePassword,connect={connectionOpen=false;pairing=true})
             if(s.error.isNotBlank())TextButton(onClick={vm.error("")}){Text("清除提示")}
             }}
@@ -1225,14 +1268,38 @@ private fun nativeCommandIcon(name:String)=when(name){
                 Button(onClick={vm.sharedBackendRestart(confirm=true)},enabled=s.backendRestart.canRestart&&!s.backendRestart.busy,modifier=Modifier.testTag("confirmSharedBackendRestart")){Text(if(s.backendRestart.busy)"正在重启…" else "重启")}
             }
         }
-        NativeTaskNotice(s.taskNotice,vm::dismissTaskNotice,{notice->vm.dismissTaskNotice(notice.key);vm.openNotificationThread(notice.threadId)})
+        val openTaskNotice:(TaskNotification)->Unit={notice->
+            vm.dismissTaskNotice(notice.key)
+            if(notice.questionId.isNotBlank()){
+                dismissedApprovalKey="";managementPage="";settings=false;workPanel=""
+                connectionOpen=false;quotaOpen=false;harnessOpen=false;networkOpen=false;pairing=false
+                vm.closeAutomations();scope.launch{drawer.close()}
+            }
+            vm.openNotificationThread(notice.threadId)
+        }
+        val taskNoticeOverlay:@Composable ()->Unit={NativeTaskNotice(s.taskNotice,vm::dismissTaskNotice,openTaskNotice)}
+        if(s.markdown==null&&s.pdf==null&&s.openedImage==null)taskNoticeOverlay()
         s.editingMessage?.takeIf{it.threadId==s.threadId}?.let{event->Sheet("编辑消息",vm::cancelMessageEdit,inPlace=true){
             Text("保存后替换最后一条消息并重新回复",color=Muted,fontSize=13.sp)
             Entry(s.messageEditText,vm::messageEditText,"消息内容",Modifier.fillMaxWidth().heightIn(max=240.dp).verticalScroll(rememberScrollState()).testTag("messageEditText"))
-            if(event.images.isNotEmpty()||event.uploads.isNotEmpty()||event.attachments.isNotEmpty())Text("原附件会保留",color=Muted,fontSize=12.sp)
+            if(s.messageEditImages.isNotEmpty())NativeImageGallery(vm,s.messageEditImages.map{"/api/uploads/images/${it.id}"}){endpoint->vm.removeImage(endpoint.substringAfterLast('/'))}
+            (s.messageEditUploads.map{it.id to it.name}+s.messageEditAttachments.map{it.path to it.name}).forEach{(id,name)->
+                Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
+                    ModernIcon(R.drawable.ic_lucide_file_text,null,Modifier.size(18.dp))
+                    Text(name,Modifier.weight(1f).padding(horizontal=10.dp),fontSize=13.sp,maxLines=2,overflow=TextOverflow.Ellipsis)
+                    IconButton(onClick={if(s.messageEditUploads.any{it.id==id})vm.removeUpload(id)else vm.removeMessageEditAttachment(id)},enabled=!s.uploading){ModernIcon(R.drawable.ic_lucide_x,"移除附件",Modifier.size(18.dp))}
+                }
+            }
+            Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
+                ChromeButton(R.drawable.ic_lucide_images,"添加照片",{chooseAttachment(NativePickKind.MEDIA)},enabled=!s.uploading)
+                ChromeButton(R.drawable.ic_lucide_file_text,"添加文件",{chooseAttachment(NativePickKind.FILES)},enabled=!s.uploading)
+                ChromeButton(R.drawable.ic_lucide_camera,"拍照",{if(supportsCameraImage())takePhoto()},enabled=!s.uploading)
+            }
+            if(s.uploading)Text(s.uploadMessage,color=Muted,fontSize=12.sp)
+            if(s.uploadError.isNotBlank())Text(s.uploadError,color=MaterialTheme.colors.error,fontSize=12.sp)
             Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.End){
                 TextButton(onClick=vm::cancelMessageEdit){Text("取消")}
-                Button(onClick=vm::saveMessageEdit,enabled=s.connected&&!s.sending&&!s.running&&s.messageEditText.isNotBlank(),modifier=Modifier.testTag("messageEditSave")){Text("保存并发送")}
+                Button(onClick=vm::saveMessageEdit,enabled=s.connected&&!s.sending&&!s.running&&!s.uploading&&(s.messageEditText.isNotBlank()||s.messageEditImages.isNotEmpty()||s.messageEditUploads.isNotEmpty()||s.messageEditAttachments.isNotEmpty()),modifier=Modifier.testTag("messageEditSave")){Text("保存并发送")}
             }
         }}
         if(pairing) NativePairingSheet(vm){pairing=false}
@@ -1255,32 +1322,38 @@ private fun nativeCommandIcon(name:String)=when(name){
                 if(!goalSaving){goalSaving=true;goalError="";vm.updateGoal(s.threadId,objective=objective.trim(),onSaved={goalSaving=false;goalEditor=null},onFailed={goalSaving=false;goalError=it})}
             }
         }}
-        s.markdown?.let{NativeDocumentPreview(vm,it,vm::closeMarkdown)}
-        s.pdf?.let{pdf->key(pdf){NativePdfPreview(pdf,vm::closePdf)}}
-        s.openedImage?.let{image->key(image.endpoint){NativeImagePreview(image.bitmap,vm,image.endpoint,vm::closeImage,image.endpoints,image.endpoints.indexOf(image.endpoint).coerceAtLeast(0),image.thumbnails)}}
+        s.outputDirectory?.let{directory->NativeOutputDirectoryPreview(directory,s.fileBusy,s.fileMessage,s.fileError,
+            vm::openOutputDirectoryEntry,vm::outputDirectory,vm::retryFile,vm::closeOutputDirectory)}
+        s.markdown?.let{NativeDocumentPreview(vm,it,vm::closeMarkdown,overlay=taskNoticeOverlay.takeIf{s.pdf==null&&s.openedImage==null})}
+        s.pdf?.let{pdf->key(pdf){NativePdfPreview(pdf,vm::closePdf,overlay=taskNoticeOverlay.takeIf{s.openedImage==null})}}
+        s.openedImage?.let{image->key(image.endpoint){NativeImagePreview(image.bitmap,vm,image.endpoint,vm::closeImage,image.endpoints,image.endpoints.indexOf(image.endpoint).coerceAtLeast(0),image.thumbnails,overlay=taskNoticeOverlay)}}
         LaunchedEffect(s.fileFeedbackVisible,s.fileBusy,s.fileError,s.markdown){
             if(s.fileFeedbackVisible&&!s.fileBusy&&s.markdown==null){delay(5000);vm.hideFileFeedback()}
         }
-        if(s.fileFeedbackVisible&&s.markdown==null&&workPanel!="文件")androidx.compose.ui.window.Popup(alignment=Alignment.BottomCenter){
+        if(s.fileFeedbackVisible&&s.markdown==null&&s.outputDirectory==null&&workPanel!="文件"){
+        val feedbackBackdrop=LocalNativeOverlayBackdrop.current?:LocalNativeGlassBackdrop.current
+        androidx.compose.ui.window.Popup(alignment=Alignment.BottomCenter){
+            CompositionLocalProvider(LocalNativeGlassBackdrop provides feedbackBackdrop){
             NativeFileFeedback(s.fileBusy,s.fileMessage,s.fileError,vm::retryFile,vm::hideFileFeedback,
                 Modifier.padding(horizontal=16.dp,vertical=16.dp).navigationBarsPadding().imePadding())
+            }
         }
         }
-        NativeSheetPortal(sheetHost)
+        }
+        NativeSheetPortal(sheetHost,suspended=s.markdown!=null||s.pdf!=null||s.openedImage!=null)
     }
 }
 }
 }
-@Composable internal fun NativeFileFeedback(busy:Boolean,message:String,error:String,onRetry:()->Unit,onDismiss:()->Unit,modifier:Modifier=Modifier){
-    Snackbar(modifier.testTag("fileFeedback"),shape=Radius.Composer,action={
-        if(!busy)Row(verticalAlignment=Alignment.CenterVertically){
-            TextButton(onClick=onRetry){Text("重试",color=MaterialTheme.colors.secondary)}
-            IconButton(onClick=onDismiss,modifier=Modifier.size(48.dp)){Icon(painterResource(R.drawable.ic_lucide_x),"关闭文件提示",Modifier.size(16.dp))}
-        }
-    }){
-        Row(verticalAlignment=Alignment.CenterVertically){
-            if(busy)CircularProgressIndicator(Modifier.size(16.dp).padding(end=4.dp),strokeWidth=2.dp,color=LocalContentColor.current)
-            Text(if(busy)message else "文件操作失败：$error",fontSize=13.sp)
+@Composable internal fun NativeFileFeedback(busy:Boolean,message:String,error:String,onRetry:()->Unit,onDismiss:()->Unit,modifier:Modifier=Modifier,kind:NativeGlassKind=NativeGlassKind.MENU){
+    NativeLiquidSurface(modifier.fillMaxWidth().testTag("fileFeedback"),shape=Radius.Notice,kind=kind){
+        Row(Modifier.padding(start=16.dp,end=4.dp,top=4.dp,bottom=4.dp),verticalAlignment=Alignment.CenterVertically){
+            if(busy)CircularProgressIndicator(Modifier.padding(end=8.dp).size(16.dp),strokeWidth=2.dp,color=Muted)
+            Text(if(busy)message else "文件操作失败：$error",Modifier.weight(1f).padding(vertical=10.dp),fontSize=13.sp,color=Ink,maxLines=3,overflow=TextOverflow.Ellipsis)
+            if(!busy){
+                TextButton(onClick=onRetry){Text("重试")}
+                IconButton(onClick=onDismiss,modifier=Modifier.size(48.dp)){ModernIcon(R.drawable.ic_lucide_x,"关闭文件提示",Modifier.size(16.dp),Muted)}
+            }
         }
     }
 }
@@ -1406,7 +1479,7 @@ private fun nativeCommandIcon(name:String)=when(name){
             expansion.AnimatedVisibility(visible={it},enter=disclosureEnter(),exit=disclosureExit()){Column(Modifier.padding(start=12.dp,end=12.dp,bottom=2.dp),verticalArrangement=Arrangement.spacedBy(2.dp)){
                 SelectionContainer{Text(goal.objective,Modifier.testTag("goalObjective"),fontSize=14.sp,lineHeight=21.sp)}
                 if(goal.tokenBudget!=null)Text("已用 ${nativeTokenCount(goal.tokensUsed)} / ${nativeTokenCount(goal.tokenBudget)} tokens",fontSize=12.sp,color=Muted)
-                Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.End){TextButton(onClick={onEdit(goal.objective)},enabled=!vm.goalWorkBusy(threadId),contentPadding=PaddingValues(horizontal=8.dp,vertical=4.dp)){Text("编辑",fontSize=13.sp)};TextButton(onClick={if(goal.status=="active")vm.updateGoal(threadId,status="paused") else vm.continueGoal(threadId)},enabled=vm.state.connected&&!vm.goalWorkBusy(threadId),contentPadding=PaddingValues(horizontal=8.dp,vertical=4.dp),modifier=Modifier.testTag("goalContinue")){Text(if(vm.goalWorkBusy(threadId))"处理中…" else if(goal.status=="active")"暂停" else "继续",fontSize=13.sp)};TextButton(onClick={vm.updateGoal(threadId,status="complete")},enabled=vm.state.connected&&!vm.goalWorkBusy(threadId),contentPadding=PaddingValues(horizontal=8.dp,vertical=4.dp),modifier=Modifier.testTag("goalClose").semantics{contentDescription="关闭目标"}){Text("关闭目标",fontSize=13.sp)}}
+                Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.End){TextButton(onClick={onEdit(goal.objective)},enabled=!vm.goalWorkBusy(threadId),contentPadding=PaddingValues(horizontal=8.dp,vertical=4.dp),modifier=Modifier.testTag("goalEdit").semantics{contentDescription="编辑目标"}){Text("修改",fontSize=13.sp)};TextButton(onClick={if(goal.status=="active")vm.updateGoal(threadId,status="paused") else vm.continueGoal(threadId)},enabled=vm.state.connected&&!vm.goalWorkBusy(threadId),contentPadding=PaddingValues(horizontal=8.dp,vertical=4.dp),modifier=Modifier.testTag("goalContinue")){Text(if(vm.goalWorkBusy(threadId))"处理中…" else if(goal.status=="active")"暂停" else "继续",fontSize=13.sp)};TextButton(onClick={vm.updateGoal(threadId,status="complete")},enabled=vm.state.connected&&!vm.goalWorkBusy(threadId),contentPadding=PaddingValues(horizontal=8.dp,vertical=4.dp),modifier=Modifier.testTag("goalClose").semantics{contentDescription="关闭目标"}){Text("关闭目标",fontSize=13.sp)}}
                 vm.goalError(threadId).takeIf{it.isNotBlank()}?.let{Text(it,Modifier.testTag("goalActionError").padding(bottom=8.dp),fontSize=12.sp,color=MaterialTheme.colors.error)}
             }} }
         }
@@ -1566,7 +1639,7 @@ private fun nativeCommandIcon(name:String)=when(name){
             if(codex){
                 PopupMenuRow(R.drawable.ic_lucide_folder,"移动到项目或分区"){dismiss();manage("move")}
             }
-            PopupMenuRow(R.drawable.ic_lucide_circle_dot,"标记为未读"){dismiss();manage("unread")}
+            PopupMenuRow(R.drawable.ic_lucide_circle_dot,if(t.unread)"标记为已读" else "标记为未读"){dismiss();manage(if(t.unread)"read" else "unread")}
             PopupMenuRow(R.drawable.ic_lucide_pencil,"重命名"){dismiss();rename()}
         }
         PopupMenuRow(R.drawable.ic_lucide_copy,"复制会话 ID"){clipboard.setText(AnnotatedString(t.id));dismiss()}
@@ -1583,25 +1656,12 @@ private fun nativeCommandIcon(name:String)=when(name){
     if(children.isEmpty())return
     Box(modifier.testTag("conversationAgents")){
         ChromeControl({expanded=!expanded},false,Modifier.testTag("conversationAgentsToggle").semantics{contentDescription="子代理 · ${children.size}"}){
-            androidx.compose.ui.layout.Layout(modifier=Modifier.padding(horizontal=4.dp),content={
-                ModernIcon(R.drawable.ic_lucide_bot,null,Modifier.size(18.dp),Muted)
-                if(children.isNotEmpty())Box(Modifier.heightIn(min=14.dp).widthIn(min=14.dp).background(Ink.copy(alpha=0.06f),CircleShape).padding(horizontal=1.dp),contentAlignment=Alignment.Center){
-                    Text(children.size.toString(),fontSize=8.sp,lineHeight=9.sp,fontWeight=FontWeight.Medium,color=Muted,maxLines=1)
-                }
-            }){measurables,constraints->
-                val loose=constraints.copy(minWidth=0,minHeight=0)
-                val icon=measurables[0].measure(loose)
-                val badge=measurables.getOrNull(1)?.measure(loose)
-                // Anchor above the robot body and to the right of its antenna,
-                // while keeping the icon centered with the other toolbar icons.
-                val badgeX=icon.width*2/3
-                val clearance=if(badge==null)0 else (badge.height-icon.height/3+1.dp.roundToPx()).coerceAtLeast(0)
-                val height=maxOf(40.dp.roundToPx(),clearance*2+icon.height)
-                val iconY=(height-icon.height)/2
-                val width=if(badge==null)icon.width else maxOf(icon.width,badgeX+badge.width)
-                layout(width,height){
-                    icon.placeRelative(0,iconY)
-                    badge?.placeRelative(badgeX,iconY-clearance)
+            Box(Modifier.size(40.dp),contentAlignment=Alignment.Center){
+                ModernIcon(R.drawable.ic_lucide_bot,null,Modifier.size(21.dp).testTag("conversationAgentsIcon"),Muted)
+                // The badge never participates in positioning the toolbar icon.
+                Box(Modifier.align(Alignment.TopEnd).heightIn(min=14.dp).widthIn(min=14.dp)
+                    .background(Ink.copy(alpha=0.06f),CircleShape).padding(horizontal=2.dp),contentAlignment=Alignment.Center){
+                    Text(if(children.size>99)"99+" else children.size.toString(),fontSize=8.sp,lineHeight=9.sp,fontWeight=FontWeight.Medium,color=Muted,maxLines=1)
                 }
             }
         }
@@ -1613,7 +1673,7 @@ private fun nativeCommandIcon(name:String)=when(name){
                         val parent=parents[child.subagent?.parentThreadId]?.takeIf{it.id!=threadId}
                         Text(if(parent==null)"进行中" else "进行中 · ${subagentLabel(parent)}",fontSize=12.sp,color=Muted,maxLines=1,overflow=TextOverflow.Ellipsis)
                     }
-                    if(!child.readOnly&&nativeThreadAgent(child.id)=="codex")TextButton(onClick={onClose(child)},modifier=Modifier.testTag("closeSubagent:${child.id}")){Text("关闭",fontSize=12.sp)}
+                    if(!child.readOnly&&nativeThreadAgent(child.id) in setOf("codex","zcode"))ChromeButton(R.drawable.ic_lucide_x,"关闭子代理",{onClose(child)},modifier=Modifier.testTag("closeSubagent:${child.id}"))
                     else ModernIcon(R.drawable.ic_lucide_chevron_right,null,Modifier.size(16.dp),Muted)
                 }
             }
@@ -1654,7 +1714,7 @@ private fun nativeCommandIcon(name:String)=when(name){
             val status=when(thread.status){"error","failed"->"失败";"interrupted"->"已停止";"ok","completed"->"已完成";else->"空闲"}
             Text(listOf(status,parent?.let{if(it.subagent!=null)subagentLabel(it) else it.title}.orEmpty()).filter{it.isNotBlank()}.joinToString(" · "),fontSize=12.sp,color=Muted,maxLines=1,overflow=TextOverflow.Ellipsis)
         }
-        if(!thread.readOnly&&nativeThreadAgent(thread.id)=="codex")IconButton(onClick=close,modifier=Modifier.testTag("closeSidebarAgent:${thread.id}")){ModernIcon(R.drawable.ic_lucide_x,"关闭子代理",Modifier.size(16.dp),Muted)}
+        if(!thread.readOnly&&nativeThreadAgent(thread.id) in setOf("codex","zcode"))IconButton(onClick=close,modifier=Modifier.testTag("closeSidebarAgent:${thread.id}")){ModernIcon(R.drawable.ic_lucide_x,"关闭子代理",Modifier.size(16.dp),Muted)}
     }
 }
 
@@ -1746,7 +1806,7 @@ private data class NativeMessageViewState(
     val threadId:String,val events:List<ChatEvent>,val pendingApprovals:List<ChatEvent>,val approvals:Set<String>,
     val approvalResults:Map<String,String>,val desktopAutoApprove:Boolean,
     val running:Boolean,val hasMoreHistory:Boolean,val loadingOlderHistory:Boolean,val loadingHistory:Boolean,
-    val pendingMessage:ChatEvent?,val failedMessages:List<ChatEvent>,val historyWindow:Int,val readingKey:String
+    val pendingMessage:ChatEvent?,val failedMessages:List<ChatEvent>,val historyWindow:Int,val readingKey:String,val sendingStage:String
 )
 @Composable private fun NativeMessages(vm:NativeViewModel,sendScrollRequest:Int,conversationVisible:Boolean,bottomInset:Dp=0.dp,topInset:Dp=0.dp,onQuestionOpen:()->Unit){
     val liquid=LocalNativeGlassMode.current.floatingChrome
@@ -1756,7 +1816,7 @@ private data class NativeMessageViewState(
     val s by remember(vm){derivedStateOf{
         val state=vm.state
         NativeMessageViewState(state.threadId,state.events,state.pendingApprovals,state.approvals,state.approvalResults,state.desktopAutoApprove,state.running,
-            state.hasMoreHistory,state.loadingOlderHistory,state.loadingHistory,vm.pendingMessage(),vm.failedMessages(),vm.readingHistoryWindow,vm.readingPositionKey(state.threadId))
+            state.hasMoreHistory,state.loadingOlderHistory,state.loadingHistory,vm.pendingMessage(),vm.failedMessages(),vm.readingHistoryWindow,vm.readingPositionKey(state.threadId),state.sendingStage)
     }}
     val historyFeedback by remember(vm){derivedStateOf{vm.state.let{Triple(it.historyErrors,it.historySyncing&&it.historyErrors.isNotEmpty(),it.connected)}}}
     val list=rememberLazyListState();val scope=rememberCoroutineScope()
@@ -1791,18 +1851,21 @@ private data class NativeMessageViewState(
     var follow by remember(s.threadId){mutableStateOf(savedPosition?.followLatest?:true)}
     var resumeAtBottom by remember(s.threadId){mutableStateOf(false)}
     var returningToLatest by remember(s.threadId){mutableStateOf(false)}
-    val unreadResult by remember(vm){derivedStateOf{vm.state.threads.find{it.id==vm.state.threadId}?.takeIf{it.unread}?.completedAt?:0L}}
+    val unreadResult by remember(vm){derivedStateOf{vm.unreadCompletion(vm.state.threadId)}}
     val sidebarRefreshing by remember(vm){derivedStateOf{vm.state.loadingSidebar}}
-    val readableLatest=conversationVisible&&vm.uiForeground&&atLatest&&!s.loadingHistory&&!s.running&&!restorePending&&!list.isScrollInProgress&&displayedEvents===s.events&&list.layoutInfo.totalItemsCount>0
-    LaunchedEffect(s.threadId,unreadResult,readableLatest,sidebarRefreshing,s.events){
-        if(unreadResult>0&&readableLatest){delay(250);vm.markResultRead(s.threadId)}
+    val readableConversation=conversationVisible&&vm.uiForeground&&!s.loadingHistory&&!s.running&&displayedEvents===s.events&&list.layoutInfo.totalItemsCount>0
+    LaunchedEffect(s.threadId,unreadResult,readableConversation,sidebarRefreshing,s.events,vm.readableHistory){
+        if(unreadResult>0&&readableConversation){delay(250);vm.markResultRead(s.threadId)}
     }
     LaunchedEffect(sendScrollRequest){if(sendScrollRequest>0){follow=true;resumeAtBottom=true;list.scrollToItem((list.layoutInfo.totalItemsCount-1).coerceAtLeast(0))}}
     val pendingMessage=s.pendingMessage
     val failedMessages=s.failedMessages
+    val progressLabel=remember(s.events,s.threadId,s.running,s.loadingHistory,pendingMessage,s.sendingStage){
+        nativeChatProgressLabel(s.events,s.threadId,s.running,s.loadingHistory,pendingMessage!=null||s.sendingStage.isNotBlank(),s.sendingStage)
+    }
     val blocks=remember(displayedEvents,s.pendingApprovals,s.approvals,s.approvalResults,s.desktopAutoApprove,s.running,pendingMessage,failedMessages){
         val existing=displayedEvents.map{it.approvalId}.filter{it.isNotBlank()}.toSet()
-        val visibleEvents=if(!s.desktopAutoApprove)displayedEvents else displayedEvents.filterNot{it.type=="approval.requested"&&it.approvalType!="question"&&s.approvalResults[nativeApprovalKey(it.threadId,it.approvalId)] in setOf("accepted","resolved")}
+        val visibleEvents=nativeApprovalTimelineEvents(displayedEvents,s.pendingApprovals.map{it.approvalId}.toSet(),s.approvals,s.approvalResults,s.desktopAutoApprove)
         val timeline=nativeTimeline(visibleEvents+s.pendingApprovals.filter{it.approvalId !in existing&&it.approvalId !in s.approvals},s.threadId,running=s.running)
         timeline.map{block->
             vm.outgoingKey(block.event)?.let{block.copy(key=it)}?:block
@@ -1964,7 +2027,7 @@ private data class NativeMessageViewState(
             }
             items(visibleRows,key={it.key},contentType={if(it.header)"turnHeader" else if(it.activity!=null)"activityDetail" else if(it.block.activities.isNotEmpty())"tools" else it.block.event.type}){row->
                 if(row.header)NativeCompletedTurnHeader(vm,row.block){follow=false;resumeAtBottom=false}
-                else if(row.activity!=null)Box(Modifier.animateItem(fadeInSpec=tween(140),fadeOutSpec=tween(100),placementSpec=null)){
+                else if(row.activity!=null)Box(Modifier.animateItem(fadeInSpec=tween(140),fadeOutSpec=null,placementSpec=null)){
                     NativeActivityDetail(vm,row.activity,row.block.event.threadId,row.block.key){follow=false;resumeAtBottom=false}
                 }
                 else {
@@ -1980,12 +2043,17 @@ private data class NativeMessageViewState(
                     }
                 }
             }
+            if(progressLabel!=null)item(key="processing"){
+                NativeChatProcessing(progressLabel,Modifier.testTag("chatProcessing"))
+            }
             item(key="activity") {Spacer(Modifier.height(1.dp))}
         }
         }
 
         if(historyFeedback.first.isNotEmpty())Box(Modifier.align(Alignment.TopCenter).padding(start=18.dp,end=18.dp,top=topInset+4.dp)){
+            CompositionLocalProvider(LocalNativeGlassBackdrop provides returnBackdrop){
             NativeHistoryFeedback(historyFeedback.first,historyFeedback.second,historyFeedback.third,vm::retryHistory)
+            }
         }
         androidx.compose.animation.AnimatedVisibility(visible=returnToLatestVisible,modifier=Modifier.align(Alignment.BottomCenter).padding(start=8.dp,end=8.dp,top=8.dp,bottom=bottomInset+8.dp),enter=if(liquid)fadeIn(tween(140)) else fadeIn(tween(140))+scaleIn(initialScale=0.92f,animationSpec=tween(140)),exit=if(liquid)fadeOut(tween(100)) else fadeOut(tween(100))+scaleOut(targetScale=0.92f,animationSpec=tween(100))){
             CompositionLocalProvider(LocalNativeGlassBackdrop provides (returnBackdrop?:LocalNativeGlassBackdrop.current)){
@@ -2014,8 +2082,7 @@ private data class NativeMessageViewState(
     val labels=mapOf("history" to "会话记录","approvals" to "审批","queue" to "待发任务")
     val parts=errors.keys.mapNotNull{labels[it]}.joinToString("、").ifBlank{"会话状态"}
     val summary=if(retrying)"正在更新会话状态" else nativeErrorSummary(errors.values.joinToString("\n"))
-    androidx.compose.material.Surface(color=MaterialTheme.colors.surface.copy(alpha=.96f),shape=Radius.Field,
-        border=BorderStroke(.75.dp,Ink.copy(alpha=.08f)),modifier=Modifier.fillMaxWidth().testTag("historyFeedback")){
+    NativeNoticeSurface(if(retrying)Accent else AppColor.StatusWarning,Modifier.fillMaxWidth().testTag("historyFeedback")){
         Row(Modifier.fillMaxWidth().heightIn(min=52.dp).clickable{details=true}.padding(horizontal=12.dp,vertical=4.dp),verticalAlignment=Alignment.CenterVertically){
             ModernIcon(R.drawable.ic_lucide_circle_alert,null,Modifier.size(17.dp),if(retrying)Accent else AppColor.StatusWarning)
             Column(Modifier.weight(1f).padding(start=9.dp),verticalArrangement=Arrangement.spacedBy(2.dp)){
@@ -2039,7 +2106,7 @@ private data class NativeMessageViewState(
         }
     }
 }
-@Composable private fun HistorySkeleton(){
+@Composable internal fun HistorySkeleton(){
     val transition=rememberInfiniteTransition(label="historySkeleton")
     val pulse by transition.animateFloat(initialValue=0.09f,targetValue=0.18f,animationSpec=infiniteRepeatable(tween(1100,easing=FastOutSlowInEasing),RepeatMode.Reverse),label="historySkeletonPulse")
     Column(Modifier.testTag("historySkeleton").fillMaxWidth().padding(vertical=12.dp),verticalArrangement=Arrangement.spacedBy(24.dp)){
@@ -2062,13 +2129,8 @@ private data class NativeMessageViewState(
 }
 @Composable private fun NativeCompletedTurnHeader(vm:NativeViewModel,block:NativeBlock,onRead:()->Unit){
     var expanded by vm.timelineDisclosure(block.event.threadId,"turn",block.key)
-    val angle=animateFloatAsState(if(expanded)90f else 0f,chevronMotion(),label="completedTurnChevron")
     val title=block.event.title.ifBlank{"处理过程"}
-    Row(Modifier.fillMaxWidth().testTag("processToggle:${block.key}").semantics{contentDescription=if(expanded)"收起详情" else "展开详情"}.clickable{onRead();expanded=!expanded}.padding(vertical=10.dp),verticalAlignment=Alignment.CenterVertically){
-        ModernIcon(R.drawable.ic_lucide_chevron_right,null,Modifier.size(17.dp).graphicsLayer{rotationZ=angle.value},Muted)
-        Text(title,
-            Modifier.weight(1f).padding(start=6.dp),color=Muted,fontSize=13.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
-    }
+    NativeProcessHeader(title,expanded,{onRead();expanded=!expanded},Modifier.testTag("processToggle:${block.key}").semantics{contentDescription=if(expanded)"收起详情" else "展开详情"})
 }
 @Composable private fun NativeOverlayClose(close:()->Unit,enabled:Boolean=true,label:String="关闭"){
     IconButton(onClick=close,enabled=enabled,modifier=Modifier.size(48.dp)){
@@ -2188,6 +2250,7 @@ private data class NativeMessageViewState(
         ModernDropdown(menu,{menu=false},192.dp,edgeMargin=20.dp,placement=NativePopupPlacement.ADJACENT){
             PopupMenuRow(R.drawable.ic_lucide_copy,"复制",compact=true){clipboard.setText(AnnotatedString(event.text));menu=false}
             if(vm.messageEditTurn(event).isNotBlank())PopupMenuRow(R.drawable.ic_lucide_square_pen,"编辑",compact=true){vm.editMessage(event);menu=false}
+            if(vm.state.harness=="codex"&&"thread-fork" in vm.state.capabilities&&event.turnId.isNotBlank()&&vm.state.events.any{it.type=="turn.completed"&&it.turnId==event.turnId})PopupMenuRow(R.drawable.ic_lucide_git_branch,"从此轮创建分支",compact=true){menu=false;vm.forkConversation(event.turnId)}
             PopupMenuRow(R.drawable.ic_lucide_square_pen,"再次使用",compact=true){vm.reuseMessage(event);menu=false}
             PopupMenuRow(R.drawable.ic_lucide_share_2,"分享",compact=true){menu=false;context.startActivity(android.content.Intent.createChooser(android.content.Intent(android.content.Intent.ACTION_SEND).apply{type="text/plain";putExtra(android.content.Intent.EXTRA_TEXT,event.text)},"分享消息"))}
         }
@@ -2281,14 +2344,9 @@ private data class NativeMessageViewState(
     LaunchedEffect(expanded,block.activities,vm.state.connected,vm.activityLoadEpoch){if(expanded&&vm.state.connected)vm.loadActivityGroups(block.activities)}
     val entries=remember(block.activities,expanded,inlineDetails){if(expanded&&inlineDetails)nativeActivityItems(block.activities) else emptyList()}
     val failed=block.activities.any{it.status=="error"}
-    val running=!failed&&nativeActivityRunning(block.activities,vm.state.events,vm.state.running)
-    val angle=animateFloatAsState(if(expanded)90f else 0f,chevronMotion(),label="activityChevron")
+    val running=!failed&&!vm.state.loadingHistory&&nativeActivityRunning(block.activities,vm.state.events,vm.state.running)
     Column(Modifier.fillMaxWidth()){
-        Row(Modifier.fillMaxWidth().testTag("activityGroupHeader").heightIn(min=36.dp).clip(Radius.Card).clickable{expanded=!expanded;if(expanded)onRead()}.padding(horizontal=6.dp,vertical=6.dp),verticalAlignment=Alignment.CenterVertically){
-            ModernIcon(R.drawable.ic_lucide_chevron_right,null,Modifier.size(15.dp).graphicsLayer{rotationZ=angle.value},Muted)
-            StatusPulseText(nativeActivitySummary(block.activities),running,Modifier.weight(1f).padding(start=5.dp))
-            if(failed)ModernIcon(R.drawable.ic_lucide_circle_alert,"执行失败",Modifier.size(15.dp),MaterialTheme.colors.error)
-        }
+        NativeActivityHeader(nativeActivitySummary(block.activities),expanded,{expanded=!expanded;if(expanded)onRead()},Modifier.testTag("activityGroupHeader"),running,failed)
         if(expanded)NativeActivityLoadFeedback(vm,block.activities)
         if(inlineDetails)AnimatedVisibility(expanded,enter=disclosureEnter(),exit=disclosureExit()){Surface(Modifier.fillMaxWidth().padding(top=2.dp,bottom=4.dp),shape=Radius.Field,color=Color.Transparent){Column(Modifier.padding(vertical=2.dp),verticalArrangement=Arrangement.spacedBy(2.dp)){
             entries.filter{it.type!="reasoning.summary"}.forEach{entry->key(entry.key){NativeActivityDetail(vm,entry,block.event.threadId,block.key,onRead)}}
@@ -2504,7 +2562,7 @@ private data class NativeMessageViewState(
         }
     }
 }
-@Composable private fun OutgoingBubble(modifier:Modifier=Modifier,content:@Composable ColumnScope.()->Unit){
+@Composable internal fun OutgoingBubble(modifier:Modifier=Modifier,content:@Composable ColumnScope.()->Unit){
     val shape=Radius.Composer
     val maxWidth=LocalConfiguration.current.screenWidthDp.dp*0.88f
     Surface(Modifier.widthIn(max=maxWidth).clip(shape).then(modifier).testTag("outgoingBubble"),shape=shape,color=LocalNativeTheme.current.palette.bubble){

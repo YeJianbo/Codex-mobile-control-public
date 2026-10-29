@@ -5,6 +5,8 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
@@ -26,6 +28,17 @@ import javax.net.ssl.SSLContext
 import javax.net.ssl.TrustManager
 import javax.net.ssl.X509TrustManager
 
+internal class NativeFileReadException(val status:Int,val kind:String,message:String):IllegalStateException(message)
+
+internal fun nativeCheckFileResponse(response:Response){
+    if(response.isSuccessful)return
+    val data=runCatching{JSONObject(response.peekBody(16L*1024).string())}.getOrNull()
+    val message=(data?.opt("error") as? String)?.takeIf{it.isNotBlank()}
+        ?:(data?.opt("message") as? String)?.takeIf{it.isNotBlank()}
+        ?:"读取失败 (${response.code})"
+    throw NativeFileReadException(response.code,data?.optString("kind").orEmpty(),message)
+}
+
 class GatewayClient(
     private val baseUrl: String,
     private val token: String,
@@ -37,13 +50,22 @@ class GatewayClient(
     @Volatile var cloudListError:String="";private set
     @Volatile internal var uploadOwner:String=""
     private val http = (if(certificateSha256.isNotBlank())pinnedOkHttpClient(certificateSha256) else if (trustSelfSigned) unsafeOkHttpClient() else defaultOkHttpClient())
-        .newBuilder().addInterceptor { chain ->
+        .newBuilder().eventListenerFactory{nativePerformanceListener(it.request(),remotePassword.isNotBlank())}.addInterceptor { chain ->
             val request=if(remotePassword.isNotBlank())chain.request().newBuilder().header("X-Remote-Password",remotePassword).build() else chain.request()
             chain.proceed(if(useDeviceCertificate)DeviceCertificate.sign(request) else request)
         }.build()
     private val connectionHttp=http.connectionTransport()
+    internal fun forkEventClient()=GatewayClient(baseUrl,token,trustSelfSigned,remotePassword,certificateSha256,useDeviceCertificate)
     private val jsonType = "application/json".toMediaType()
     @Volatile private var socket: WebSocket? = null
+    @Volatile private var socketTrace:Pair<WebSocket,NativeSocketTrace>?=null
+    private val socketDiagnostics=NativeSocketDiagnostics{path,done->
+        val request=Request.Builder().url(baseUrl.trimEnd('/')+path).header("Authorization","Bearer $token").build()
+        connectionHttp.newBuilder().callTimeout(3,TimeUnit.SECONDS).build().newCall(request).enqueue(object:okhttp3.Callback{
+            override fun onFailure(call:okhttp3.Call,e:java.io.IOException){done(false)}
+            override fun onResponse(call:okhttp3.Call,response:Response){response.use{done(it.isSuccessful)}}
+        })
+    }
     @Volatile private var focusedEvents=false
     private val eventFocus=NativeEventFocus()
     private val eventActivity=NativeEventConnectionActivity{android.os.SystemClock.elapsedRealtime()}
@@ -77,9 +99,15 @@ class GatewayClient(
         })
     }
 
-    private fun healthCall():okhttp3.Call = connectionHttp.newBuilder().connectTimeout(3,TimeUnit.SECONDS)
-        .readTimeout(4,TimeUnit.SECONDS).callTimeout(5,TimeUnit.SECONDS).build()
-        .newCall(Request.Builder().url(baseUrl.trimEnd('/')+"/health").get().build())
+    private fun healthCall():okhttp3.Call {
+        // Public TLS may include DNS, edge connection and tunnel setup. Keep the
+        // short LAN probe without applying its deadline to the public route.
+        val publicConnection=remotePassword.isNotBlank()
+        return connectionHttp.newBuilder().connectTimeout(if(publicConnection)10 else 3,TimeUnit.SECONDS)
+            .readTimeout(if(publicConnection)10 else 4,TimeUnit.SECONDS)
+            .callTimeout(if(publicConnection)15 else 5,TimeUnit.SECONDS).build()
+            .newCall(Request.Builder().url(baseUrl.trimEnd('/')+"/health").get().build())
+    }
 
     private fun parseHealth(body:String):GatewayHealth {
         val item=JSONObject(body)
@@ -571,7 +599,14 @@ class GatewayClient(
         )
     }
 
-    internal fun reconnectEvents() { socket?.cancel() }
+    internal fun markEventDisconnect(cause:String){socketTrace?.second?.finish(cause)}
+    private fun cancelEventSocket(active:WebSocket,cause:String,beforeCancel:()->Unit={}){
+        socketTrace?.takeIf{it.first===active}?.second?.finish(cause)
+        beforeCancel()
+        active.cancel()
+    }
+    internal fun reconnectEvents() { socket?.let{cancelEventSocket(it,"requested_reconnect")} }
+    internal fun discardIdleConnections(){connectionHttp.connectionPool.evictAll()}
 
     internal fun focusEvents(threadId:String){
         if(!focusedEvents)return
@@ -583,12 +618,13 @@ class GatewayClient(
     private suspend fun awaitEventFocus(threadId:String){
         if(!focusedEvents)return
         val active=socket?:return
-        if(eventFocus.await(active,threadId,5000){if(socket===active)active.cancel()})return
+        if(eventFocus.await(active,threadId,5000){if(socket===active)cancelEventSocket(active,"focus_timeout")})return
         throw java.net.SocketTimeoutException("会话订阅确认超时")
     }
 
     internal suspend fun verifyEventConnection(timeoutMillis:Long,onFailure:()->Unit={}):Boolean {
         val active=socket?:return false
+        if(eventActivity.hasRecentTraffic(500))return true
         val id=java.util.UUID.randomUUID().toString()
         val reply=CompletableDeferred<Boolean>()
         synchronized(eventProbes){eventProbes[id]=active to reply}
@@ -600,11 +636,15 @@ class GatewayClient(
             }
         }finally{synchronized(eventProbes){eventProbes.remove(id)}}
         // A late check must not cancel a replacement connection on the same client.
-        if(!alive&&socket===active){onFailure();active.cancel()}
+        if(!alive&&socket===active)cancelEventSocket(active,"foreground_probe_timeout",onFailure)
         return alive||socket?.let{it!==active}==true
     }
 
-    fun events(deferActivities:Boolean=false,streamThreadId:String?=null,discardPendingOnClose:Boolean=false): Flow<ChatEvent> = socketEvents(discardPendingOnClose=discardPendingOnClose) { emit,finish ->
+    fun events(deferActivities:Boolean=false,streamThreadId:String?=null,discardPendingOnClose:Boolean=false,traceLabel:String?=null): Flow<ChatEvent> = flow {
+      val trace=NativeSocketTrace(traceLabel?:if(discardPendingOnClose||streamThreadId!="")"chat" else "notifications",BuildConfig.VERSION_NAME,
+          {android.os.SystemClock.elapsedRealtime()},socketDiagnostics::record)
+      emitAll(socketEvents(discardPendingOnClose=discardPendingOnClose,onBufferOverflow={trace.finish("event_queue_overflow")},
+          onConsumerFailure={trace.finish("consumer_error",errorType=it.javaClass.simpleName)}) { emit,finish ->
         focusedEvents=streamThreadId!=null
         val wsUrl = baseUrl.replace("http://", "ws://").replace("https://", "wss://") + "/ws?token=$token&device=Android"+(if(deferActivities)"&activityDetails=deferred" else "")+(streamThreadId?.let{"&streamThread="+it.urlEncode()}?:"")
         val request = Request.Builder().url(wsUrl).build()
@@ -612,22 +652,27 @@ class GatewayClient(
         eventActivity.begin(owner)
         val activeSocket = connectionHttp.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                socketDiagnostics.flush()
                 emit(ChatEvent(type = "connection.opened", status = response.code.toString()))
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 runCatching {
                     val message=JSONObject(text)
+                    trace.received()
                     eventActivity.received(owner)
                     if(message.optString("type")=="connection.pong"){
                         synchronized(eventProbes){eventProbes[message.optString("requestId")]?.takeIf{it.first===webSocket}?.second}?.complete(true)
                     }else if(message.optString("type")=="thread.focused"){
                         eventFocus.acknowledge(webSocket,message.optString("requestId"),message.optString("threadId"))
-                    }else emit(message.toChatEvent())
+                    }else if(nativeSocketEventRelevant(message.optString("type"),message.optString("commandId"),
+                        notificationsOnly=streamThreadId==""&&!discardPendingOnClose))emit(message.toChatEvent())
+                    else Unit
                 }
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                trace.finish("peer_close",code)
                 eventActivity.close(owner)
                 emit(ChatEvent(type = "connection.closed", status = code.toString(), detail = reason))
                 finish(null)
@@ -636,20 +681,24 @@ class GatewayClient(
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { eventActivity.close(owner);webSocket.close(code, reason) }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                trace.finish(nativeSocketFailureCause(t),response?.code,t.javaClass.simpleName)
                 eventActivity.close(owner)
                 emit(ChatEvent(type = "connection.failed", status = response?.code?.toString().orEmpty(), detail = t.message.orEmpty()))
                 finish(t)
             }
         })
         socket=activeSocket
+        socketTrace=activeSocket to trace
         val disconnect:()->Unit = {
             eventActivity.close(owner)
             eventFocus.close(activeSocket)
             synchronized(eventProbes){eventProbes.values.filter{it.first===activeSocket}.map{it.second}}.forEach{it.complete(false)}
+            trace.finish("collector_cancelled")
             activeSocket.cancel()
-            if(socket===activeSocket)socket=null
+            if(socket===activeSocket){socket=null;socketTrace=null}
         }
         disconnect
+      })
     }
 
     fun startThread(project: Project? = null, model: String = "", initialText: String = ""): Boolean {
@@ -700,7 +749,12 @@ class GatewayClient(
     private var cachedModels:List<NativeModel>?=null
     private var modelsReadAt=0L
     private data class ModelCatalog(val models:List<NativeModel>,val backends:List<NativeBackend>,val pending:Set<String> = emptySet())
-    suspend fun nativeModelUpdates(refresh:Boolean=false,onUpdate:(List<NativeModel>,Set<String>)->Unit):List<NativeModel> = withTimeoutOrNull(65000L){
+    suspend fun nativeModelUpdates(refresh:Boolean=false,onUpdate:(List<NativeModel>,Set<String>)->Unit):List<NativeModel> {
+        val cached=if(refresh)null else modelReadMutex.withLock{
+            cachedModels?.takeIf{android.os.SystemClock.elapsedRealtime()-modelsReadAt<60000}
+        }
+        if(cached!=null){onUpdate(cached,emptySet());return cached}
+        return withTimeoutOrNull(65000L){
         var first=true
         var previous:ModelCatalog?=null
         var catalog:ModelCatalog
@@ -715,7 +769,8 @@ class GatewayClient(
         }while(catalog.pending.isNotEmpty())
         modelReadMutex.withLock{cachedModels=catalog.models;modelsReadAt=android.os.SystemClock.elapsedRealtime()}
         catalog.models
-    }?:error("模型目录读取超时，请重试")
+        }?:error("模型目录读取超时，请重试")
+    }
     suspend fun nativeModelsAsync(refresh:Boolean=false):List<NativeModel> {
         val requestedAt=android.os.SystemClock.elapsedRealtime()
         return modelReadMutex.withLock {
@@ -746,18 +801,18 @@ class GatewayClient(
         return ModelCatalog(models,statuses,catalog.optStringArray("pending").toSet())
     }
 
-    fun nativeSend(thread: ThreadRecord?, project: Project?, text: String, model: String, effort: String, permission:String, requestId: String, images: List<NativeImage>, files:List<NativeUploadedFile>,mode:String="",fast:Boolean?=null): Boolean = sendSocketMessage(nativeCommand(thread,project,text,model,effort,permission,requestId,images,files,mode,fast))
+    fun nativeSend(thread: ThreadRecord?, project: Project?, text: String, model: String, effort: String, permission:String, requestId: String, images: List<NativeImage>, files:List<NativeUploadedFile>,mode:String="",fast:Boolean?=null): Boolean = sendSocketMessage(nativeCommand(thread?.id.orEmpty(),thread,project,text,model,effort,permission,requestId,images,files,mode,fast))
 
-    fun nativeCommand(thread: ThreadRecord?, project: Project?, text: String, model: String, effort: String, permission:String, requestId: String, images: List<NativeImage>, files:List<NativeUploadedFile>,mode:String="",fast:Boolean?=null): JSONObject {
-        val message = JSONObject().put("type", if (thread == null) "thread.start" else "turn.start")
+    fun nativeCommand(threadId:String,thread: ThreadRecord?, project: Project?, text: String, model: String, effort: String, permission:String, requestId: String, images: List<NativeImage>, files:List<NativeUploadedFile>,mode:String="",fast:Boolean?=null): JSONObject {
+        val message = JSONObject().put("type", if (threadId.isBlank()) "thread.start" else "turn.start")
             .put("requestId", requestId).put("model", model).put("effort", effort.ifBlank { null }).put("permission",permission)
             .put("projectPath", (thread?.projectPath ?: project?.path).orEmpty().ifBlank { null })
-            .put(if (thread == null) "initialText" else "text", text)
+            .put(if (threadId.isBlank()) "initialText" else "text", text)
             .put("images", JSONArray(images.map { JSONObject().put("id", it.id).put("name", it.name) }))
             .put("files", JSONArray(files.map { JSONObject().put("id",it.id).put("name",it.name).put("mime",it.mime).put("size",it.size) }))
         if(mode.isNotBlank())message.put("mode",mode)
         if(fast!=null)message.put("fast",fast)
-        if (thread != null) message.put("threadId", thread.id)
+        if (threadId.isNotBlank()) message.put("threadId", threadId)
         return message
     }
 
@@ -797,7 +852,7 @@ class GatewayClient(
 
     fun nativeBytes(endpoint: String): ByteArray = http.newBuilder().readTimeout(30,TimeUnit.SECONDS).build().newCall(Request.Builder().url(baseUrl + endpoint)
         .header("Authorization", "Bearer $token").build()).execute().use { response ->
-        check(response.isSuccessful) { "读取失败 (${response.code})" }
+        nativeCheckFileResponse(response)
         response.body?.bytes() ?: byteArrayOf()
     }
 
@@ -811,7 +866,7 @@ class GatewayClient(
                 override fun onFailure(call:okhttp3.Call,error:java.io.IOException){continuation.resumeWith(Result.failure(error))}
                 override fun onResponse(call:okhttp3.Call,response:okhttp3.Response){
                     val result=runCatching{response.use{
-                        check(it.isSuccessful){"读取失败 (${it.code})"}
+                        nativeCheckFileResponse(it)
                         val body=it.body?:error("图片内容为空")
                         require(body.contentLength()<=maxBytes){"图片超过本机预览大小限制"}
                         val output=java.io.ByteArrayOutputStream()
@@ -825,7 +880,7 @@ class GatewayClient(
             })
         }
 
-    internal suspend fun nativeDownload(endpoint:String,file:java.io.File,maxBytes:Long=100L*1024*1024) =
+    internal suspend fun nativeDownload(endpoint:String,file:java.io.File,maxBytes:Long=100L*1024*1024,onProgress:((Long,Long)->Unit)?=null) =
         kotlinx.coroutines.suspendCancellableCoroutine<Unit> { continuation ->
             val call=http.newCall(Request.Builder().url(baseUrl+endpoint).header("Authorization","Bearer $token").build())
             continuation.invokeOnCancellation{call.cancel();file.delete()}
@@ -836,7 +891,7 @@ class GatewayClient(
                 }
                 override fun onResponse(call:okhttp3.Call,response:okhttp3.Response){
                     val result=runCatching {
-                        response.use { writeNativeDownload(it,file,maxBytes){continuation.isActive} }
+                        response.use { writeNativeDownload(it,file,maxBytes,{continuation.isActive},onProgress) }
                     }
                     // Cancellation can occur while the file is open; retry cleanup after closing it.
                     if(result.isFailure||!continuation.isActive)file.delete()
@@ -845,19 +900,23 @@ class GatewayClient(
             })
         }
 
-    private fun writeNativeDownload(response:okhttp3.Response,file:java.io.File,maxBytes:Long,current:()->Boolean) {
+    private fun writeNativeDownload(response:okhttp3.Response,file:java.io.File,maxBytes:Long,current:()->Boolean,onProgress:((Long,Long)->Unit)?=null) {
         if(!current())throw kotlinx.coroutines.CancellationException("文件读取已取消")
-        check(response.isSuccessful) { "读取失败 (${response.code})" }
+        nativeCheckFileResponse(response)
         val body=response.body ?: error("文件内容为空")
         require(body.contentLength()<0||body.contentLength()<=maxBytes){"文件超过 ${maxBytes/1024/1024} MB，请在电脑打开"}
         try {
+            // Android may reclaim cache directories while the app remains alive.
+            file.parentFile?.let{parent->check(parent.isDirectory||parent.mkdirs()){"无法创建下载目录，请清理存储空间后重试"}}
             body.byteStream().use { input -> file.outputStream().use { output ->
-                val buffer=ByteArray(32768);var total=0L
+                val buffer=ByteArray(32768);var total=0L;var reportedAt=0L
                 while(true){
                     if(!current())throw kotlinx.coroutines.CancellationException("文件读取已取消")
                     val count=input.read(buffer);if(count<0)break;total+=count
                     require(total<=maxBytes){"文件超过 ${maxBytes/1024/1024} MB，请在电脑打开"};output.write(buffer,0,count)
+                    if(onProgress!=null){val now=android.os.SystemClock.elapsedRealtime();if(now-reportedAt>=150){reportedAt=now;onProgress(total,body.contentLength())}}
                 }
+                onProgress?.invoke(total,body.contentLength())
             }}
         }catch(error:Exception){file.delete();throw error}
     }
@@ -896,6 +955,10 @@ class GatewayClient(
     suspend fun nativeConversationHistoryAsync(threadId:String,turns:Int=10):NativeHistory {
         awaitEventFocus(threadId)
         return parseConversationHistory(JSONObject(requestAsync("GET","/api/threads/${threadId.urlEncode()}/events?turns=$turns",timeoutSeconds=65)))
+    }
+    // Notifications read another conversation without changing the live stream focus.
+    suspend fun nativeTaskHistoryAsync(threadId:String):List<ChatEvent> = withContext(Dispatchers.Default){
+        parseConversationHistory(JSONObject(requestAsync("GET","/api/threads/${threadId.urlEncode()}/events?turns=2&activityDetails=deferred"))).first
     }
     private fun parseConversationHistory(result:JSONObject):NativeHistory {
         val rows=result.getJSONArray("events")

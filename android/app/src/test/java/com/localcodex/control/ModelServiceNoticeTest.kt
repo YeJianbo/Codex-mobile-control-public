@@ -63,5 +63,16 @@ class ModelServiceNoticeTest {
         val notice=quotaWindowNotice(listOf(NativeQuotaWindow("Codex",300,5.0,2000),NativeQuotaWindow("Codex",10080,0.0,3000)),1000)!!
         assertEquals("quota",notice.kind)
         assertEquals("额度已用完",notice.title)
+        assertTrue("耗尽的窗口也要列出 5h 与 7d 两个额度：${notice.message}",notice.message.contains("5 小时额度 剩余 5%")&&notice.message.contains("7 天额度 剩余 0%"))
+    }
+    @Test fun everyLowWindowIsListedTogether(){
+        val notice=quotaWindowNotice(listOf(NativeQuotaWindow("Codex",300,7.0,2000),NativeQuotaWindow("Codex",10080,3.5,3000)),1000)!!
+        assertEquals("quota-low",notice.kind)
+        assertTrue(notice.message,notice.message.contains("5 小时额度 剩余 7%"))
+        assertTrue(notice.message,notice.message.contains("7 天额度 剩余 3.5%"))
+        // A healthy window is not listed, and the order is short window first.
+        val mixed=quotaWindowNotice(listOf(NativeQuotaWindow("Codex",10080,4.0,3000),NativeQuotaWindow("Codex",300,40.0,2000)),1000)!!
+        assertTrue(mixed.message,mixed.message.contains("7 天额度 剩余 4%")&&!mixed.message.contains("5 小时额度"))
+        assertTrue(mixed.message.indexOf("7 天额度")<mixed.message.indexOf("。"))
     }
 }

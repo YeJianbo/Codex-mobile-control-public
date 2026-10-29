@@ -15,6 +15,7 @@ test('the signed Android package is downloadable while API access still needs au
 test('public API admits mobile chat, approvals, uploads and workspace files',()=>{
   for(const [method,url] of [
     ['GET','/ws?token=example'],['GET','/api/threads/t/events?count=60'],
+    ['GET','/api/diagnostics/performance'],
     ['GET','/api/threads/t/events?turns=10'],['GET','/api/threads/t/activity?groupId=example'],['GET','/api/threads/t/submission?requestId=example'],
     ['GET','/api/threads/search?q=example'],['GET','/api/sidebar/pins'],
     ['POST','/api/codex/start'],
@@ -34,6 +35,7 @@ test('public API excludes the console, terminal, settings and project creation',
     ['POST','/api/threads/search'],['PATCH','/api/threads/search'],['POST','/api/sidebar/pins'],['GET','/api/threads/t/queue/q/restore'],['DELETE','/api/threads/t/queue/q/restore/complete'],['POST','/api/threads/t/queue/q/restore/delete'],
     ['POST','/api/projects/p/terminal/run'],['GET','/api/terminal/history'],
     ['POST','/api/projects'],['PUT','/api/config/https'],
+    ['POST','/api/diagnostics/performance'],
     ['PUT','/api/settings/user/raw'],['POST','/api/codex/restart'],
     ['POST','/api/agents/health'],['GET','/api/local-console/backend/restart'],['PUT','/api/local-console/backend/restart-preview'],
     ['GET','/preview/site/p/index.html'],['GET','/downloads/other.apk'],

@@ -1,7 +1,9 @@
 import {CommandReceipts,SubmissionNotStartedError} from './commandReceipts.js';
+import {stripSessionInstructionPrefix} from './agentInstructions.js';
 import {deepseekNativeSessions} from './deepseekNativeSessions.js';
+import {zcodeNativeSessions} from './zcodeNativeSessions.js';
 import {assertControllableThread} from './cloudSnapshots.js';
-import {historyToolPresentation,invalidateCodexHistory} from './codexSessions.js';
+import {historyToolPresentation,invalidateCodexHistory,desktopAsyncQuestionEvent,splitDesktopAttachments} from './codexSessions.js';
 import {codexImageInputs,type ImageAttachment} from './imageUploads.js';
 import {resolveFiles,codexFilePrompt,type FileAttachment} from './fileUploads.js';
 import type { CodexAppServerClient } from "../codex/appServerClient.js";
@@ -11,7 +13,7 @@ import {readModelCatalog,consoleModelOverrides} from './modelCatalog.js';
 import {desktopThreadSettings} from './desktopSidebar.js';
 import {readUserSettings,readCustomPermissions} from './codexSettings.js';
 import {isWriterOccupied} from './userFacingError.js';
-import {AgentSessions} from './agentSessions.js';
+import {AgentSessions,type AgentSessionPort} from './agentSessions.js';
 import {modelAgent,threadAgent,publicAgentAllowed} from './agentProtocol.js';
 import {readRemoteAutoApproval} from './remoteApprovalSettings.js';
 import {latestMobileThreadLifecycle} from './mobileHistory.js';
@@ -19,7 +21,9 @@ import {readCodexGoals} from './codexGoals.js';
 import type {GatewayEvent,PendingApproval} from '../types.js';
 import {codexErrorPresentation,isCapacityError} from './codexError.js';
 import {LoadedThreadSubscriptions} from './loadedThreadSubscriptions.js';
+import {mcpElicitationMethod,elicitationPrompt,elicitationDecision,elicitationAnswer,confirmationElicitation,elicitationParams} from './mcpElicitation.js';
 import type {CodexGoal} from './codexGoals.js';
+import {CodexCommandOutput} from './codexCommandOutput.js';
 
 type ThreadStartResult = {
   thread?: {
@@ -31,6 +35,12 @@ export const APP_SERVER_CLIENT_REQUEST_METHODS = [
   "initialize",
   "thread/start",
   "thread/resume",
+  "thread/fork",
+  "thread/goal/clear",
+  "thread/unsubscribe",
+  "thread/backgroundTerminals/list",
+  "thread/backgroundTerminals/terminate",
+  "review/start",
   "turn/start",
   "turn/interrupt",
 ] as const;
@@ -55,7 +65,9 @@ export const APP_SERVER_NOTIFICATION_METHODS = [
   "warning",
   "guardianWarning",
   "configWarning",
-  "item/*Approval*",
+  "item/autoApprovalReview/started",
+  "item/autoApprovalReview/completed",
+  "autoApprovalReview/strictReviewRequired",
   "item/started",
   "item/completed",
   "remoteControl/status/changed",
@@ -67,6 +79,7 @@ export const APP_SERVER_REQUEST_METHODS = [
   "item/fileChange/requestApproval",
   "item/permissions/requestApproval",
   "item/tool/requestUserInput",
+  "mcpServer/elicitation/request",
   "execCommandApproval",
   "applyPatchApproval",
 ] as const;
@@ -80,7 +93,7 @@ type MethodObservation = {
 export type ClientCommand = (
   | { type: "thread.start"; requestId?: string; projectPath?: string; model?: string; effort?:string; mode?:"plan"|"default"; fast?:boolean; permission?:"ask"|"auto"|"full"|"custom"; initialText?: string; images?: ImageAttachment[]; files?:FileAttachment[] }
   | { type: "thread.resume"; requestId?: string; threadId: string; projectPath?: string; model?: string }
-  | { type: "turn.start"; requestId?: string; threadId: string; projectPath?: string; model?: string; effort?:string; mode?:"plan"|"default"; fast?:boolean; permission?:"ask"|"auto"|"full"|"custom"; text: string; images?: ImageAttachment[]; files?:FileAttachment[]; continueGoal?:boolean; replaceTurnId?:string }
+  | { type: "turn.start"; requestId?: string; threadId: string; projectPath?: string; model?: string; effort?:string; mode?:"plan"|"default"; fast?:boolean; permission?:"ask"|"auto"|"full"|"custom"; text: string; images?: ImageAttachment[]; files?:FileAttachment[]; continueGoal?:boolean; replaceTurnId?:string; keepAttachmentPaths?:string[] }
   | { type: "turn.interrupt"; requestId?: string; threadId: string }
   | { type: "approval.resolve"; requestId?: string; approvalId: string; decision: "accept" | "decline" }
   | { type: "debug.echo"; requestId?: string; threadId?: string; text: string; images?: ImageAttachment[] }) & {agentTransport?:'acp'};
@@ -103,7 +116,8 @@ function mirroredApproval(left:Pick<PendingApproval,'rpcId'|'method'|'threadId'|
 }
 
 export class SessionManager {
-  readonly agents:AgentSessions;
+  private readonly commandOutput=new CodexCommandOutput(event=>this.hub.publish(event));
+  readonly agents:AgentSessionPort;
   readonly receipts=new CommandReceipts();
   private reconcilingApprovalMirrors?:Promise<void>;
   private readonly compactionOutputs=new Map<string,{itemId?:string;parts:string[]}>();
@@ -147,18 +161,19 @@ export class SessionManager {
     this.hub.publish({type:'turn.completed',threadId,status:'error'});
     await this.pauseInterruptedGoal(threadId,'error').catch(()=>{});
   }
-  private queueCapacityRetry(threadId:string,turnId:string|undefined,error:unknown):boolean {
-    if(!this.capacityAutoRetry||this.explicitlyStopped.has(threadId)||!turnId||threadId==='unknown'||!isCapacityError(error))return false;
+  private queueCapacityRetry(threadId:string,turnId:string|undefined,error:unknown,waitingForSession=false):boolean {
+    if(!this.capacityAutoRetry||this.explicitlyStopped.has(threadId)||!turnId||threadId==='unknown'||!waitingForSession&&!isCapacityError(error))return false;
     const previous=this.capacityRetries.get(threadId);
     if(previous?.turnId===turnId&&(previous.timer||previous.launching||previous.awaitingStart))return true;
     const attempt=(previous?.attempt??0)+1;
     const latestGoal=this.goals().get(threadId);
     const goal=previous?.goal??this.turnGoals.get(threadId)??(latestGoal?.status==='active'?{...latestGoal}:undefined);
     const entry={turnId,attempt,goal,launching:false,timer:undefined as NodeJS.Timeout|undefined};
-    const delay=Math.round(Math.min(15000*2**Math.min(attempt-1,3),120000)*(1+Math.random()*.1));
+    // Reattaching a session is local recovery, not another model capacity failure.
+    const delay=Math.round((waitingForSession?Math.min(1000*2**Math.min(attempt-1,3),8000):Math.min(15000*2**Math.min(attempt-1,3),120000))*(1+Math.random()*.1));
     this.capacityRetries.set(threadId,entry);
     void this.store.upsertThread({id:threadId,status:'running'});
-    this.hub.publish({type:'error',threadId,turnId,title:'容量不足，等待重试',message:`模型繁忙，${Math.ceil(delay/1000)} 秒后自动重试（第 ${attempt} 次）`,willRetry:true});
+    this.hub.publish({type:'error',threadId,turnId,title:waitingForSession?'等待会话恢复':'容量不足，等待重试',message:`${waitingForSession?'正在重新连接会话':'模型繁忙'}，${Math.ceil(delay/1000)} 秒后自动重试（第 ${attempt} 次）`,willRetry:true});
     entry.timer=setTimeout(()=>{
       entry.timer=undefined;const work=this.retryCapacityTurn(threadId,entry);this.capacityStarts.set(threadId,work);
       void work.finally(()=>{if(this.capacityStarts.get(threadId)===work)this.capacityStarts.delete(threadId);}).catch(()=>{});
@@ -173,11 +188,22 @@ export class SessionManager {
     try{
       await this.pausingGoals.get(threadId);
       if(!current())return;
-      const result=readRecord(await this.codex.request('thread/read',{threadId,includeTurns:false}));
+      let result=readRecord(await this.codex.request('thread/read',{threadId,includeTurns:false}));
       if(!current())return;
-      const backend=readString(readRecord(readRecord(result?.thread)?.status)?.type);
+      const status=()=>readString(readRecord(result?.thread)?.status)??readString(readRecord(readRecord(result?.thread)?.status)?.type);
+      let backend=status();
+      if(backend==='notLoaded'){
+        this.activeThreads.delete(threadId);
+        await this.resumeThread(threadId);
+        if(!current())return;
+        result=readRecord(await this.codex.request('thread/read',{threadId,includeTurns:false}));
+        if(!current())return;
+        backend=status();
+      }
       if(backend==='active'){this.cancelCapacityRetry(threadId);return;}
-      if(backend!=='idle')throw new Error('会话尚未就绪，请重新连接后手动重试');
+      // systemError describes the previous failed turn. Like manual Continue,
+      // a new turn can start from it; waiting for idle would never clear it.
+      if(backend!=='idle'&&backend!=='systemError')throw Object.assign(new Error('等待电脑会话恢复'),{code:'CAPACITY_RETRY_SESSION_PENDING'});
       if(this.startingTurns.has(threadId)){this.cancelCapacityRetry(threadId);return;}
       if(entry.goal){
         const goal=this.goals().get(threadId);
@@ -198,6 +224,7 @@ export class SessionManager {
       if(!current())return;
       entry.launching=false;entry.awaitingStart=false;
       if(isCapacityError(error)&&this.queueCapacityRetry(threadId,entry.turnId,error))return;
+      if(!starting&&((error as {code?:string})?.code==='CAPACITY_RETRY_SESSION_PENDING'||/timeout|timed out|EPIPE|ECONNRESET|ETIMEDOUT|closed|disconnect|超时|断开|退出|已关闭|尚未启动/i.test(String(error)))&&this.queueCapacityRetry(threadId,entry.turnId,error,true))return;
       if(starting){this.startingTurns.delete(threadId);starting=false;}
       this.cancelCapacityRetry(threadId);await this.finishCapacityFailure(threadId,String(error instanceof Error?error.message:error));
     }finally{if(starting)this.startingTurns.delete(threadId);entry.launching=false;}
@@ -211,12 +238,13 @@ export class SessionManager {
     private readonly store: StateStore,
     private readonly goals=readCodexGoals,
     private readonly defaultWorkspace?: (prompt?:string)=>Promise<string>,
+    agents?:AgentSessionPort,
   ) {
     this.loadedSubscriptions=new LoadedThreadSubscriptions(this.codex,{
       canSubscribe:id=>!this.store.isThreadHidden(id),
       onError:(error,id)=>console.warn('容量重试会话订阅失败',id??'',String(error instanceof Error?error.message:error).slice(0,240)),
     });
-    this.agents=new AgentSessions(store,hub);
+    this.agents=agents??new AgentSessions(store,hub);
     this.agents.onThreadCreated=(requestId,threadId)=>this.receipts.noteThread(requestId,threadId);
     this.codex.on("notification", (message) => this.handleCodexNotification(message));
     this.codex.on("serverRequest", (message) => void this.handleServerRequest(message));
@@ -255,12 +283,15 @@ export class SessionManager {
   async currentThreadStatus(threadId:string,events:GatewayEvent[],refreshBackend=true):Promise<string> {
     if(this.capacityRetries.has(threadId))return 'running';
     const savedStatus=()=>this.store.threads.find(thread=>thread.id===threadId)?.status||(this.ownsThread(threadId)?'running':'idle');
-    if(this.agents.owns(threadId)||this.startingTurns.has(threadId))return savedStatus();
+    if(this.agents.owns(threadId)||this.startingTurns.has(threadId))return 'running';
+    if(threadId.startsWith('zcode-')){
+      const native=(await zcodeNativeSessions.list()).find(session=>session.thread.id===threadId);if(native)return native.thread.status;
+    }
     if(threadId.startsWith('deepseek-')){
       const native=await deepseekNativeSessions.read(threadId);if(native)return native.thread.status;
     }
     const trackedTurn=this.activeTurns.get(threadId);
-    const lifecycle=latestMobileThreadLifecycle(events,this.store.eventsForThread(threadId));
+    const lifecycle=latestMobileThreadLifecycle(events,this.store.recentEventsForThread(threadId));
     const historicalStatus=lifecycle?(lifecycle.type==='turn.started'?'running':lifecycle.status):savedStatus();
     const saved=this.store.threads.find(thread=>thread.id===threadId);
     // The event replay ring can evict a recovery event. The persisted thread
@@ -288,12 +319,17 @@ export class SessionManager {
     finally{clearTimeout(timer);}
     // A live notification can arrive while the status read is pending.
     if(this.startingTurns.has(threadId)||this.activeTurns.get(threadId)!==trackedTurn)return savedStatus();
-    const latest=latestMobileThreadLifecycle(events,this.store.eventsForThread(threadId));
+    const latest=latestMobileThreadLifecycle(events,this.store.recentEventsForThread(threadId));
     if(latest!==lifecycle)return latest?(latest.type==='turn.started'?'running':latest.status):savedStatus();
     if(backendStatus==='active')return 'running';
-    if(backendStatus!=='idle'&&backendStatus!=='notLoaded')return fallback;
+    if(backendStatus!=='idle'&&backendStatus!=='notLoaded'&&backendStatus!=='systemError')return fallback;
     this.activeTurns.delete(threadId);this.publicActiveTurns.delete(threadId);
     if(backendStatus==='notLoaded')this.activeThreads.delete(threadId);
+    if(backendStatus==='systemError'){
+      void this.store.upsertThread({id:threadId,status:'error'});
+      if(trackedTurn||lifecycle?.type==='turn.started')this.hub.publish({type:'turn.completed',threadId,turnId:trackedTurn||lifecycle?.turnId,status:'error'});
+      return 'error';
+    }
     if(latest?.type==='turn.completed'&&(!trackedTurn||latest.turnId===trackedTurn))return latest.status;
     if(recordedTerminal)return saved.status;
     // Persist a terminal event as well as the sidebar status, so stale rollout
@@ -302,7 +338,16 @@ export class SessionManager {
     this.hub.publish({type:'turn.completed',threadId,turnId:trackedTurn||lifecycle?.turnId,status:'interrupted'});
     return 'interrupted';
   }
-  canSteer(threadId:string):boolean { return this.activeTurns.has(threadId); }
+  async currentTurnId(threadId:string):Promise<string|undefined> {
+    const tracked=this.activeTurns.get(threadId);
+    if(tracked)return tracked;
+    // Only fetch turn metadata; operation bodies can span hundreds of MB.
+    const result=readRecord(await this.codex.request('thread/turns/list',{threadId,limit:1,sortDirection:'desc',itemsView:'notLoaded'}));
+    const turns=Array.isArray(result?.data)?result.data:[];
+    const turn=turns.map(readRecord).find(item=>item?.status==='inProgress');
+    return this.activeTurns.get(threadId)||(turn&&readString(turn.id));
+  }
+  canSteer(threadId:string):boolean { return this.activeTurns.has(threadId)||threadAgent(threadId)==='zcode'&&this.agents.owns(threadId); }
   canSteerPublic(threadId:string):boolean { return this.publicActiveTurns.has(threadId)&&this.activeTurns.has(threadId); }
   async interrupt(threadId:string,desktopTurnId?:string,requestId?:string):Promise<void> {
     this.explicitlyStopped.add(threadId);
@@ -325,6 +370,7 @@ export class SessionManager {
     await this.pauseInterruptedGoal(threadId,'interrupted');
   }
   async steer(threadId:string,text:string,images:ImageAttachment[]=[],files:FileAttachment[]=[],desktopTurnId?:string):Promise<void> {
+    if(['antigravity','zcode'].includes(threadAgent(threadId)))return this.agents.steer(threadId,text,images,files);
     const expectedTurnId=this.activeTurns.get(threadId)||desktopTurnId;
     if(!expectedTurnId)throw new Error('当前没有可引导的运行轮次，消息已保留在队列中');
     const resolved=await resolveFiles(files);const prompt=codexFilePrompt(text,resolved);
@@ -432,7 +478,7 @@ export class SessionManager {
         model: command.model,
       });
       if(goalObjective)await this.startGoalCommand(command.threadId,goalObjective,command);
-      else await this.startTurn(command.threadId, command.text, { replaceTurnId:command.replaceTurnId,continueGoal:command.continueGoal,images:command.images,files:command.files,effort:command.effort,mode:command.mode,fast:command.fast,requestId:command.requestId,permission:command.permission,
+      else await this.startTurn(command.threadId, command.text, { replaceTurnId:command.replaceTurnId,keepAttachmentPaths:command.keepAttachmentPaths,continueGoal:command.continueGoal,images:command.images,files:command.files,effort:command.effort,mode:command.mode,fast:command.fast,requestId:command.requestId,permission:command.permission,
         projectPath: command.projectPath,
         model: command.model,
       });
@@ -451,12 +497,50 @@ export class SessionManager {
     }
   }
 
+  async forkThread(threadId:string,options:{ephemeral:boolean;lastTurnId?:string;beforeTurnId?:string}){
+    assertControllableThread(threadId);
+    if(threadAgent(threadId)!=='codex')throw Error('此助手暂不支持上下文分支');
+    if(options.lastTurnId&&options.beforeTurnId)throw Error('只能选择一个分支位置');
+    const source=this.store.threads.find(thread=>thread.id===threadId);
+    const result=readRecord(await this.codex.request('thread/fork',{threadId,...options,excludeTurns:true,...(!options.ephemeral?{deferGoalContinuation:true}:{})}));
+    const native=readRecord(result?.thread),id=readString(native?.id);
+    if(!id)throw Error('Codex 未返回分支会话');
+    if(options.ephemeral){
+      if(native?.ephemeral!==true)throw Error('Codex 未创建临时分支');
+      // Ephemeral forks have no durable goal; goal APIs reject these threads.
+    }
+    this.activeThreads.add(id);
+    this.relayThreads.set(id,this.relayThreads.get(threadId)??Boolean(desktopThreadSettings(threadId)?.model?.includes('::')));
+    const thread=await this.store.upsertThread({id,source:'localCodex',ephemeral:options.ephemeral,forkedFromId:threadId,
+      projectPath:readString(native?.cwd)||source?.projectPath,title:options.ephemeral?'侧聊':`${source?.title||'会话'} · 分支`,status:'idle'});
+    this.hub.publish({type:'thread.started',threadId:id,thread});
+    return {thread,model:result?.model,effort:result?.reasoningEffort};
+  }
+  async closeSideThread(threadId:string){
+    if(!this.store.isEphemeral(threadId))throw Error('此操作仅用于临时侧聊');
+    await this.cancelCapacityWork(threadId);
+    const active=this.activeTurns.get(threadId);
+    if(active)await this.codex.request('turn/interrupt',{threadId,turnId:active});
+    await this.codex.request('thread/unsubscribe',{threadId});
+    this.activeThreads.delete(threadId);this.activeTurns.delete(threadId);this.relayThreads.delete(threadId);
+    this.store.dropEphemeral(threadId);
+  }
+
+  requiresNewThreadForModel(threadId:string,model:string):boolean {
+    const savedModel=desktopThreadSettings(threadId)?.model;
+    const wasRelay=this.relayThreads.get(threadId)??(savedModel?savedModel.includes('::'):undefined);
+    return wasRelay!==undefined&&wasRelay!==model.includes('::');
+  }
+
   async resumeThread(threadId: string, options: { projectPath?: string; model?: string } = {}): Promise<void> {
     assertControllableThread(threadId);
+    if(threadId.startsWith('zcode-')&&!this.agents.owns(threadId)){
+      const native=(await zcodeNativeSessions.list()).find(session=>session.thread.id===threadId);
+      if(native){this.hub.publish({type:'thread.started',threadId,thread:native.thread});return;}
+    }
     if(threadAgent(threadId)!=='codex'){await this.agents.resume(threadId);return;}
     const savedModel=desktopThreadSettings(threadId)?.model;
-    const wasRelay=this.relayThreads.get(threadId)??(savedModel? savedModel.includes('::'):undefined);
-    if(options.model&&wasRelay!==undefined&&wasRelay!==options.model.includes('::'))throw new Error('请新建会话选择另一类模型；现有会话保留原来的官方或中转接口');
+    if(options.model&&this.requiresNewThreadForModel(threadId,options.model))throw new Error('请新建会话选择另一类模型；现有会话保留原来的官方或中转接口');
     if (this.activeThreads.has(threadId)) {
       const thread = this.store.threads.find((item) => item.id === threadId);
       this.hub.publish({ type: "thread.started", threadId, thread });
@@ -506,13 +590,13 @@ export class SessionManager {
     await this.startTurn(threadId,'',{...options,continueGoal:true});
   }
 
-  private async startTurn(threadId: string, text: string, options: { replaceTurnId?:string;continueGoal?:boolean;projectPath?: string; model?: string; effort?:string; mode?:"plan"|"default"; fast?:boolean; requestId?:string; permission?:"ask"|"auto"|"full"|"custom"; images?:ImageAttachment[]; files?:FileAttachment[] } = {}): Promise<void> {
+  private async startTurn(threadId: string, text: string, options: { replaceTurnId?:string; keepAttachmentPaths?:string[];continueGoal?:boolean;projectPath?: string; model?: string; effort?:string; mode?:"plan"|"default"; fast?:boolean; requestId?:string; permission?:"ask"|"auto"|"full"|"custom"; images?:ImageAttachment[]; files?:FileAttachment[] } = {}): Promise<void> {
     if(options.model&&this.relayThreads.has(threadId)&&this.relayThreads.get(threadId)!==options.model.includes('::'))throw new Error('请新建会话选择另一类模型；现有会话保留原来的官方或中转接口');
     const previous=this.store.threads.find((thread) => thread.id === threadId);
     if(options.continueGoal&&this.activeTurns.has(threadId)&&!this.startingTurns.has(threadId)){
       // A lost terminal notification can leave the gateway tracking a dead turn.
       // Reuse the status reconciliation before deciding whether continuation is safe.
-      await this.currentThreadStatus(threadId,this.store.eventsForThread(threadId),true);
+      await this.currentThreadStatus(threadId,this.store.recentEventsForThread(threadId),true);
     }
     if (this.activeTurns.has(threadId)&&!options.continueGoal||this.startingTurns.has(threadId)) throw new Error("当前任务仍在运行，请等待完成或先停止。");
     this.startingTurns.add(threadId);
@@ -533,7 +617,7 @@ export class SessionManager {
     const inputImages=await codexImageInputs(options.images);
     const resolvedFiles=await resolveFiles(options.files);
     const userText = text.trim();
-    if(!options.continueGoal&&!userText && !inputImages.length&&!resolvedFiles.length) throw new Error("请输入消息或添加附件");
+    if(!options.continueGoal&&!userText && !inputImages.length&&!resolvedFiles.length&&!(options.replaceTurnId&&options.keepAttachmentPaths?.length)) throw new Error("请输入消息或添加附件");
       await this.store.upsertThread({
         id: threadId,
         title: !options.continueGoal&&shouldRetitleThread(previous?.title, userText) ? titleFromPrompt(userText) : undefined,
@@ -549,7 +633,7 @@ export class SessionManager {
     const access=options.permission?await permissionOverrides(options.permission):undefined;
     const params = {
       threadId,
-      input: [...(text||resolvedFiles.length?[{ type: "text", text:codexFilePrompt(text,resolvedFiles), text_elements: [] }]:[]),...inputImages],
+      input: [...(text||resolvedFiles.length||options.keepAttachmentPaths?.length?[{ type: "text", text:codexFilePrompt(text,resolvedFiles), text_elements: [] }]:[]),...inputImages],
       cwd: options.projectPath || undefined,
       model: options.model || undefined,
       effort,
@@ -570,10 +654,15 @@ export class SessionManager {
         const users=Array.isArray(turn?.items)?turn.items.map(readRecord).filter(item=>item?.type==='userMessage'):[];
         if(users.length!==1)throw new Error('这一轮包含多条消息，无法只覆盖最后一条');
         // Preserve desktop image inputs when they have no gateway upload ID.
-        const imageInputs=!inputImages.length&&Array.isArray(users[0]?.content)?users[0].content.filter((item:any)=>['image','localImage'].includes(item?.type)):[];
+        const retained=options.keepAttachmentPaths===undefined?null:new Set(options.keepAttachmentPaths.map(value=>value.replaceAll('\\','/').toLowerCase()));
+        const imageInputs=Array.isArray(users[0]?.content)?users[0].content.filter((item:any)=>['image','localImage'].includes(item?.type)&&(retained?retained.has(String(item.path||item.url||'').replaceAll('\\','/').toLowerCase()):!inputImages.length)):[];
         params.input.push(...imageInputs);
-        const originalText=Array.isArray(users[0]?.content)?users[0].content.map((item:any)=>item?.text||'').join('\n'):'';
+        const originalText=stripSessionInstructionPrefix(Array.isArray(users[0]?.content)?users[0].content.map((item:any)=>item?.text||'').join('\n'):'');
         filePrefix=!resolvedFiles.length?/^# Files mentioned by the user:[\s\S]*?## My request:\s*/.exec(originalText)?.[0]||'':'';
+        if(retained){
+          const originalFiles=(splitDesktopAttachments(originalText).attachments||[]).filter(file=>retained.has(file.path.replaceAll('\\','/').toLowerCase()));
+          filePrefix=codexFilePrompt('',[...originalFiles.map(file=>({id:'',name:file.name,absolutePath:file.path,mime:'application/octet-stream',size:0})),...resolvedFiles]);
+        }
         submitted=true;
         await this.codex.request('thread/revert',{threadId,beforeTurnId:options.replaceTurnId});
         const headTurnId=readString(readRecord(Array.isArray(latest?.data)?latest.data[1]:undefined)?.id)||'';
@@ -662,11 +751,11 @@ export class SessionManager {
     const approval = this.store.approvals.find(item => item.id === approvalId);
     if(approval?.status===(decision==='accept'?'accepted':'declined'))return;
     if (!approval || approval.status !== "pending") throw new Error("审批已处理或失效，请刷新状态");
-    if(approval.approvalType === "question") throw new Error("请填写问题的回答");
+    if(approval.approvalType === "question"&&!(approval.method===mcpElicitationMethod&&decision==='decline')) throw new Error("请填写问题的回答");
     this.resolvingApprovals.add(approvalId);
     try{
       const permissions = this.approvalPermissions.get(approvalId) ?? {};
-      const result = approval.method === "item/permissions/requestApproval"
+      const result = approval.method===mcpElicitationMethod?elicitationDecision(approval.detail,decision):approval.method === "item/permissions/requestApproval"
         ? { permissions: decision === "accept" ? permissions : {}, scope: "turn" }
         : { decision };
       await this.codex.respond(approval.rpcId, result);
@@ -679,7 +768,8 @@ export class SessionManager {
 
   async approvePendingAutomatically():Promise<{accepted:number;failed:number}>{
     let accepted=0,failed=0;
-    for(const approval of this.store.approvals.filter(item=>item.status==='pending'&&item.approvalType!=='question')){
+    for(const approval of this.store.approvals.filter(item=>item.status==='pending'&&item.approvalType!=='question'&&
+      (item.method!==mcpElicitationMethod||confirmationElicitation(elicitationParams(item.detail))))){
       try{await this.resolveApproval(approval.id,'accept');accepted++;}
       catch{failed++;}
     }
@@ -697,7 +787,8 @@ export class SessionManager {
       if(!Array.isArray(values)||values.length!==1||!values[0].trim())throw new Error('请回答所有问题');
       result[question.id]={answers:[values[0]]};
     }
-    await this.codex.respond(request.rpcId,{answers:result});
+    await this.codex.respond(request.rpcId,request.method===mcpElicitationMethod
+      ?{action:'accept',content:elicitationAnswer(request.detail,answers)}:{answers:result});
     await this.store.resolveApproval(id,'accept');
     const questionReplies=questions.map((question:{id:string;question:string})=>({question:question.question,answer:result[question.id].answers[0]}));
     this.hub.publish({type:'user.message',threadId:request.threadId,text:questionReplies.map((reply:{answer:string})=>reply.answer).join('\n'),questionReplyId:id,questionReplies,status:this.store.threads.find(thread=>thread.id===request.threadId)?.status});
@@ -727,6 +818,7 @@ export class SessionManager {
   }
 
   private async handleServerRequest(message: unknown): Promise<void> {
+    this.commandOutput.flush();
     const request = readRecord(message);
     if (!request) {
       return;
@@ -737,6 +829,20 @@ export class SessionManager {
       return;
     }
     const params = readRecord(request.params) ?? {};
+    if(method===mcpElicitationMethod){
+      const prompt=elicitationPrompt(params),id=`${prompt.question?'question-':''}mcp-${String(rpcId)}`;
+      console.info('MCP elicitation received',JSON.stringify({mode:['form','openai/form','openaiForm','url','openai/userVerification'].includes(String(params.mode))?params.mode:'unknown',confirmation:confirmationElicitation(params)}));
+      if(this.store.approvals.some(row=>row.id===id&&row.status!=='expired'))return;
+      const approval=await this.store.addApproval({id,rpcId,method,threadId:readString(params.threadId)||'unknown',turnId:readString(params.turnId),
+        approvalType:prompt.question?'question':'permission',title:prompt.title,detail:prompt.detail});
+      if(!prompt.question&&confirmationElicitation(params)&&await readRemoteAutoApproval()){
+        try{await this.resolveApproval(id,'accept');}catch{}
+        return;
+      }
+      this.hub.publish({type:'approval.requested',threadId:approval.threadId,turnId:approval.turnId,approvalId:id,
+        approvalType:approval.approvalType,title:approval.title,detail:approval.detail});
+      return;
+    }
     if(method === "item/tool/requestUserInput") {
       const questions = Array.isArray(params.questions) ? params.questions : [];
       const approval = await this.store.addApproval({id:`question-${String(rpcId)}`,rpcId,method,threadId:readString(params.threadId)||"unknown",turnId:readString(params.turnId),approvalType:"question",title:"需要你的回答",detail:JSON.stringify({questions,isBlocking:params.isBlocking!==false})});
@@ -802,6 +908,7 @@ export class SessionManager {
       return;
     }
     const event = message as { method?: string; params?: Record<string, unknown> };
+    if(event.method!=='item/commandExecution/outputDelta')this.commandOutput.flush();
     const params = event.params ?? {};
     const threadId = readNestedString(params, ["thread", "id"]) ?? readString(params.threadId) ?? "unknown";
     if((event.method==='turn/started'||event.method==='turn/completed')&&this.compactionOutputs.has(threadId))this.finishCompaction(threadId,'cancelled');
@@ -831,8 +938,9 @@ export class SessionManager {
         title: existingThread?.title || incomingThreadRecord.title,
       } : null;
       if (threadRecord) {
-        void this.store.upsertThread(threadRecord);
-        this.hub.publish({ type: "thread.started", threadId: threadRecord.id, thread: { ...threadRecord, createdAt: nowIso(), updatedAt: nowIso() } });
+        const metadata={...threadRecord,...(thread?.ephemeral===true?{ephemeral:true,forkedFromId:readString(thread.forkedFromId)}:{})};
+        void this.store.upsertThread(metadata);
+        this.hub.publish({ type: "thread.started", threadId: threadRecord.id, thread: { ...metadata, createdAt: nowIso(), updatedAt: nowIso() } });
       }
       return;
     }
@@ -950,20 +1058,7 @@ export class SessionManager {
 
     if (event.method === "item/commandExecution/outputDelta") {
       const text = readString(params.delta) ?? "";
-      if (text) {
-        this.hub.publish({
-          type: "terminal.output",
-          threadId,
-          stream: "stdout",
-          text,
-        });
-        this.hub.publish({
-          type: "tool.output",
-          threadId,
-          itemId: readString(params.itemId),
-          text,
-        });
-      }
+      this.commandOutput.append(threadId,readString(params.itemId),text);
       return;
     }
 
@@ -1023,22 +1118,21 @@ export class SessionManager {
       return;
     }
 
-    if (event.method?.includes("Approval") || event.method?.includes("approval")) {
-      this.hub.publish({
-        type: "approval.requested",
-        threadId,
-        turnId: readString(params.turnId),
-        itemId: readString(params.itemId),
-        approvalId: readString(params.approvalId),
-        approvalType: event.method.includes("file") || event.method.includes("File") ? "file" : "command",
-        title: readString(params.command) ?? readString(params.reason) ?? "需要审批",
-        detail: approvalDetail(params),
-      });
+    if(event.method==='item/autoApprovalReview/started'||event.method==='item/autoApprovalReview/completed'||event.method==='autoApprovalReview/strictReviewRequired'){
+      // These report the upstream reviewer's lifecycle, not a request for the
+      // user to answer. Real actionable approvals arrive as server requests.
+      const review=readRecord(params.review),status=readString(review?.status);
+      if(event.method==='item/autoApprovalReview/completed'&&status&&status!=='approved'){
+        this.hub.publish({type:'tool.completed',threadId,itemId:`approval-review:${readString(params.reviewId)??readString(params.targetItemId)??'unknown'}`,
+          status:status==='denied'?'error':'cancelled',detail:readString(review?.rationale)??(status==='denied'?'自动审批未通过':status==='timedOut'?'自动审批超时':'自动审批已中止')});
+      }
       return;
     }
 
     if (event.method === "item/started") {
       const item = readRecord(params.item);
+      const question=desktopAsyncQuestionEvent(threadId,item);
+      if(question){this.hub.publish(question);return;}
       const itemType = readString(item?.type) ?? "tool";
       if (itemType === "contextCompaction") {
         const itemId=readString(item?.id),current=this.compactionOutputs.get(threadId);
@@ -1061,6 +1155,10 @@ export class SessionManager {
 
     if (event.method === "item/completed") {
       const item = readRecord(params.item);
+      const question=desktopAsyncQuestionEvent(threadId,item);
+      // Some bridges expose arguments only on completion; tool completion is
+      // acceptance of an asynchronous prompt, not the user's answer.
+      if(question){this.hub.publish(question);return;}
       const itemType = readString(item?.type);
       if (itemType === "contextCompaction") {
         this.finishCompaction(threadId,itemStatus(item),readString(item?.id));

@@ -59,25 +59,30 @@ async function readController(){
  }
  throw Error('未连接电脑端 Clash。请运行 Clash Verge，并启用外部控制器或命名管道。');
 }
-function openAIGroups(proxies:Record<string,Proxy>){return Object.values(proxies).filter(proxy=>/openai/i.test(proxy.name)&&Array.isArray(proxy.all));}
-function snapshot(proxies:Record<string,Proxy>){
- const groups=openAIGroups(proxies);
- if(!groups.length)throw Error('Clash 中没有 OpenAI 分组，请先在电脑端添加该分组。');
+type ClashProvider='openai'|'google';
+const providerLabel=(provider:ClashProvider)=>provider==='google'?'Google':'OpenAI';
+function providerGroups(proxies:Record<string,Proxy>,provider:ClashProvider){return Object.values(proxies).filter(proxy=>new RegExp(provider,'i').test(proxy.name)&&Array.isArray(proxy.all));}
+function snapshot(proxies:Record<string,Proxy>,provider:ClashProvider){
+ const groups=providerGroups(proxies,provider);
+ if(!groups.length)throw Error(`Clash 中没有 ${providerLabel(provider)} 分组，请先在电脑端添加该分组。`);
  return {groups:groups.map(group=>({name:group.name,type:group.type,selected:group.now||'',nodes:group.all!.map(name=>({name,type:proxies[name]?.type||'',delay:proxies[name]?.history?.at(-1)?.delay??null}))}))};
 }
-export async function readClashOpenAI(){const {proxies}=await readController();return snapshot(proxies);}
-export async function selectClashOpenAI(groupName:string,node:string){
+export async function readClashProvider(provider:ClashProvider){const {proxies}=await readController();return snapshot(proxies,provider);}
+export async function selectClashProvider(provider:ClashProvider,groupName:string,node:string){
  const {controller,proxies}=await readController();
- const group=openAIGroups(proxies).find(group=>group.name===groupName);
- if(!group?.all?.includes(node))throw Error('请选择 OpenAI 分组内的节点');
+ const group=providerGroups(proxies,provider).find(group=>group.name===groupName);
+ if(!group?.all?.includes(node))throw Error(`请选择 ${providerLabel(provider)} 分组内的节点`);
  await request(controller,'/proxies/'+encodeURIComponent(group.name),'PUT',{name:node});
  const current=await request<Proxy>(controller,'/proxies/'+encodeURIComponent(group.name));
  if(current.now!==node)throw Error('Clash 尚未确认节点切换，请刷新后检查');
- return readClashOpenAI();
+ return readClashProvider(provider);
 }
-export async function testClashOpenAI(groupName:string,node:string){
+export async function testClashProvider(provider:ClashProvider,groupName:string,node:string){
  const {controller,proxies}=await readController();
- const group=openAIGroups(proxies).find(group=>group.name===groupName);
- if(!group?.all?.includes(node))throw Error('请选择 OpenAI 分组内的节点');
+ const group=providerGroups(proxies,provider).find(group=>group.name===groupName);
+ if(!group?.all?.includes(node))throw Error(`请选择 ${providerLabel(provider)} 分组内的节点`);
  return request<{delay:number}>(controller,'/proxies/'+encodeURIComponent(node)+'/delay?url='+encodeURIComponent('https://www.gstatic.com/generate_204')+'&timeout=5000','GET',undefined,6500);
 }
+export const readClashOpenAI=()=>readClashProvider('openai');
+export const selectClashOpenAI=(groupName:string,node:string)=>selectClashProvider('openai',groupName,node);
+export const testClashOpenAI=(groupName:string,node:string)=>testClashProvider('openai',groupName,node);

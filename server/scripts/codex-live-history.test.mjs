@@ -15,7 +15,7 @@ test('streaming polls parse only committed additions and leave earlier snapshots
       const statement=target.prepare(sql);
       if(!/^SELECT (?:seq,\s*)?payload FROM codex_live_events WHERE thread_id=/.test(sql))return statement;
       return new Proxy(statement,{get(stmt,property){
-        if(property==='all')return (...args)=>{const rows=stmt.all(...args);payloadRows+=rows.length;return rows;};
+        if(property==='iterate')return function*(...args){for(const row of stmt.iterate(...args)){payloadRows++;yield row;}};
         const value=Reflect.get(stmt,property,stmt);return typeof value==='function'?value.bind(stmt):value;
       }});
     };
@@ -67,6 +67,22 @@ test('real turn notifications preserve the reply across status and name refreshe
   }finally{db.close();}
 });
 
+test('diff snapshots replace only their own turn and leave original detail IDs readable',()=>{
+  const db=new DatabaseSync(':memory:'),history=new CodexLiveHistory(db);
+  const diff=(id,turnId,text)=>history.append({threadId:'t',type:'diff.updated',eventId:id,turnId,diff:text});
+  try{
+    diff('old','one','first patch');
+    const before=history.read('t');
+    history.append({threadId:'t',type:'message.delta',eventId:'answer',text:'whole answer'});
+    diff('other','two','other turn');diff('latest','one','updated patch');
+    assert.deepEqual(history.read('t').map(event=>event.eventId),['answer','other','latest']);
+    assert.equal(before[0].diff,'first patch','a previous response must stay unchanged');
+    assert.equal(JSON.parse(db.prepare('SELECT payload FROM codex_live_events WHERE event_key=?').get('old').payload).diff,'first patch');
+    db.exec('BEGIN');diff('rollback','one','uncommitted');assert.equal(history.read('t').at(-1).diff,'uncommitted');db.exec('ROLLBACK');
+    assert.equal(history.read('t').at(-1).diff,'updated patch');
+  }finally{db.close();}
+});
+
 test('Codex history keeps a whole long reply across other threads, saves and restart',async()=>{
   const home=await mkdtemp(path.join(os.tmpdir(),'codex-live-'));
   process.env.CODEX_MOBILE_CONTROL_HOME=home;
@@ -97,6 +113,10 @@ test('Codex history keeps a whole long reply across other threads, saves and res
     for(let i=0;i<4;i++)await store.appendEvent({type:'user.message',threadId:'attachments',eventId:`followup-${i}`,text:`followup ${i}`});
     assert.deepEqual(store.eventsForThread('attachments').find(e=>e.eventId==='old-upload'),upload,'a short disk window must not lose still-retained upload metadata');
     assert.equal(store.eventsForThread('attachments').find(e=>e.eventId==='old-operation')?.detail,'original output','cached operation IDs remain readable');
+    await store.appendEvent({type:'diff.updated',threadId:'attachments',eventId:'old-diff',turnId:'turn',diff:'old patch'});
+    await store.appendEvent({type:'diff.updated',threadId:'attachments',eventId:'new-diff',turnId:'turn',diff:'new patch'});
+    assert.deepEqual(store.eventsForThread('attachments').filter(e=>e.type==='diff.updated').map(e=>e.eventId),['new-diff'],'the replay ring cannot restore superseded snapshots');
+    assert.equal(store.eventsForIds('attachments',['old-diff'])[0].diff,'old patch');
   }finally{store.close();await rm(home,{recursive:true,force:true});}
 });
 

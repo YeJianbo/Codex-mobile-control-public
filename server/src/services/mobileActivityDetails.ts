@@ -20,3 +20,10 @@ export function deferMobileActivityDetails(event:GatewayEvent):GatewayEvent|Defe
 export function deferLiveActivityDetails(event:GatewayEvent):GatewayEvent|DeferredActivityEvent {
   return liveDeferredTypes.has(event.type)?deferMobileActivityDetails(event):event;
 }
+
+export function isVisibleMobileThreadEvent(event: GatewayEvent): boolean {
+  if(event.type==='context.compaction')return true;
+  const text = "text" in event ? event.text ?? "" : "";
+  const detail = "detail" in event ? event.detail ?? "" : "";
+  return !text.includes("codex_internal_context") && !detail.includes("codex_internal_context");
+}

@@ -59,17 +59,12 @@ internal fun nativeScheduledMessage(event:ChatEvent):Pair<String,String>?{
         if(expanded)Text(scheduled.second,Modifier.padding(top=6.dp),fontSize=13.sp)
     }
 }
-private fun ruleLabel(value:String):String{
-    val interval=Regex("(?:^|;)INTERVAL=(\\d+)").find(value)?.groupValues?.get(1)?:"1"
-    val unit=when(Regex("FREQ=([A-Z]+)").find(value)?.groupValues?.get(1)){"MINUTELY"->"分钟";"HOURLY"->"小时";"DAILY"->"天";"WEEKLY"->"周";else->return "自定义时间"}
-    if(value.contains("BY"))return "自定义时间"
-    return "每 $interval $unit"
-}
-internal typealias NativeAutomationFrame = @Composable (String,String,()->Unit,@Composable RowScope.()->Unit,@Composable ColumnScope.()->Unit)->Unit
-private val automationPageFrame:NativeAutomationFrame={title,subtitle,back,actions,body->NativeManagementPage(title,subtitle,back,modifier=Modifier.testTag("automationsPage"),actions=actions,content=body)}
+private fun ruleLabel(value:String)=nativeAutomationRuleLabel(value)
+internal typealias NativeAutomationFrame = @Composable (String,String,()->Unit,@Composable RowScope.()->Unit,@Composable ColumnScope.()->Unit,@Composable ColumnScope.()->Unit)->Unit
+private val automationPageFrame:NativeAutomationFrame={title,subtitle,back,actions,pinned,body->NativeManagementPage(title,subtitle,back,modifier=Modifier.testTag("automationsPage"),actions=actions,pinnedContent=pinned,content=body)}
 
 @Composable internal fun NativeAutomationsSheet(vm:NativeViewModel,threadId:String,onClose:()->Unit){
-    NativeAutomations(vm,onClose,threadId){title,subtitle,back,actions,body->
+    NativeAutomations(vm,onClose,threadId){title,subtitle,back,actions,pinned,body->
         val editing=title=="新建任务"||title=="编辑任务"
         Sheet(title,onClose,stableHeight=true,dismissEnabled=!vm.state.automationSaving,bodyScrollState=null,onEntered={vm.loadAutomations(open=false)},contentHorizontalPadding=12.dp){
             BackHandler(onBack=back)
@@ -78,6 +73,7 @@ private val automationPageFrame:NativeAutomationFrame={title,subtitle,back,actio
                 Text(subtitle,Modifier.weight(1f),fontSize=12.sp,color=MaterialTheme.colors.onSurface.copy(alpha=.65f))
                 actions()
             }
+            pinned()
             Column(Modifier.weight(1f).testTag("automationsSheetContent"),content=body)
         }
     }
@@ -117,17 +113,12 @@ private val automationPageFrame:NativeAutomationFrame={title,subtitle,back,actio
                     Icon(painterResource(R.drawable.ic_lucide_plus),"新建定时任务",Modifier.size(22.dp),tint=if(canCreate&&!busy)MaterialTheme.colors.onPrimary else MaterialTheme.colors.onSurface.copy(alpha=.35f))
                 }
             }
-        }){
+        },{
         if(error.isNotBlank())Text(error,Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=8.dp),fontSize=13.sp,color=MaterialTheme.colors.error)
         Box(Modifier.fillMaxWidth().height(2.dp)){
             if(loading||busy)LinearProgressIndicator(Modifier.fillMaxSize())
         }
-        if(editor){
-            val targetId=current?.threadId?:creatingThreadId.orEmpty()
-            NativeAutomationEditor(current,connected,busy,{id,body->
-                onSave(id,body){creatingThreadId=null;editing=null}
-            },Modifier.weight(1f).align(Alignment.CenterHorizontally),targetId,threadInfo(targetId),loadTargets)
-        }else{
+        if(!editor){
             Column(Modifier.padding(horizontal=4.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
                 if(!connected)Text("连接电脑后可编辑与启用任务",fontSize=13.sp,color=MaterialTheme.colors.onSurface.copy(alpha=.65f))
                 else if(!canCreate)Text("打开一个可编辑的 Codex 会话后新建任务",fontSize=13.sp,color=MaterialTheme.colors.onSurface.copy(alpha=.65f))
@@ -135,9 +126,18 @@ private val automationPageFrame:NativeAutomationFrame={title,subtitle,back,actio
                     if(filter!=next){filter=next;scope.launch{listState.scrollToItem(0)}}
                 })
             }
+        }
+        }){
+        if(editor){
+            val targetId=current?.threadId?:creatingThreadId.orEmpty()
+            NativeAutomationEditor(current,connected,busy,{id,body->
+                onSave(id,body){creatingThreadId=null;editing=null}
+            },Modifier.weight(1f).align(Alignment.CenterHorizontally),targetId,threadInfo(targetId),loadTargets)
+        }else{
+            NativeBackdropScrollMotion{31*listState.firstVisibleItemIndex+listState.firstVisibleItemScrollOffset}
             val filtered=tasks.filter{filter=="all"||(it.status=="ACTIVE")== (filter=="active")}
             LazyVerticalGrid(columns=GridCells.Adaptive(300.dp),state=listState,modifier=Modifier.weight(1f).clipToBounds().testTag("automationList"),
-                contentPadding=PaddingValues(horizontal=4.dp,vertical=12.dp),horizontalArrangement=Arrangement.spacedBy(12.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
+                contentPadding=nativeManagementPadding(PaddingValues(horizontal=4.dp,vertical=12.dp)),horizontalArrangement=Arrangement.spacedBy(12.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
                 if(!loading&&filtered.isEmpty())item(span={GridItemSpan(maxLineSpan)}){
                     Column(Modifier.fillMaxWidth().padding(vertical=48.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(12.dp)){
                         Icon(painterResource(R.drawable.ic_lucide_clock_3),null,Modifier.size(32.dp),tint=MaterialTheme.colors.onSurface.copy(alpha=.4f))
@@ -193,6 +193,20 @@ private val automationPageFrame:NativeAutomationFrame={title,subtitle,back,actio
     var changeTime by rememberSaveable(task?.id){mutableStateOf(task==null)}
     var interval by rememberSaveable(task?.id){mutableStateOf(Regex("INTERVAL=(\\d+)").find(task?.rrule.orEmpty())?.groupValues?.get(1)?:"5")}
     var frequency by rememberSaveable(task?.id){mutableStateOf(Regex("FREQ=([A-Z]+)").find(task?.rrule.orEmpty())?.groupValues?.get(1)?:"MINUTELY")}
+    val originalRule=task?.rrule.orEmpty()
+    val initialDays=nativeRulePart(originalRule,"BYDAY").ifBlank{"MO"}
+    var scheduleMode by rememberSaveable(task?.id){mutableStateOf(when{
+        frequency=="DAILY"&&interval=="1"->"daily"
+        frequency=="DAILY"->"custom"
+        frequency=="WEEKLY"&&interval=="1"&&initialDays=="MO,TU,WE,TH,FR"->"weekdays"
+        frequency=="WEEKLY"&&interval=="1"->"weekly"
+        frequency=="WEEKLY"->"custom"
+        else->"interval"
+    })}
+    var hour by rememberSaveable(task?.id){mutableStateOf(nativeRulePart(originalRule,"BYHOUR").ifBlank{"9"})}
+    var minute by rememberSaveable(task?.id){mutableStateOf(nativeRulePart(originalRule,"BYMINUTE").ifBlank{"00"})}
+    var days by rememberSaveable(task?.id){mutableStateOf(initialDays)}
+    val scheduleBody=nativeScheduleBody(scheduleMode,frequency,interval,hour,minute,days)
     var selectedId by rememberSaveable(task?.id){mutableStateOf(targetId)}
     var selectedTitle by rememberSaveable(task?.id){mutableStateOf("")}
     var selectedPath by rememberSaveable(task?.id){mutableStateOf("")}
@@ -200,7 +214,7 @@ private val automationPageFrame:NativeAutomationFrame={title,subtitle,back,actio
     BackHandler(enabled=choosing&&!busy){choosing=false}
     val fieldColors=TextFieldDefaults.textFieldColors(backgroundColor=MaterialTheme.colors.onSurface.copy(alpha=.04f),focusedIndicatorColor=Color.Transparent,unfocusedIndicatorColor=Color.Transparent,disabledIndicatorColor=Color.Transparent)
     Column(modifier.widthIn(max=720.dp).fillMaxWidth().testTag("automationEditor")){
-        Column(Modifier.weight(1f).clipToBounds().verticalScroll(rememberScrollState()).padding(horizontal=4.dp,vertical=12.dp),verticalArrangement=Arrangement.spacedBy(14.dp)){
+        Column(Modifier.weight(1f).clipToBounds().nativeManagementScroll(rememberScrollState()).padding(horizontal=4.dp,vertical=12.dp),verticalArrangement=Arrangement.spacedBy(14.dp)){
             DashboardCard(color=MaterialTheme.colors.surface){
                 NativeAutomationTarget(task?.takeIf{selectedId==task.threadId},selectedId,if(selectedTitle.isNotBlank())ThreadRecord(selectedId,selectedPath,selectedTitle)else targetThread?.takeIf{it.id==selectedId})
                 if(task?.kind!="cron"){
@@ -214,21 +228,49 @@ private val automationPageFrame:NativeAutomationFrame={title,subtitle,back,actio
                 TextField(prompt,{prompt=it},label={Text("任务指令")},placeholder={Text("希望助手定时做什么？")},shape=Radius.Control,colors=fieldColors,enabled=!busy,modifier=Modifier.fillMaxWidth().heightIn(min=150.dp,max=280.dp))
             }
             DashboardCard(color=MaterialTheme.colors.surface){
-                DashboardHeading("运行间隔"){
-                    if(task!=null)DashboardSwitch(changeTime,{changeTime=it},enabled=!busy,modifier=Modifier.semantics{contentDescription="修改运行间隔"})
+                DashboardHeading("运行时间"){
+                    if(task!=null)DashboardSwitch(changeTime,{changeTime=it},enabled=!busy,modifier=Modifier.semantics{contentDescription="修改运行时间"})
                 }
                 if(changeTime){
-                    TextField(interval,{interval=it.filter(Char::isDigit)},label={Text("每隔")},singleLine=true,shape=Radius.Control,colors=fieldColors,enabled=!busy,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number),modifier=Modifier.fillMaxWidth())
-                    DashboardTabs(listOf("MINUTELY" to "分钟","HOURLY" to "小时","DAILY" to "天","WEEKLY" to "周"),frequency,{frequency=it},enabled=!busy)
+                    listOf("interval" to "间隔","daily" to "每天","weekdays" to "工作日","weekly" to "每周","custom" to "自定义").chunked(3).forEach{row->
+                        Row(horizontalArrangement=Arrangement.spacedBy(6.dp)){
+                            row.forEach{(mode,label)->OutlinedButton(onClick={
+                                scheduleMode=mode
+                                if(mode=="interval"&&frequency !in listOf("MINUTELY","HOURLY"))frequency="HOURLY"
+                                if(mode=="custom"&&frequency !in listOf("DAILY","WEEKLY"))frequency="WEEKLY"
+                            },enabled=!busy,shape=Radius.Control,modifier=Modifier.weight(1f),contentPadding=PaddingValues(horizontal=6.dp,vertical=8.dp),colors=ButtonDefaults.outlinedButtonColors(backgroundColor=if(scheduleMode==mode)MaterialTheme.colors.primary.copy(alpha=.12f) else MaterialTheme.colors.surface)){
+                                Text(label,fontSize=12.sp,color=if(scheduleMode==mode)MaterialTheme.colors.primary else MaterialTheme.colors.onSurface)
+                            }}
+                            if(row.size<3)Spacer(Modifier.weight((3-row.size).toFloat()))
+                        }
+                    }
+                    if(scheduleMode=="interval"||scheduleMode=="custom"){
+                        TextField(interval,{interval=it.filter(Char::isDigit).take(5)},label={Text("每隔")},singleLine=true,shape=Radius.Control,colors=fieldColors,enabled=!busy,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Number),modifier=Modifier.fillMaxWidth())
+                        DashboardTabs(if(scheduleMode=="interval")listOf("MINUTELY" to "分钟","HOURLY" to "小时") else listOf("DAILY" to "天","WEEKLY" to "周"),frequency,{frequency=it},enabled=!busy)
+                    }
+                    if(scheduleMode!="interval"){
+                        NativeClockFields("运行时间",hour,minute,{hour=it},{minute=it},!busy)
+                        if(scheduleMode=="weekly"||(scheduleMode=="custom"&&frequency=="WEEKLY")){
+                            Text("运行星期 · 可多选",fontSize=12.sp,color=MaterialTheme.colors.onSurface.copy(alpha=.65f))
+                            nativeWeekdays.chunked(4).forEach{row->Row(horizontalArrangement=Arrangement.spacedBy(6.dp)){
+                                row.forEach{(code,label)->
+                                    val checked=code in days.split(',')
+                                    OutlinedButton(onClick={days=(if(checked)days.split(',')-code else days.split(',')+code).filter{it.isNotBlank()}.joinToString(",")},enabled=!busy,shape=Radius.Chip,modifier=Modifier.weight(1f),contentPadding=PaddingValues(horizontal=4.dp,vertical=8.dp),colors=ButtonDefaults.outlinedButtonColors(backgroundColor=if(checked)MaterialTheme.colors.primary.copy(alpha=.12f) else MaterialTheme.colors.surface)){Text("周"+label,color=if(checked)MaterialTheme.colors.primary else MaterialTheme.colors.onSurface,fontSize=12.sp)}
+                                }
+                                if(row.size<4)Spacer(Modifier.weight((4-row.size).toFloat()))
+                            }}
+                        }
+                        Text("按电脑时区运行",fontSize=11.sp,color=MaterialTheme.colors.onSurface.copy(alpha=.55f))
+                    }
                 }else Text(ruleLabel(task?.rrule.orEmpty()),fontSize=14.sp,color=MaterialTheme.colors.onSurface.copy(alpha=.65f))
             }
         }
         DashboardAction(if(busy)"正在保存…" else "保存任务",{
             val body=JSONObject().put("name",name.trim()).put("prompt",prompt.trim())
             if(task==null||selectedId!=task.threadId)body.put("threadId",selectedId)
-            if(changeTime)body.put("schedule",JSONObject().put("frequency",frequency).put("interval",interval.toInt()))
+            if(changeTime)body.put("schedule",scheduleBody)
             onSave(task?.id,body)
-        },Modifier.fillMaxWidth().padding(horizontal=4.dp,vertical=12.dp),enabled=connected&&!busy&&(selectedId.isNotBlank()||task?.kind=="cron")&&name.isNotBlank()&&prompt.isNotBlank()&&(!changeTime||(interval.toIntOrNull()?:0) in 1..10080),primary=true)
+        },Modifier.fillMaxWidth().padding(horizontal=4.dp,vertical=12.dp),enabled=connected&&!busy&&(selectedId.isNotBlank()||task?.kind=="cron")&&name.isNotBlank()&&prompt.isNotBlank()&&(!changeTime||scheduleBody!=null),primary=true)
     }
 }
 

@@ -97,7 +97,7 @@ export function officialAcp(options:{agent:OfficialAcpAgent;cwd:string;session?:
     if(update.sessionUpdate==='usage_update'){contextWindow=update.size;contextUsed=update.used;}
     if(update.sessionUpdate==='tool_call'||update.sessionUpdate==='tool_call_update'){
       const id=update.toolCallId,previous=tools.get(id),tool={...previous,...update};tools.set(id,tool);
-      if(!previous)emit({type:'assistant',message:{content:[{type:'tool_use',id,name:tool.title||tool.kind||'工具',input:tool.rawInput||{}}]}});
+      if(!previous||JSON.stringify([previous.title,previous.kind,previous.rawInput])!==JSON.stringify([tool.title,tool.kind,tool.rawInput]))emit({type:'assistant',message:{content:[{type:'tool_use',id,name:tool.title||tool.kind||'工具',input:tool.rawInput||{}}]}});
       if(['completed','failed'].includes(tool.status)&&!completed.has(id)){completed.add(id);emit({type:'user',message:{content:[{type:'tool_result',tool_use_id:id,content:(tool.content||[]).map((c:any)=>c.type==='content'&&c.content?.type==='text'?c.content.text:'').filter(Boolean).join('\n'),is_error:tool.status==='failed',file_change:tool.status==='completed'?acpFileChanges(tool.content||[]):undefined}]}});}
     }
   });

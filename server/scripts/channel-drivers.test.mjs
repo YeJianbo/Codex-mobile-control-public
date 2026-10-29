@@ -25,9 +25,14 @@ test('QQ official events automatically create isolated conversations and reuse r
   f.service.register(qqDriver(f.service,()=>bot));const account=f.store.addAccount('qq','QQ');
   await f.service.configure(account.id,{appId:'12345678',appSecret:'fixture-secret'});await f.service.setProject(account.id,'C:/fixture');await f.service.start(account.id);
   const message={kind:'c2c',senderId:'user-a',messageId:'one',content:'hello',replyTarget:{scope:'c2c',targetId:'user-a',msgId:'one'}};
+  await handlers.message({},message);assert.equal(f.submitted.length,0);assert.equal(f.store.privateValue(account.id,'qq-reply:user-a'),undefined);
+  const pairing=f.service.qqAccess.pair(account.id);
+  await handlers.message({},{...message,messageId:'pair',content:'/绑定 '+pairing.code});assert.equal(f.submitted.length,0);assert.equal(f.service.qqAccess.allowed(account.id,'user-a'),true);
+  f.store.putPrivate(account.id,'qq-authorized',['user-a','user-b']);sent.length=0;
   await handlers.message({},message);await handlers.message({},message);
   await handlers.message({},{...message,senderId:'user-b',messageId:'two',replyTarget:{scope:'c2c',targetId:'user-b',msgId:'two'}});
   assert.equal(f.submitted.length,2);assert.equal(f.store.bindings().length,2);assert.notEqual(f.store.bindings()[0].threadId,f.store.bindings()[1].threadId);
+  assert.equal(sent.length,0,'Accepted messages do not send a submission acknowledgement');
   f.service.publish({type:'message.delta',threadId:'thread-1',itemId:'answer',text:'完成',textComplete:true});f.service.publish({type:'turn.completed',threadId:'thread-1',status:'completed'});
   await new Promise(resolve=>setImmediate(resolve));assert.equal(sent.at(-1).text,'完成');assert.equal(sent.at(-1).target.targetId,'user-a');
   assert.equal(JSON.stringify(f.service.state()).includes('fixture-secret'),false);
@@ -53,6 +58,11 @@ test('Weixin QR credentials remain private; polling cursor and reply context fol
   assert.equal((await f.service.login(account.id)).status,'wait');assert.equal((await f.service.login(account.id)).status,'confirmed');
   assert.equal(JSON.stringify(f.service.state()).includes('private-token'),false);
   await f.service.start(account.id);
+  for(let i=0;i<100&&!f.submitted.length;i++)await new Promise(resolve=>setTimeout(resolve,5));
+  assert.equal(calls.some(c=>c.path.endsWith('sendmessage')),false);
+  const binding=f.store.bindings()[0];
+  f.service.publish({type:'message.delta',threadId:binding.threadId,itemId:'answer',text:'你好',textComplete:true});
+  f.service.publish({type:'turn.completed',threadId:binding.threadId,status:'completed'});
   for(let i=0;i<100&&!calls.some(c=>c.path.endsWith('sendmessage'));i++)await new Promise(resolve=>setTimeout(resolve,5));
   assert.equal(f.submitted.length,1);assert.equal(calls.find(c=>c.path.endsWith('sendmessage')).body.msg.context_token,'reply-context');
   assert.equal(f.store.privateValue(account.id,'weixin-cursor'),'cursor-1');

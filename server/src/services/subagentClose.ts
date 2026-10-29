@@ -8,6 +8,10 @@ type CloseOperations={
   saveClosed:(threads:ThreadRecord[])=>void;
 };
 
+export function subagentCanArchive(status:string,running:boolean):boolean {
+  return !running&&['idle','notLoaded','systemError'].includes(status);
+}
+
 export function isCrossVolumeArchiveError(error:unknown):boolean {
   const message=error instanceof Error?error.message:String(error);
   return /failed to archive (?:session|thread)/i.test(message)&&

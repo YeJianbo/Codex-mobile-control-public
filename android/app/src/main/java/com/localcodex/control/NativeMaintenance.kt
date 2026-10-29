@@ -146,7 +146,7 @@ private data class MaintenanceConfirmation(
             }
         }
     }
-    NativeDiagnosticsManagementContent(MaintenanceRenderState(snapshot,checks,source.busy,source.error,source.message,connected),back,{requests.run{reload("maintenance")}},::action)
+    NativeDiagnosticsManagementContent(MaintenanceRenderState(snapshot,checks,source.busy,source.error,source.message,connected),back,{requests.run{reload("maintenance")}},::action,performance={NativePerformancePanel(vm)})
     confirmation?.let{preview->MaintenanceConfirmationDialog(preview,source.busy,connected,onDismiss={confirmation=null}){selected->
         confirmation=null
         requests.run{
@@ -178,14 +178,15 @@ private data class MaintenanceConfirmation(
     }}
 }
 
-@Composable private fun NativeDiagnosticsManagementContent(state:MaintenanceRenderState,back:()->Unit,refresh:()->Unit,action:(String,JSONObject)->Unit){
+@Composable private fun NativeDiagnosticsManagementContent(state:MaintenanceRenderState,back:()->Unit,refresh:()->Unit,action:(String,JSONObject)->Unit,performance:@Composable ()->Unit){
     val enabled=state.connected&&!state.busy
     val snapshot=state.snapshot
     var keep by remember{mutableStateOf("5")}
     var days by remember{mutableStateOf("7")}
-    NativeManagementPage("配置与恢复","诊断与维护",back,modifier=Modifier.testTag("nativeDiagnosticsManagement"),actions={TextButton(onClick=refresh,enabled=enabled){Text("刷新")}}){
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(),contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
+    NativeManagementPage("配置与恢复","诊断与维护",back,modifier=Modifier.testTag("nativeDiagnosticsManagement"),actions={ChromeButton(R.drawable.ic_lucide_rotate_cw,"刷新",refresh,enabled=enabled)}){
+        LazyColumn(Modifier.weight(1f).fillMaxWidth(),state=rememberNativeManagementListState(),contentPadding=nativeManagementPadding(PaddingValues(16.dp)),verticalArrangement=Arrangement.spacedBy(12.dp)){
             item{ManagementFeedback(state.connected,state.busy,state.error,state.message)}
+            item{performance()}
             item{DashboardCard{
                 Text("维护工具",fontWeight=FontWeight.SemiBold)
                 MaintenanceAction("系统诊断","检查配置、模型目录、账号索引、工具路径和后台进程。","运行诊断",enabled){action("diagnose",JSONObject())}
@@ -284,8 +285,8 @@ private data class ExtensionsRenderState(val mcp:List<McpEntry>,val skills:List<
     var query by remember{mutableStateOf("")}
     val enabled=state.connected&&!state.busy
     val skills=state.skills.filter{query.isBlank()||it.name.contains(query,true)||it.description.contains(query,true)}
-    NativeManagementPage("扩展","MCP 与 Skills",back,modifier=Modifier.testTag("nativeExtensionsManagement"),actions={TextButton(onClick=refresh,enabled=enabled){Text("刷新")}}){
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(),contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
+    NativeManagementPage("扩展","MCP 与 Skills",back,modifier=Modifier.testTag("nativeExtensionsManagement"),actions={ChromeButton(R.drawable.ic_lucide_rotate_cw,"刷新",refresh,enabled=enabled)}){
+        LazyColumn(Modifier.weight(1f).fillMaxWidth(),state=rememberNativeManagementListState(),contentPadding=nativeManagementPadding(PaddingValues(16.dp)),verticalArrangement=Arrangement.spacedBy(12.dp)){
             item{ManagementFeedback(state.connected,state.busy,state.error,state.message)}
             item{Text("MCP 服务 · ${state.mcp.size}",fontWeight=FontWeight.SemiBold);Text("开关写入配置并保留备份，通常需要重新加载 Codex。",fontSize=12.sp)}
             items(state.mcp,key={it.id}){entry->DashboardCard{
@@ -341,8 +342,8 @@ private data class HarnessRenderState(val entries:List<HarnessEntry>,val loaded:
 
 @Composable private fun NativeHarnessManagementContent(state:HarnessRenderState,back:()->Unit,refresh:()->Unit,onConfigure:(String)->Unit,onSwitch:(HarnessEntry,HarnessProfileEntry)->Unit){
     val enabled=state.connected&&!state.busy
-    NativeManagementPage("Harness 配置","本机工具",back,modifier=Modifier.testTag("nativeHarnessManagement"),actions={TextButton(onClick=refresh,enabled=enabled){Text("刷新")}}){
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(),contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
+    NativeManagementPage("Harness 配置","本机工具",back,modifier=Modifier.testTag("nativeHarnessManagement"),actions={ChromeButton(R.drawable.ic_lucide_rotate_cw,"刷新",refresh,enabled=enabled)}){
+        LazyColumn(Modifier.weight(1f).fillMaxWidth(),state=rememberNativeManagementListState(),contentPadding=nativeManagementPadding(PaddingValues(16.dp)),verticalArrangement=Arrangement.spacedBy(12.dp)){
             item{ManagementFeedback(state.connected,state.busy,state.error,state.message)}
             item{Text("按本机实际配置识别当前选择。Claude Code 支持热加载；Gemini CLI 新进程使用新配置；Claude Desktop 切换后需重新打开。",fontSize=12.sp)}
             if(state.loaded&&!state.sourceAvailable)item{Text("未发现 CC Switch 数据库，仍显示工作台保存的配置。",fontSize=12.sp)}
@@ -391,7 +392,7 @@ private data class HarnessRenderState(val entries:List<HarnessEntry>,val loaded:
 @Composable private fun MaintenanceConfirmationDialog(preview:MaintenanceConfirmation,busy:Boolean,connected:Boolean,onDismiss:()->Unit,onConfirm:(Set<Int>)->Unit){
     var acknowledged by remember(preview){mutableStateOf(false)}
     var selected by remember(preview){mutableStateOf(preview.choices.mapNotNull{it.id}.toSet())}
-    AlertDialog(onDismissRequest={if(!busy)onDismiss()},title={Text(preview.title)},text={Column(Modifier.heightIn(max=480.dp).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(12.dp)){
+    NativeAlertDialog(onDismissRequest={if(!busy)onDismiss()},title={Text(preview.title)},text={Column(Modifier.heightIn(max=480.dp).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(12.dp)){
         Text(preview.detail,fontSize=14.sp)
         preview.choices.forEach{choice->Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.Top){
             if(preview.selectable&&choice.id!=null)Checkbox(choice.id in selected,{checked->selected=if(checked)selected+choice.id else selected-choice.id},enabled=!busy)
@@ -404,7 +405,7 @@ private data class HarnessRenderState(val entries:List<HarnessEntry>,val loaded:
 
 @Composable private fun MaintenanceReportDialog(report:String,busy:Boolean,error:String,onDismiss:()->Unit,onSave:()->Unit,onSendPreview:(String)->Unit){
     var destination by remember(report){mutableStateOf("")}
-    AlertDialog(onDismissRequest={if(!busy)onDismiss()},title={Text("脱敏诊断报告")},text={Column(Modifier.heightIn(max=480.dp).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(12.dp)){
+    NativeAlertDialog(onDismissRequest={if(!busy)onDismiss()},title={Text("脱敏诊断报告")},text={Column(Modifier.heightIn(max=480.dp).verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(12.dp)){
         SelectionContainer{Text(report,fontSize=11.sp,fontFamily=FontFamily.Monospace)}
         OutlinedTextField(destination,{destination=it},label={Text("HTTPS 接收地址")},placeholder={Text("https://你的接收服务/diagnostics")},enabled=!busy,singleLine=true,modifier=Modifier.fillMaxWidth())
         Text("发送前会再次展示接收地址与脱敏内容。",fontSize=12.sp)

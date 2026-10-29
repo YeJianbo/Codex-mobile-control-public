@@ -44,6 +44,11 @@ class ConnectionFlowTest {
     private lateinit var application: Application
     private lateinit var socketRef: AtomicReference<WebSocket?>
     private lateinit var socketOpened: CountDownLatch
+    private val socketCount=java.util.concurrent.atomic.AtomicInteger()
+    private val healthReads=java.util.concurrent.atomic.AtomicInteger()
+    private val socketDiagnoses=java.util.concurrent.CopyOnWriteArrayList<String>()
+    private val outgoingCommands=java.util.concurrent.CopyOnWriteArrayList<JSONObject>()
+    @Volatile private var ignoreProbes=false
 
     @Before
     fun setUp() {
@@ -64,6 +69,71 @@ class ConnectionFlowTest {
     }
 
     private var model: NativeViewModel? = null
+    @Test fun foregroundReturnRecoversStaleSocketWithoutChangingThread(){
+        val vm=openSavedThread()
+        composeRule.runOnUiThread{vm.draft("未发送的草稿");vm.setForeground(false)}
+        ignoreProbes=true
+        android.os.SystemClock.sleep(600)
+        composeRule.runOnUiThread{vm.setForeground(true)}
+        composeRule.waitUntil(5000){socketCount.get()>=2&&vm.state.connected}
+        org.junit.Assert.assertEquals("thread-1",vm.state.threadId)
+        org.junit.Assert.assertEquals("未发送的草稿",vm.state.draft)
+        assertTrue("A stale cached LAN health must be checked again",healthReads.get()>=2)
+        composeRule.waitUntil(5000){socketDiagnoses.any{it.contains("cause=foreground_probe_timeout")&&it.contains("stream=chat")}}
+    }
+    @Test fun networkHandoverInvalidatesCachedLanHealth(){
+        val vm=openSavedThread()
+        val reads=healthReads.get()
+        composeRule.runOnUiThread{vm.draft("切网保留草稿");vm.setForeground(false);vm.networkChanged()}
+        composeRule.waitUntil(5000){socketCount.get()>=2&&vm.state.connected&&healthReads.get()>reads}
+        org.junit.Assert.assertEquals("thread-1",vm.state.threadId)
+        org.junit.Assert.assertEquals("切网保留草稿",vm.state.draft)
+    }
+    @Test fun healthyForegroundProbeKeepsTheExistingSocket(){
+        val vm=openSavedThread()
+        composeRule.runOnUiThread{vm.setForeground(false)}
+        android.os.SystemClock.sleep(600)
+        composeRule.runOnUiThread{vm.setForeground(true)}
+        android.os.SystemClock.sleep(1000)
+        composeRule.runOnIdle{assertTrue(vm.state.connected);org.junit.Assert.assertEquals(1,socketCount.get());assertTrue(socketDiagnoses.isEmpty())}
+    }
+    @Test fun unexpectedSocketLossChecksLanHealthAgain(){
+        val vm=openSavedThread()
+        val reads=healthReads.get()
+        composeRule.runOnUiThread{vm.draft("断线保留草稿")}
+        socketRef.get()!!.close(1011,"模拟连接中断")
+        composeRule.waitUntil(5000){socketCount.get()>=2&&vm.state.connected&&healthReads.get()>reads}
+        org.junit.Assert.assertEquals("thread-1",vm.state.threadId)
+        org.junit.Assert.assertEquals("断线保留草稿",vm.state.draft)
+        composeRule.waitUntil(5000){socketDiagnoses.any{it.contains("cause=peer_close")&&it.contains("code=1011")&&it.contains("version=${BuildConfig.VERSION_NAME}")}}
+    }
+    @Test fun brokenLanSocketTriesPublicWhileLanHttpIsStillHealthy(){
+        val remote=MockWebServer()
+        // Stall the HTTPS handshake so the selected fallback stays observable.
+        repeat(4){remote.enqueue(MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.STALL_SOCKET_AT_START))}
+        remote.start()
+        try{
+            val local=server.url("/").toString().trimEnd('/')
+            val publicUrl=remote.url("/").toString().trimEnd('/').replace("http://","https://")
+            ConnectionStore(application).saveProfile(local,"token",publicUrl,"password","",ConnectionRoute.AUTO)
+            val vm=NativeViewModel(application);model=vm
+            composeRule.setContent{NativeApp(vm)}
+            composeRule.runOnUiThread{vm.autoConnect()}
+            composeRule.waitUntil(15000){vm.state.connected&&vm.state.activeAddress==local&&vm.state.threads.isNotEmpty()}
+            composeRule.runOnUiThread{vm.openThread(vm.state.threads.first());vm.draft("切线保留草稿")}
+            socketRef.get()!!.close(1011,"模拟内网长连接中断")
+            composeRule.waitUntil(5000){vm.state.activeAddress==publicUrl}
+            val opens=socketCount.get()
+            android.os.SystemClock.sleep(1200)
+            composeRule.runOnIdle{
+                assertTrue(!vm.state.connected)
+                org.junit.Assert.assertEquals(publicUrl,vm.state.activeAddress)
+                org.junit.Assert.assertEquals(opens,socketCount.get())
+                org.junit.Assert.assertEquals("thread-1",vm.state.threadId)
+                org.junit.Assert.assertEquals("切线保留草稿",vm.state.draft)
+            }
+        }finally{composeRule.runOnUiThread{model?.disconnect()};remote.shutdown()}
+    }
     private fun openSavedThread(): NativeViewModel {
         ConnectionStore(application).save(server.url("/").toString().trimEnd('/'), "token")
         val vm = NativeViewModel(application)
@@ -74,6 +144,91 @@ class ConnectionFlowTest {
         composeRule.runOnUiThread { vm.openThread(vm.state.threads.first()) }
         composeRule.waitUntil(10000) { !vm.state.loadingHistory && vm.state.events.isNotEmpty() }
         return vm
+    }
+    @Test fun selectedThreadIdDoesNotDependOnSidebarMetadata(){
+        val api=GatewayClient(server.url("/").toString().trimEnd('/'),"fixture")
+        val command=api.nativeCommand("selected-thread",null,null,"消息","gpt-5.5","medium","full","request",emptyList(),emptyList())
+        org.junit.Assert.assertEquals("turn.start",command.getString("type"))
+        org.junit.Assert.assertEquals("selected-thread",command.getString("threadId"))
+        org.junit.Assert.assertFalse(command.has("initialText"))
+    }
+    @Test fun notificationIntentIsConsumedOnlyOnce(){
+        val intent=android.content.Intent().putExtra("notificationThreadId","old-notification-thread")
+        org.junit.Assert.assertEquals("old-notification-thread",consumeNativeNotificationThread(intent))
+        org.junit.Assert.assertEquals("",consumeNativeNotificationThread(intent))
+    }
+    @Test fun delayedNotificationCannotReplaceAnExplicitlyOpenedConversation(){
+        val vm=openSavedThread()
+        val delegate=server.dispatcher
+        val requested=CountDownLatch(1);val release=CountDownLatch(1)
+        server.dispatcher=object:Dispatcher(){
+            override fun dispatch(request:RecordedRequest):MockResponse{
+                if(request.requestUrl!!.encodedPath!="/api/threads")return delegate.dispatch(request)
+                requested.countDown();release.await(10,TimeUnit.SECONDS)
+                val response=delegate.dispatch(request)
+                val body=JSONObject(response.getBody()!!.readUtf8())
+                body.getJSONArray("threads").put(JSONObject().put("id","late-notification").put("title","旧通知会话").put("status","idle"))
+                return response.setBody(body.toString())
+            }
+        }
+        try{
+            composeRule.runOnUiThread{vm.openNotificationThread("late-notification")}
+            assertTrue(requested.await(10,TimeUnit.SECONDS))
+            composeRule.runOnUiThread{vm.openThread(ThreadRecord(id="thread-1"));vm.draft("留在当前会话")}
+            release.countDown()
+            composeRule.waitUntil(10000){vm.state.threads.any{it.id=="late-notification"}&&!vm.state.loadingSidebar}
+            composeRule.runOnUiThread{vm.send()}
+            composeRule.waitUntil(5000){outgoingCommands.any{it.optString("type")=="turn.start"}}
+            val command=outgoingCommands.last{it.optString("type")=="turn.start"}
+            org.junit.Assert.assertEquals("thread-1",vm.state.threadId)
+            org.junit.Assert.assertEquals("thread-1",command.getString("threadId"))
+            org.junit.Assert.assertEquals("留在当前会话",command.getString("text"))
+        }finally{release.countDown()}
+    }
+    @Test fun legacyWrongTargetCannotBeReplayed(){
+        val address=server.url("/").toString().trimEnd('/')
+        ConnectionStore(application).save(address,"token")
+        val record=JSONObject().put("id","legacy-send").put("threadId","thread-1").put("draftKey","native:thread-1")
+            .put("text","保留原消息").put("address",address).put("certificateSha256","").put("model","gpt-5.5")
+            .put("wireCommand",JSONObject().put("type","thread.start").put("initialText","保留原消息").toString())
+        application.getSharedPreferences("native",0).edit().putString("send:legacy-send",record.toString()).commit()
+        val vm=openSavedThread()
+        composeRule.runOnUiThread{vm.retryFailedMessage("legacy-send")}
+        composeRule.runOnIdle{
+            org.junit.Assert.assertTrue(vm.state.error.contains("发送目标不一致"))
+            org.junit.Assert.assertEquals("thread-1",vm.state.threadId)
+            org.junit.Assert.assertEquals("保留原消息",vm.failedMessages().single().text)
+            org.junit.Assert.assertFalse(outgoingCommands.any{it.optString("type") in listOf("thread.start","turn.start")})
+        }
+    }
+    @Test fun anotherThreadReceiptCannotRedirectTheConversation(){
+        val vm=openSavedThread()
+        composeRule.runOnUiThread{vm.draft("原会话的消息");vm.send()}
+        composeRule.waitUntil(5000){outgoingCommands.any{it.optString("type")=="turn.start"}}
+        val request=outgoingCommands.last{it.optString("type")=="turn.start"}
+        org.junit.Assert.assertEquals("thread-1",request.getString("threadId"))
+        val id=request.getString("requestId")
+        socketRef.get()!!.send(JSONObject().put("type","thread.started").put("threadId","wrong-thread").put("requestId",id).toString())
+        socketRef.get()!!.send(JSONObject().put("type","command.accepted").put("threadId","wrong-thread").put("requestId",id).toString())
+        composeRule.waitUntil(5000){vm.state.error.contains("会话不一致")}
+        composeRule.runOnIdle{
+            org.junit.Assert.assertEquals("thread-1",vm.state.threadId)
+            org.junit.Assert.assertEquals("原会话的消息",vm.state.draft)
+            org.junit.Assert.assertFalse(vm.state.sending)
+        }
+    }
+    @Test fun delayedAcknowledgementKeepsTheNewlySelectedThreadAndDraft(){
+        val vm=openSavedThread()
+        composeRule.runOnUiThread{vm.draft("A会话的消息");vm.send()}
+        composeRule.waitUntil(5000){outgoingCommands.any{it.optString("type")=="turn.start"}}
+        val sent=outgoingCommands.last{it.optString("type")=="turn.start"}
+        composeRule.runOnUiThread{vm.openThread(ThreadRecord(id="thread-2",title="另一个会话"));vm.draft("B会话的草稿")}
+        socketRef.get()!!.send(JSONObject().put("type","command.accepted").put("threadId","thread-1").put("requestId",sent.getString("requestId")).toString())
+        composeRule.runOnUiThread{vm.send()}
+        composeRule.waitUntil(5000){outgoingCommands.any{it.optString("threadId")=="thread-2"}}
+        val next=outgoingCommands.last{it.optString("threadId")=="thread-2"}
+        org.junit.Assert.assertEquals("B会话的草稿",next.getString("text"))
+        org.junit.Assert.assertEquals("thread-2",vm.state.threadId)
     }
     @Test fun savedConnectionLoadsHomeAndThreadFlow() {
         val vm = openSavedThread()
@@ -173,6 +328,10 @@ class ConnectionFlowTest {
                             )
                             .put("hasMore", false)
                     )
+                    path == "/api/diagnostics/performance" -> {
+                        socketDiagnoses.add(request.path.orEmpty())
+                        jsonResponse(JSONObject().put("ok",true))
+                    }
                     path == "/api/approvals" -> jsonResponse(JSONObject().put("approvals",JSONArray()))
                     path.endsWith("/queue") -> jsonResponse(JSONObject().put("messages",JSONArray()))
                     path == "/health" -> jsonResponse(
@@ -181,7 +340,8 @@ class ConnectionFlowTest {
                             .put("version", "0.1.0")
                             .put("protocolVersion", 1)
                             .put("minAndroidProtocolVersion", 1)
-                            .put("capabilities", JSONArray().put("thread-management"))
+                            .put("capabilities", JSONArray().put("thread-management").put("foreground-websocket-probe"))
+                            .also{healthReads.incrementAndGet()}
                     )
 
                     path == "/api/projects" -> jsonResponse(
@@ -338,8 +498,15 @@ class ConnectionFlowTest {
                                 webSocket.close(code, reason)
                             }
                             override fun onOpen(webSocket: WebSocket, response: Response) {
+                                socketCount.incrementAndGet()
                                 socketRef.set(webSocket)
                                 socketOpened.countDown()
+                            }
+                            override fun onMessage(webSocket:WebSocket,text:String){
+                                val message=JSONObject(text)
+                                outgoingCommands.add(message)
+                                if(message.optString("type")=="connection.ping"&&!ignoreProbes)
+                                    webSocket.send(JSONObject().put("type","connection.pong").put("requestId",message.optString("requestId")).toString())
                             }
                         })
 

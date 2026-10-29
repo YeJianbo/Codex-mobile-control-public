@@ -11,10 +11,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.layout.Layout
-import androidx.compose.ui.unit.Constraints
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -48,6 +46,10 @@ private fun quotaPlanLabel(value:String):String=when(value.lowercase(Locale.ROOT
         DashboardTabs(listOf("1" to "今天","7" to "近 7 天","30" to "近 30 天"),s.usageDays.toString(),{vm.loadUsage(it.toInt())})
             val quota=data?.optJSONObject("quota")
             val windows=quota?.optJSONArray("windows")
+            val quotaWindows=remember(windows){
+                val received=(0 until (windows?.length()?:0)).map{windows!!.getJSONObject(it)}
+                listOf(300.0,10080.0).map{duration->duration to received.firstOrNull{it.optDouble("durationMins",Double.NaN)==duration}}
+            }
             DashboardCard(Modifier.testTag("accountQuotaCard")){
                 Row(Modifier.fillMaxWidth().heightIn(min=28.dp),verticalAlignment=Alignment.CenterVertically){
                     Text("账号额度",Modifier.testTag("accountQuotaHeading"),fontSize=16.sp,fontWeight=FontWeight.SemiBold)
@@ -59,17 +61,16 @@ private fun quotaPlanLabel(value:String):String=when(value.lowercase(Locale.ROOT
                         Text(quotaPlanLabel(it),Modifier.clip(Radius.Inset).background(MaterialTheme.colors.primary.copy(alpha=0.08f)).padding(horizontal=9.dp,vertical=4.dp),fontSize=11.sp,fontWeight=FontWeight.SemiBold,color=MaterialTheme.colors.primary)
                     }
                 }
-                if(windows==null||windows.length()==0)Text(if(data==null&&s.usageLoading)"正在读取账号额度…" else "暂无账号额度数据",color=usageMuted,fontSize=13.sp)
-                for(i in 0 until (windows?.length()?:0)){
+                if(windows==null&&data==null&&s.usageLoading)Text("正在读取账号额度…",color=usageMuted,fontSize=13.sp)
+                for(i in quotaWindows.indices){
                     if(i>0)Divider(color=usageMuted.copy(alpha=0.12f))
-                    val window=windows!!.getJSONObject(i)
-                    val mins=window.optDouble("durationMins")
-                    val remaining=window.optDouble("remainingPercent",Double.NaN).takeIf{it.isFinite()}?.coerceIn(0.0,100.0)
+                    val (mins,window)=quotaWindows[i]
+                    val remaining=window?.optDouble("remainingPercent",Double.NaN)?.takeIf{it.isFinite()}?.coerceIn(0.0,100.0)
                     val label=quotaWindowLabel(mins)
                     Row(verticalAlignment=Alignment.CenterVertically){
                         Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(5.dp)){
-                            Text(if(s.harness=="codex")label else window.optString("name").takeIf{it.isNotBlank()&&it!="null"}?.let{"$it · $label"}?:label,fontSize=13.sp,fontWeight=FontWeight.Medium)
-                            val reset=window.optLong("resetsAt",0)
+                            Text(if(s.harness=="codex")label else window?.optString("name")?.takeIf{it.isNotBlank()&&it!="null"}?.let{"$it · $label"}?:label,fontSize=13.sp,fontWeight=FontWeight.Medium)
+                            val reset=window?.optLong("resetsAt",0)?:0
                             Text(if(reset>0)SimpleDateFormat("M月d日 HH:mm",Locale.getDefault()).format(Date(reset*1000))+" 重置" else "重置时间暂无数据",fontSize=11.sp,color=usageMuted)
                         }
                         Column(horizontalAlignment=Alignment.End){
@@ -80,6 +81,7 @@ private fun quotaPlanLabel(value:String):String=when(value.lowercase(Locale.ROOT
                     if(remaining!=null)LinearProgressIndicator((remaining/100).toFloat(),Modifier.fillMaxWidth().height(6.dp).clip(CircleShape),
                         color=if(remaining<10)MaterialTheme.colors.error else MaterialTheme.colors.primary,backgroundColor=MaterialTheme.colors.onSurface.copy(alpha=0.065f))
                 }
+                if((windows==null||windows.length()==0)&&!(data==null&&s.usageLoading))Text("暂无账号额度数据",color=usageMuted,fontSize=13.sp)
                 if(quota?.optBoolean("stale")==true)Text("实时额度暂不可用，显示上次记录",color=usageMuted,fontSize=12.sp)
             }
         if(data!=null){
@@ -98,6 +100,7 @@ private fun quotaPlanLabel(value:String):String=when(value.lowercase(Locale.ROOT
                 }}
             }
             DashboardCard{QuotaTrendChart(samples.value,start,now,s.usageDataDays)}
+            if(s.harness=="codex")NativeCreditBalance(quota?.optJSONObject("credits"),data.optJSONArray("creditTrend"),quota?.optJSONObject("subscriptionEstimate"),start,now,s.usageDataDays)
         }
         if(s.usageError.isNotBlank())Text(s.usageError,color=MaterialTheme.colors.error,fontSize=13.sp)
         if(!s.connected)Text("连接电脑后查看用量",color=usageMuted,fontSize=13.sp)
@@ -108,33 +111,33 @@ private fun quotaPlanLabel(value:String):String=when(value.lowercase(Locale.ROOT
     }
 }
 
-private data class QuotaPoint(val at:Long,val durationMins:Int,val remaining:Float)
-private fun nearestQuotaPoint(points:List<QuotaPoint>,start:Long,end:Long,size:IntSize,position:Offset)=
-    points.filter{it.durationMins in listOf(300,10080)}.minByOrNull{
-        val x=(it.at-start).toFloat()/(end-start).coerceAtLeast(1L)*size.width
-        val y=(1f-it.remaining.coerceIn(0f,100f)/100f)*size.height
-        (x-position.x)*(x-position.x)+(y-position.y)*(y-position.y)
-    }
-
-@Composable internal fun ChartCallout(xFraction:Float,yFraction:Float,content:@Composable ()->Unit){
-    // Plot labels must cover the curves even when surrounding cards use glass.
-    Layout(content={androidx.compose.material.Surface(shape=Radius.Inset,color=MaterialTheme.colors.surface.copy(alpha=1f),
-        border=BorderStroke(.75.dp,MaterialTheme.colors.onSurface.copy(alpha=.10f)),elevation=3.dp,modifier=Modifier.testTag("chartCallout")){content()}},modifier=Modifier.fillMaxSize()) {measurables,constraints->
-        val inset=4.dp.roundToPx();val gap=8.dp.roundToPx()
-        val bubble=measurables.single().measure(Constraints(maxWidth=minOf(200.dp.roundToPx(),(constraints.maxWidth-inset*2).coerceAtLeast(0)),maxHeight=constraints.maxHeight))
-        val anchorX=xFraction.coerceIn(0f,1f)*constraints.maxWidth
-        val anchorY=yFraction.coerceIn(0f,1f)*constraints.maxHeight
-        val left=(anchorX-bubble.width/2f).toInt().coerceIn(inset,(constraints.maxWidth-bubble.width-inset).coerceAtLeast(inset))
-        val above=anchorY.toInt()-bubble.height-gap
-        val top=(if(above>=inset)above else anchorY.toInt()+gap).coerceIn(0,(constraints.maxHeight-bubble.height).coerceAtLeast(0))
-        layout(constraints.maxWidth,constraints.maxHeight){bubble.place(left,top)}
-    }
+internal data class QuotaPoint(val at:Long,val durationMins:Int,val remaining:Float)
+private const val QUOTA_TREND_MAX_GAP=30*60000L
+private fun nearestQuotaTime(timeline:List<Long>,at:Double):Long?{
+    if(timeline.isEmpty())return null
+    val found=timeline.binarySearch(at.toLong())
+    if(found>=0)return timeline[found]
+    val insertion=-found-1
+    val before=timeline.getOrNull(insertion-1)?:return timeline.first()
+    val after=timeline.getOrNull(insertion)?:return before
+    return if(at-before<=after-at)before else after
 }
-@Composable private fun QuotaTrendChart(points:List<QuotaPoint>,start:Long,end:Long,days:Int){
-    val groups=remember(points){listOf(300,10080).map{duration->points.filter{it.durationMins==duration}.sortedBy{it.at}}}
+private fun quotaPointAt(series:List<QuotaPoint>,at:Long):QuotaPoint?{
+    val found=series.binarySearchBy(at){it.at}
+    val point=series.getOrNull(if(found>=0)found else -found-2)
+    // Match the step curve: use the value already recorded at this time,
+    // and leave gaps blank rather than carrying a stale value across them.
+    return point?.takeIf{at-it.at<=QUOTA_TREND_MAX_GAP}
+}
+
+@Composable internal fun QuotaTrendChart(points:List<QuotaPoint>,start:Long,end:Long,days:Int){
+    val groups=remember(points){listOf(300,10080).map{duration->points.filter{it.durationMins==duration}.associateBy{it.at}.values.sortedBy{it.at}}}
+    val timeline=remember(groups){groups.flatten().map{it.at}.distinct().sorted()}
     val colors=listOf(AppColor.ChartPurple,MaterialTheme.colors.primary)
     val guide=MaterialTheme.colors.onSurface.copy(alpha=0.07f)
-    var selected by remember(points,start,end){mutableStateOf<QuotaPoint?>(null)}
+    var selectedAt by remember(points,start,end){mutableStateOf<Long?>(null)}
+    val selection=remember(selectedAt,groups){selectedAt?.let{at->groups.map{quotaPointAt(it,at)}}}
+    val touchPosition=remember(points,start,end){mutableStateOf(Offset.Zero)}
     DashboardHeading("配额剩余趋势")
     Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(18.dp)){
         groups.forEachIndexed{index,series->
@@ -151,33 +154,51 @@ private fun nearestQuotaPoint(points:List<QuotaPoint>,start:Long,end:Long,size:I
         }
         Box(Modifier.weight(1f).height(136.dp)){
         Canvas(Modifier.fillMaxSize().testTag("quota-trend").semantics{contentDescription="配额剩余趋势，按住或横向滑动查看明细"}
-            .nativeChartPress(Triple(points,start,end),{position,size->selected=nearestQuotaPoint(points,start,end,size,position)},{selected=null})){
+            .nativeChartPress(Triple(points,start,end),{position,size->
+                touchPosition.value=position
+                val at=start.toDouble()+(position.x/size.width.coerceAtLeast(1)).coerceIn(0f,1f).toDouble()*(end-start)
+                selectedAt=nearestQuotaTime(timeline,at)
+            },{selectedAt=null})){
             val width=size.width;val height=size.height;val span=(end-start).coerceAtLeast(1L).toFloat()
             listOf(0f,0.5f,1f).forEach{drawLine(guide,Offset(0f,height*it),Offset(width,height*it),1.dp.toPx())}
             groups.forEachIndexed{index,series->
-                val path=Path();var prior:QuotaPoint?=null;var area=Path();var segmentEnd=0f
-                fun fillSegment(){if(prior!=null){area.lineTo(segmentEnd,height);area.close();drawPath(area,colors[index].copy(alpha=0.055f))}}
+                val path=Path();var prior:QuotaPoint?=null
                 series.forEach{point->
                     val x=(point.at-start)/span*width;val y=(1f-point.remaining.coerceIn(0f,100f)/100f)*height
                     val previous=prior
-                    if(previous!=null&&point.at-previous.at<=30*60000L){
+                    if(previous!=null&&point.at-previous.at<=QUOTA_TREND_MAX_GAP){
                         val previousY=(1f-previous.remaining.coerceIn(0f,100f)/100f)*height
-                        path.lineTo(x,previousY);path.lineTo(x,y);area.lineTo(x,previousY);area.lineTo(x,y)
-                    }else{fillSegment();path.moveTo(x,y);area=Path().apply{moveTo(x,height);lineTo(x,y)}}
-                    segmentEnd=x;prior=point
+                        path.lineTo(x,previousY);path.lineTo(x,y)
+                    }else{
+                        // Sparse observations remain visible without implying continuous measurement.
+                        if(previous!=null)drawLine(colors[index].copy(alpha=.55f),
+                            Offset((previous.at-start)/span*width,(1f-previous.remaining.coerceIn(0f,100f)/100f)*height),Offset(x,y),
+                            strokeWidth=1.5.dp.toPx(),pathEffect=PathEffect.dashPathEffect(floatArrayOf(4.dp.toPx(),4.dp.toPx())))
+                        path.moveTo(x,y)
+                        drawCircle(colors[index],2.5.dp.toPx(),Offset(x,y))
+                    }
+                    prior=point
                 }
-                fillSegment();drawPath(path,colors[index],style=Stroke(2.dp.toPx()))
+                drawPath(path,colors[index],style=Stroke(2.dp.toPx()))
                 series.lastOrNull()?.let{drawCircle(colors[index],3.dp.toPx(),Offset((it.at-start)/span*width,(1f-it.remaining.coerceIn(0f,100f)/100f)*height))}
             }
-            selected?.let{point->val x=(point.at-start)/span*width
+            selectedAt?.let{at->val x=(at-start)/span*width
                 drawLine(guide,Offset(x,0f),Offset(x,height),1.dp.toPx())
-                drawCircle(colors[if(point.durationMins==300)0 else 1],4.dp.toPx(),Offset(x,(1f-point.remaining.coerceIn(0f,100f)/100f)*height))
+                selection?.forEachIndexed{index,point->point?.let{
+                    drawCircle(colors[index],4.dp.toPx(),Offset(x,(1f-it.remaining.coerceIn(0f,100f)/100f)*height))
+                }}
             }
         }
-        selected?.let{point->ChartCallout((point.at-start).toFloat()/(end-start).coerceAtLeast(1L),1f-point.remaining.coerceIn(0f,100f)/100f){
+        selectedAt?.let{at->ChartCallout(touchPosition){
             Column(Modifier.padding(horizontal=10.dp,vertical=8.dp).testTag("quotaSelection"),verticalArrangement=Arrangement.spacedBy(3.dp)){
-                Text(SimpleDateFormat("M/d HH:mm",Locale.getDefault()).format(Date(point.at)),fontSize=10.sp,color=usageMuted)
-                Text(quotaWindowLabel(point.durationMins.toDouble())+" · 剩余 ${point.remaining.toInt()}%",fontSize=12.sp,fontWeight=FontWeight.Medium)
+                Text(SimpleDateFormat("M/d HH:mm",Locale.getDefault()).format(Date(at)),fontSize=10.sp,color=usageMuted)
+                listOf("5h","7d").forEachIndexed{index,label->
+                    Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(6.dp)){
+                        Box(Modifier.size(6.dp).clip(CircleShape).background(colors[index]))
+                        Text(label+" 剩余",fontSize=12.sp,color=usageMuted,modifier=Modifier.weight(1f))
+                        Text(selection?.getOrNull(index)?.let{"${it.remaining.toInt()}%"}?:"—",fontSize=12.sp,fontWeight=FontWeight.Medium)
+                    }
+                }
             }
         }}
         }

@@ -1,11 +1,19 @@
-param([string[]]$Modules = @(), [switch]$SkipBuild)
+﻿param([string[]]$Modules = @(), [switch]$SkipBuild)
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $OutputEncoding = [Console]::OutputEncoding
 $source = Join-Path $PSScriptRoot 'server'
 $installed = Join-Path $env:USERPROFILE '.codex\tools\local-console\gateway'
+$moduleFiles = @{}
 foreach ($module in $Modules) {
-    if ($module -notmatch '^[A-Za-z][A-Za-z0-9_-]*$' -or -not (Test-Path -LiteralPath "$source\dist\services\$module.js")) { throw "无效或尚未构建的网关模块：$module" }
+    if ($module -notmatch '^[A-Za-z][A-Za-z0-9_-]*$') { throw "无效的网关模块：$module" }
+    $relativeModulePath = switch ($module) {
+        'index' { 'dist\index.js' }
+        'agentHost' { 'dist\agentHost.js' }
+        default { "dist\services\$module.js" }
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $source $relativeModulePath))) { throw "网关模块尚未构建：$module" }
+    $moduleFiles[$module] = $relativeModulePath
 }
 if (-not (Test-Path -LiteralPath "$installed\dist\index.js")) { throw '未找到电脑控制台安装目录。' }
 $config = Get-Content -LiteralPath (Join-Path $env:USERPROFILE '.codex-mobile-control\server.json') -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -20,7 +28,17 @@ $runtime = $status.runtime
 $blockingThreads = @($threads | Where-Object {
     $_.status -eq 'running' -and ($runtime.transport -ne 'desktop' -or $_.id -match '^(claude|antigravity|grok|deepseek|hermes)-')
 })
-if ($blockingThreads.Count -gt 0) { throw ('网关承载的任务仍在执行：' + (($blockingThreads | ForEach-Object title) -join '、')) }
+# Tasks owned by the standalone agent host survive a gateway restart. Only the
+# gateway's own in-process turns must block this update.
+$hostInfoFile = Join-Path $env:USERPROFILE '.codex-mobile-control\agent-host.json'
+$hostedAgents = $false
+if (Test-Path -LiteralPath $hostInfoFile) {
+    try {
+        $hostInfo = Get-Content -LiteralPath $hostInfoFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        $hostedAgents = [bool]($hostInfo.pid -and (Get-Process -Id $hostInfo.pid -ErrorAction SilentlyContinue))
+    } catch { }
+}
+if (-not $hostedAgents -and $blockingThreads.Count -gt 0) { throw ('网关承载的任务仍在执行：' + (($blockingThreads | ForEach-Object title) -join '、')) }
 if ($runtime.pendingRequests -gt 0) { throw '网关有尚未完成的请求，请稍后再更新。' }
 $listener = Get-NetTCPConnection -LocalPort $config.port -State Listen | Select-Object -First 1
 $target = Get-CimInstance Win32_Process -Filter "ProcessId = $($listener.OwningProcess)"
@@ -28,13 +46,23 @@ if ($target.CommandLine.Replace('/', '\') -notlike "*$installed\dist\index.js*")
 Push-Location $source
 try { if (-not $SkipBuild) { & npm.cmd run build; if ($LASTEXITCODE -ne 0) { throw '构建失败，未更新。' } } } finally { Pop-Location }
 $latest = & node.exe $probe state | ConvertFrom-Json
-if ($LASTEXITCODE -ne 0 -or $latest.runtime.pendingRequests -gt 0 -or @($latest.threads | Where-Object { $_.status -eq 'running' -and ($latest.runtime.transport -ne 'desktop' -or $_.id -match '^(claude|antigravity|grok|deepseek|hermes)-') }).Count -gt 0) { throw '更新前出现活动请求或网关任务，未替换程序。' }
+$latestHosted = $false
+if (Test-Path -LiteralPath $hostInfoFile) {
+    try {
+        $latestHost = Get-Content -LiteralPath $hostInfoFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        $latestHosted = [bool]($latestHost.pid -and (Get-Process -Id $latestHost.pid -ErrorAction SilentlyContinue))
+    } catch { }
+}
+if ($LASTEXITCODE -ne 0 -or $latest.runtime.pendingRequests -gt 0 -or (-not $latestHosted -and @($latest.threads | Where-Object { $_.status -eq 'running' -and ($latest.runtime.transport -ne 'desktop' -or $_.id -match '^(claude|antigravity|grok|deepseek|hermes)-') }).Count -gt 0)) { throw '更新前出现活动请求或网关任务，未替换程序。' }
 $releaseVersion=(Get-Content -LiteralPath "$source\package.json" -Raw | ConvertFrom-Json).version
 if ($Modules.Count -gt 0) {
     $backup = Join-Path $PSScriptRoot ('artifacts\installed-gateway-modules-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.zip')
-    $previousModules = @($Modules | ForEach-Object { "$installed\dist\services\$_.js" } | Where-Object { Test-Path -LiteralPath $_ })
+    $previousModules = @($Modules | ForEach-Object { Join-Path $installed $moduleFiles[$_] } | Where-Object { Test-Path -LiteralPath $_ })
     if ($previousModules.Count -gt 0) { Compress-Archive -LiteralPath $previousModules -DestinationPath $backup }
-    foreach ($module in $Modules) { Copy-Item -LiteralPath "$source\dist\services\$module.js" -Destination "$installed\dist\services\$module.js" -Force }
+    foreach ($module in $Modules) {
+        $relativeModulePath = $moduleFiles[$module]
+        Copy-Item -LiteralPath (Join-Path $source $relativeModulePath) -Destination (Join-Path $installed $relativeModulePath) -Force
+    }
 } else {
 $backup = Join-Path $PSScriptRoot "artifacts\installed-gateway-before-$releaseVersion.zip"
 if (-not (Test-Path -LiteralPath $backup)) { Compress-Archive -Path "$installed\dist","$installed\public","$installed\scripts","$installed\package.json","$installed\package-lock.json" -DestinationPath $backup }
@@ -63,6 +91,7 @@ Copy-Item -LiteralPath "$source\scripts\public-entry.mjs","$source\scripts\publi
 Copy-Item -LiteralPath "$source\scripts\background-service.vbs" -Destination "$installed\scripts" -Force
 Copy-Item -LiteralPath "$source\scripts\start-shared-desktop.ps1" -Destination "$installed\scripts" -Force
 Copy-Item -LiteralPath "$source\scripts\deepseek-mobile-policy.mjs" -Destination "$installed\scripts" -Force
+Copy-Item -LiteralPath "$source\scripts\zcode-shared-backend.mjs","$source\scripts\zcode-shared-proxy.mjs","$source\scripts\zcode-shared-install.mjs","$source\scripts\zcode-desktop-entry.cjs" -Destination "$installed\scripts" -Force
 Copy-Item -LiteralPath "$source\scripts\hermes-mobile-acp" -Destination "$installed\scripts" -Recurse -Force
 $instance = Join-Path (Split-Path $installed -Parent) 'installer\instance.mjs'
 if (Test-Path -LiteralPath $instance) {
@@ -74,6 +103,7 @@ if (Test-Path -LiteralPath $instance) {
 if ($LASTEXITCODE -ne 0) { throw '默认共享组件安装失败，未重启网关。' }
 }
 Stop-Process -Id $listener.OwningProcess
+$env:CODEX_MOBILE_CONTROL_AGENT_HOST = '1'
 $node = (Get-Command node.exe).Source
 Start-Process -FilePath $node -ArgumentList "$installed\dist\index.js" -WorkingDirectory $installed -WindowStyle Hidden -RedirectStandardOutput (Join-Path $PSScriptRoot 'artifacts\installed-gateway.log') -RedirectStandardError (Join-Path $PSScriptRoot 'artifacts\installed-gateway.err.log')
 for ($i=0; $i -lt 30; $i++) {

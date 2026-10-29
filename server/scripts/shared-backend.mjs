@@ -80,7 +80,7 @@ async function serve(configPath){
   const desktopUrl=`ws://127.0.0.1:${desktopServer.address().port}`;
   const approvalUrl=`ws://127.0.0.1:${approvalServer.address().port}`;
   const approvals=new Map(),contexts=new Set();let connectionId=0;
-  const approvalMethods=new Set(['item/commandExecution/requestApproval','item/fileChange/requestApproval','item/permissions/requestApproval','item/tool/requestUserInput']);
+  const approvalMethods=new Set(['item/commandExecution/requestApproval','item/fileChange/requestApproval','item/permissions/requestApproval','item/tool/requestUserInput','mcpServer/elicitation/request','execCommandApproval','applyPatchApproval']);
   const broadcast=message=>{const data=JSON.stringify(message);for(const peer of approvalServer.clients)if(peer.readyState===WebSocket.OPEN)peer.send(data);};
   const finish=key=>{const entry=approvals.get(key);if(!entry)return;approvals.delete(key);entry.context.resolved.add(String(entry.id));if(entry.context.resolved.size>100)entry.context.resolved.delete(entry.context.resolved.values().next().value);broadcast({type:'resolved',id:key,threadId:entry.params?.threadId||'unknown'});};
   approvalServer.on('connection',peer=>{

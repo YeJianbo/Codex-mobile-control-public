@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
-import {formatUsageTokens,sessionUsageValues} from '../public/console-core.js';
+import {displayThreadTitle,formatUsageTokens,sessionUsageValues} from '../public/console-core.js';
 import {BoundedLruMap} from '../public/thread-cache.js';
 
 test('session usage preserves missing values, uses wan and yi, and keeps context in K',()=>{
@@ -22,6 +22,7 @@ const sharedReader=source.slice(source.indexOf('const sessionUsageCache=new Boun
 class Node{
   constructor(tag,className='',text=''){this.tag=tag;this.className=className;this.textContent=text;this.children=[];this.events={};this.open=false;this.attributes={};}
   append(...nodes){this.children.push(...nodes);}
+  replaceChildren(...nodes){this.children=[...nodes];}
   setAttribute(key,value){this.attributes[key]=value;}
   removeAttribute(key){delete this.attributes[key];}
   addEventListener(type,callback){this.events[type]=callback;}
@@ -34,7 +35,7 @@ const all=node=>[node,...node.children.flatMap(all)];
 const metric=(dialog,label)=>all(dialog).find(node=>node.children[0]?.tag==='small'&&node.children[0].textContent===label)?.children[1].textContent;
 async function until(check){for(let i=0;i<40;i++){if(check())return;await new Promise(resolve=>setImmediate(resolve));}assert.fail('controller did not settle');}
 function fixture(){
-  const requests=[],context={state:{generation:1},openUsage:null,thread:{id:'first',title:'First'},URLSearchParams,setTimeout,clearTimeout,sessionUsageValues,BoundedLruMap,document:{body:new Node('body')},errorMessage:error=>error.message,toast:()=>{},onlineRequired:()=>true};
+  const requests=[],context={state:{generation:1},openUsage:null,thread:{id:'first',title:'First'},URLSearchParams,setTimeout,clearTimeout,displayThreadTitle,sessionUsageValues,BoundedLruMap,document:{body:new Node('body')},errorMessage:error=>error.message,toast:()=>{},onlineRequired:()=>true};
   context.activeThread=()=>context.thread;context.el=(...args)=>new Node(...args);context.button=(label,callback,className)=>Object.assign(new Node('button',className,label),{onclick:callback});
   context.api=url=>new Promise((resolve,reject)=>requests.push({url,resolve,reject}));
   vm.createContext(context);vm.runInContext(sharedReader+'updateSessionStatus=()=>{};'+controller,context);
@@ -71,6 +72,14 @@ test('context badge and usage dialog share in-flight reads and a short cache',as
   assert.equal(metric(owner.dialog,'当前上下文'),'123K');
   const cached=await context.readSessionUsage('first');assert.equal(requests.length,1);assert.equal(cached.quotaTrend,undefined);
   owner.dialog.close();
+});
+
+test('session panel separates parent and child accounting while retaining the family total',async()=>{
+  const {context,requests}=fixture();context.showUsage();const owner=context.openUsage;
+  requests[0].resolve({tokens:{total:15000,self:{total:10000},subagents:{count:1,total:5000,threads:[{threadId:'child',name:'审查员',total:5000}]}}});
+  await until(()=>metric(owner.dialog,'总 Token')==='1.5 万');
+  assert.equal(metric(owner.dialog,'主会话 Token'),'1 万');assert.equal(metric(owner.dialog,'子代理 Token'),'5,000');
+  assert.equal(metric(owner.dialog,'审查员'),'5,000');owner.dialog.close();
 });
 
 test('usage invalidation during a read prevents that snapshot from satisfying the next refresh',async()=>{

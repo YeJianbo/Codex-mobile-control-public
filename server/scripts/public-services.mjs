@@ -43,7 +43,9 @@ export class PublicServices {
   async entryHealthy() {
     if(!this.configured())return false;
     // Check the entry itself so a restarting Gateway cannot cause entry restart loops.
-    const result=await probe(`http://127.0.0.1:${this.settings().port}/health`);
+    const settings=this.settings();
+    const prefix=settings.publicUrl?new URL(settings.publicUrl).pathname.replace(/\/$/,''):'';
+    const result=await probe(`http://127.0.0.1:${settings.port}${prefix}/health`);
     return result?.status===401;
   }
   async tunnelHealthy() {

@@ -187,7 +187,7 @@ class NotificationMonitorService : Service() {
         val failed=event.status.lowercase() in setOf("error","failed")
         if(failed&&event.threadId in pageOnlyFailures){pendingFailures.remove(event.threadId);return}
         val notice=if(errorHint!=null)taskNotification(event,listOf(event,errorHint),emptyList(),threadTitles[event.threadId].orEmpty()) else {
-            val history=try{client.nativeHistoryAsync(event.threadId,60).first}catch(error:CancellationException){throw error}catch(_:Exception){emptyList()}
+            val history=try{client.nativeTaskHistoryAsync(event.threadId)}catch(error:CancellationException){throw error}catch(_:Exception){emptyList()}
             tasks.content(event,history,threadTitles[event.threadId].orEmpty())
         }
         if(failed){

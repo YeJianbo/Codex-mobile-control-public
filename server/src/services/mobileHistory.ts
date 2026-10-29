@@ -166,7 +166,7 @@ export function mergeMobileThreadEvents(historicalEvents:GatewayEvent[],storedEv
   return foldCompactionSummaries([...merged,...recent].sort((a,b)=>(time(a)||0)-(time(b)||0)));
 }
 
-export function mergeDeepSeekThreadEvents(nativeEvents:GatewayEvent[],storedEvents:GatewayEvent[],owned=false):GatewayEvent[]{
+export function mergeDeepSeekThreadEvents(nativeEvents:GatewayEvent[],storedEvents:GatewayEvent[],owned=false,replaceActivities=false):GatewayEvent[]{
   const time=eventTimes();
   let currentTurn:string|undefined;
   storedEvents=storedEvents.map(event=>{
@@ -199,12 +199,25 @@ export function mergeDeepSeekThreadEvents(nativeEvents:GatewayEvent[],storedEven
     }
     if(match){mapped.set(event.turnId,match.turnId);used.add(match.event);}
   }
-  const closed=new Set(nativeEvents.filter(event=>event.type==='turn.completed').map(event=>(event as Extract<GatewayEvent,{type:'turn.completed'}>).turnId));
-  const replaced=new Set([...closed].flatMap(id=>id&&mapped.has(id)?[mapped.get(id)!]:[]));
+  const storedClosed=new Set(storedEvents.filter(event=>event.type==='turn.completed').map(event=>event.turnId));
+  // A native attempt may already have failed while the executor is waiting to retry.
+  // Its terminal snapshot must not replace the still-active gateway turn.
+  const closed=new Set(nativeEvents.filter(event=>event.type==='turn.completed'&&(!owned||storedClosed.has(mapped.get(event.turnId||'')||event.turnId))).map(event=>(event as Extract<GatewayEvent,{type:'turn.completed'}>).turnId));
+  const replaced=new Set([...(replaceActivities&&!owned?mapped.keys():closed)].flatMap(id=>id&&mapped.has(id)?[mapped.get(id)!]:[]));
   const history=nativeEvents.filter(event=>!owned||!('turnId' in event)||!event.turnId||closed.has(event.turnId)||!mapped.has(event.turnId))
     .map(event=>'turnId' in event&&event.turnId&&mapped.has(event.turnId)?{...event,turnId:mapped.get(event.turnId)}:event);
   // A completed native message replaces its gateway stream. Keep the saved
   // user receipt so ordinary attachment and request-ID recovery still applies.
-  const saved=storedEvents.filter(event=>!['message.delta','turn.started','turn.completed'].includes(event.type)||!('turnId' in event)||!event.turnId||!replaced.has(event.turnId));
+  const saved=storedEvents.filter(event=>{
+    const types=replaceActivities?['message.delta','reasoning.summary','turn.started','turn.completed','tool.started','tool.output','tool.completed','file.changed']:['message.delta','turn.started','turn.completed'];
+    if(!types.includes(event.type))return true;
+    const turnId='turnId' in event?event.turnId:undefined;
+    if(turnId&&replaced.has(turnId))return false;
+    return !replaceActivities||!('itemId' in event)||!event.itemId||![...replaced].some(turn=>event.itemId!.startsWith(turn+':'));
+  });
   return mergeMobileThreadEvents(history,saved);
+}
+
+export function mergeZcodeThreadEvents(nativeEvents:GatewayEvent[],storedEvents:GatewayEvent[],owned=false):GatewayEvent[]{
+  return mergeDeepSeekThreadEvents(nativeEvents,storedEvents,owned,true);
 }

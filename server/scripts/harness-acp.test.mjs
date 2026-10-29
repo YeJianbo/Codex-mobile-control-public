@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {PassThrough} from 'node:stream';
 import {harnessAcp,readHarnessCatalog} from '../src/services/harnessAcp.ts';
-import {mkdtempSync,mkdirSync,writeFileSync,rmSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,rmSync,readFileSync,existsSync} from 'node:fs';
 import os from 'node:os';import path from 'node:path';
 
-function fixture(agent,{cancel=false,newSessionError,permissionAdapterReady=true,extraModels=[]}={}){
+function fixture(agent,{cancel=false,newSessionError,configError,permissionAdapterReady=true,extraModels=[]}={}){
   const requests=[],stdin=new PassThrough(),stdout=new PassThrough(),stderr=new PassThrough();
   const model=agent==='deepseek'?'[{"provider":"deepseek-official","model":"deepseek::flash"}]':'openrouter:example/model';
   let finish,promptId,closed=false;
@@ -23,6 +23,7 @@ function fixture(agent,{cancel=false,newSessionError,permissionAdapterReady=true
         update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'old history'}});
         reply({id:message.id,result:{sessionId:'saved-session',configOptions:agent==='deepseek'?[{id:'model',category:'model',currentValue:model,options:[{name:'Provider',options:[{value:model,name:'Flash'},...extraModels]}]}]:[],models:{currentModelId:model,availableModels:[{modelId:model,name:'Example'}]}}});
       }else if(message.method==='session/set_config_option'){
+        if(configError){reply({id:message.id,error:{code:-32602,message:configError}});return;}
         reply({id:message.id,result:{configOptions:[{id:'reasoning_effort',category:'thought_level',currentValue:message.params.configId==='reasoning_effort'?message.params.value:'off',options:['off','low','medium','high','max'].map(value=>({value,name:value}))}]}});
       }else if(message.method==='session/prompt'){
         promptId=message.id;if(cancel)return;
@@ -40,6 +41,30 @@ function fixture(agent,{cancel=false,newSessionError,permissionAdapterReady=true
   }});
   return {model,requests,child,launch:()=>child,get closed(){return closed;},get promptId(){return promptId;}};
 }
+
+test('DeepSeek catalog sessions use disposable storage and never prompt',async()=>{
+  const run=fixture('deepseek');let patchFile,storage;
+  const launch=(command,args,options)=>{
+    patchFile=args[args.indexOf('--patch')+1];
+    const patch=JSON.parse(readFileSync(patchFile,'utf8'));
+    storage=patch.find(entry=>entry.id==='session-persistence-jsonl')?.config.root;
+    assert(storage?.startsWith(path.dirname(patchFile)+path.sep));
+    assert.equal(patch.find(entry=>entry.id==='session-query-sqlite')?.config.path,':memory:');
+    return run.launch(command,args,options);
+  };
+  await readHarnessCatalog('deepseek','fixture',process.cwd(),launch);
+  assert(!existsSync(patchFile));assert(!existsSync(storage));
+  assert(!run.requests.some(request=>request.method==='session/prompt'));
+});
+
+test('ACP publishes the native session before a configuration failure',async()=>{
+  const run=fixture('deepseek',{configError:'model configuration failed'}),lines=[];
+  const child=harnessAcp({agent:'deepseek',command:'fixture',cwd:process.cwd(),effort:'unsupported',content:[{type:'text',text:'fixture'}],approve:async()=>true},run.launch);
+  child.stdout.on('data',chunk=>lines.push(...chunk.toString().trim().split('\n').map(JSON.parse)));
+  assert.equal((await child).exitCode,1);
+  assert.equal(lines[0].session_id,'saved-session');
+  assert(!run.requests.some(request=>request.method==='session/prompt'));
+});
 
 test('Hermes default reasoning does not require an unsupported config switch',async()=>{
   const run=fixture('hermes');

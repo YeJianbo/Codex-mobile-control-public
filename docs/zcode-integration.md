@@ -1,54 +1,106 @@
-# ZCode 接入可行性调研（2026-09-30）
+# ZCode 接入
 
-结论先行：**可行，且协议面是第一公民级的匹配**。ZCode 桌面应用自带协议兼容的 stdio app-server，网关可以用与 `codex app-server` 相同的模式接入 ZCode 作为第五个助手。剩余工作属于工程实现而非可行性风险。
+2026-10-24。网关通过 ZCode 自带的 `app-server --stdio` 接入，不经过 Codex 或 ACP。桌面端继续维护登录和供应商配置，网关读取本机凭据并向 ZCode 原生账号服务确认权益。
 
-## CLI 位置与版本
+## 入口与安装
 
-- 桌面应用：`D:\ZCode\ZCode.exe`（Electron，3.14.4）
-- CLI 入口：`node D:\ZCode\resources\glm\zcode.cjs`（v0.16.9，进程名 `zcode-cli`）
-- 桌面端自身就以 `zcode.cjs app-server --stdio --surface desktop` 常驻运行（`Get-CimInstance` 实测）
-- 认证：Z.AI OAuth（`login/logout` 子命令；共享凭据在 `~/.zcode/v2/credentials.json`）
+Web、Android 和小助理模型目录均增加 ZCode。模型按供应商分组，模型、思考等级、计划模式及图片能力从原生目录读取。本机读取到 GLM-5.3、GLM-5.3-Flash，两者提供 low / high / max，默认 max。0.6.175 修正目录字段：图片能力来自 `properties.inputFormat.supportsImage`，上下文窗口来自顶层 `contextWindow`；当前原生目录声明两款模型支持图片、窗口为 1,000,000 Token。
 
-## 能力面（`--help` + 实测）
+Windows 自动发现 PATH、正在运行的桌面安装目录及常见安装位置。非标准安装路径且桌面未启动时，可设置 `CODEX_MOBILE_CONTROL_ZCODE_BIN` 为 CLI 绝对路径，例如 `D:\ZCode\resources\glm\zcode.cjs`。CLI 随桌面版升级。本机核对桌面版 3.16.3、CLI 0.17.0。
 
-- `-p/--prompt` 无头单发；`--json` 机器可读输出；`--resume sess_...` / `-c` 恢复会话
-- `--mode build|edit|plan|yolo`（权限模式，可映射 询问/自动/完全，plan 额外赠送）
-- `--attach <path>` 附件（可重复）；`--cwd`、`--disallowed-tools`、`--locale zh-CN`
-- **`app-server --stdio`**：ZCode Protocol（自定义 NDJSON，非 JSON-RPC）
+ZCode 使用独立的公网访问开关。当前支持已登录的 Start Plan、个人 Coding Plan 和原生个人自定义供应商；团队套餐、offpeak / highspeed 权益尚未适配。不会以存在凭据代替账号权益。凭据仅在网关进程内解密和传给本机原生 CLI，不返回 Web 或手机。
 
-## ZCode Protocol 实测（app-server --stdio）
+## 会话与交互
 
-消息为 `{id, method, params}` 请求 / `{id, result|error}` 应答 / `{method, params}` 通知。服务端会向客户端反提请求（客户端必须应答，超时 15s）。
+- 自定义 NDJSON RPC：`{id,method,params}` 请求、`{id,result|error}` 应答和 `{method,params}` 通知。
+- 新会话指定原生 `sess_...` ID；每轮结束保留 ID，下一轮通过 `session/resume` 恢复。
+- 先订阅 `session/event` 再发送；accepted 仅表示接受，完成状态以 `turn.completed` / `turn.failed` 为准。
+- 文本增量、工具操作、审批和用户提问转换为控制台已有事件。询问 / 自动 / 完全权限对应 build / edit / yolo，计划模式对应 plan。
+- 中断先请求原生停止并等待终态。共享模式只停止指定会话，不结束其他客户端使用的原生进程；独立模式仅清理本次适配器持有的进程树。
+- 正常轮次关闭本次连接，不调用持久会话的 `session/close`。共享后台在没有客户端和活动任务后回收；目录探测使用 deferred 临时会话，读取后关闭。
 
-已实测打通：
+桌面会话自动进入控制台，复用已有的原生 ID 映射。电脑正在执行时，控制台可以读取正文、思考和工具折叠；发送前检查原生运行状态，避免另起一个执行器重复运行。
 
-| 方法 | 参数 | 说明 |
-| --- | --- | --- |
-| `session/create` | `workspace:{workspacePath,workspaceKey}` | 返回 `projection`（mode/contextWindow/status）+ `messages` |
-| `session/send` | `sessionId, content` | 返回 `{accepted:true,sessionId,stateRevision}` |
-| `session/requestRuntimePreferences`（服务端→客户端请求） | `sessionId,scope` | 应答 `{nativeSearchEnhancementsEnabled:boolean}`；**schema 里没有模型字段** |
-| 事件通知 | `state.updated`（mode/permission/model 补丁，reason=prompt_started/failed）、`session/event`、`computer-use/operation-event`、`v4/telemetry/event` | sessionId 从通知载荷中获取 |
+### 桌面可见性（0.6.171）
 
-方法面还包括：`session/list`、`session/resume`、`session/read`、`session/messages`、`session/events`、`session/subscribe`、`session/stop`、`session/compact`、`session/goal`（目标！与 Codex goal 概念对齐）、`session/fork`、`session/setMode`、`session/setModel`、`session/setThoughtLevel`、`session/usage`、`session/subagents`。
+原生 CLI 的会话数据库与桌面的 `v2/tasks-index.sqlite` 是两套目录。仅写入 CLI 历史，并不会把新工作目录和会话登记到桌面项目列表。执行适配器现将原生会话 ID、工作目录和展示信息同步到已有桌面索引；没有对应项目时补建本地项目。新执行会话立即持久化，目录探测仍使用 deferred 临时会话。
 
-## 尚未打通的点（接入时要解决的工程问题）
+同步仅在发送接受、结束或中断时进行，不逐 Token 写数据库。保留桌面改名、归档、删除和已有项目归属；不复制消息、不改原生会话内容、不迁移桌面数据库。隔离的 CLI 存储不登记到默认桌面索引。桌面已缓存的项目列表可能需要重新打开项目或重启 ZCode 才能刷新。
 
-1. **模型选择**：无头 `--prompt`/`session/send` 报 "Select a model before continuing"，`state.updated` 显示 `model.available:[]`。`requestRuntimePreferences` 应答不含模型 → 模型目录由桌面宿主另行注入。候选解法（按顺序试）：a) `session/setModel` + 从 Z.AI 账号获取的模型 id；b) 先跑 `zcode login` 让 CLI 自持认证后重试 `-p`；c) `--surface desktop` 复刻桌面宿主的应答内容。
-2. **权限审批流**：ZCode 的 permission mode 在协议里有 `permission:{mode}` 状态，但审批请求（相当于 Codex 的 applyPatchApproval）走哪个方法/通知未确认——需在一次真实 build 模式 turn 中抓取通知。
-3. **会话 ID 生命周期**：create 后 `projection.sessionId="unknown"`，真实 `sess_...` 从通知里捞——网关适配器要按通知补 ID（或确认 create 的其他返回字段）。
-4. **并发**：本会话运行期间探测未发现冲突，但网关长驻 app-server 与桌面端同时操作同一工作区的行为未验证。
+### 共享运行后端（0.6.172）
 
-## 建议的接入步骤（工程排期参考）
+`zcode-shared-install.mjs` 将桌面 CLI 入口接到本机共享代理，原 CLI 保存在相邻的 `zcode.mobile-native.cjs`。不改 `app.asar`，不设置全局环境变量。版本、存储准备等命令直接透传原 CLI，正式 app-server 通过共享后台按工作目录复用进程。
 
-1. `server/src/codex/zcodeAppServerClient.ts`：NDJSON 客户端（参考 `appServerClient.ts`），覆盖 create/send/events/stop/setMode。
-2. `agentProtocol.ts`：`Agent` 增加 `'zcode'`；`agentUpdates` 解析 `state.updated`/流式文本事件。
-3. `agentSessions.ts`：spawn `node zcode.cjs app-server --stdio --surface terminal`（CLI 路径可配 `CODEX_MOBILE_CONTROL_ZCODE_BIN`）；权限映射 询问→build、自动→edit、完全→yolo。
-4. 客户端：Android `nativeThreadAgent`/助手名/图标 + Web `harnessNames`/图标 + `zcode-` 线程前缀。
-5. 测试：mock app-server 复用 smoke 框架。
+桥接隔离各客户端请求 ID，向任务发起端路由审批和提问，重放启动状态，并在确认无任务后回收空闲进程。发起端断开时可向同一会话的观察者转交交互。配置位于 `~/.codex-mobile-control/zcode-bridge/config.json`，监听限本机回环地址，并使用随机令牌。官方升级覆盖入口后需重新运行安装脚本；原 CLI 保留为新版来源及撤回入口。
 
-## Antigravity 适配（同日探测结论，已落地部分）
+已打开项目的旧后端继续执行，直到原任务结束，不通过强停迁移。共享协议检查已确认两个客户端使用同一原生进程、V4 实时订阅能收到变更、单个客户端退出不结束另一端任务；未向真实会话发送测试消息。
 
-- 图片：CLI 硬拒（`only "text"`）——网关现有报错行为正确，保留。
-- 审批：`ask_permission` 工具在无头模式不可用；默认 `permission_mode=always-proceed`——**"询问"过去会静默变成全自动**。已在网关为 AGY 的 ask 轮次发布显式 warning 事件（`agentSessions.ts`）。
-- 模型：`agy models` 输出变体编码 ID（-low/-medium/-high/max），网关映射固定 effort 正确；CLI 亦支持 `--effort`，暂不动（避免破坏既有保存的选择）。
-- 桌面历史：CLI 无会话列表子命令，暂无法导入。
+### 桌面到控制台同步（0.6.173）
+
+网关每秒只读原生 SQLite 的会话索引，检测消息、工具和运行状态变化，通过已有 `thread.history.changed` 事件刷新 Web 和 Android。旧的独立桌面后端同样适用，无须重启电脑上的任务。历史正文在现有工作线程中解码，网关主事件循环不扫描整份正文。
+
+自动复用原有 `agent_sessions` 映射，排除目录探测、内部提示和子代理辅助会话，遵守删除、归档和控制台隐藏状态。原生历史覆盖已镜像的文字与工具记录，同时保留控制台附件及审批信息；网关自身执行中的轮次保留实时事件，避免重复显示。打开电脑运行中的会话只观察，不转移执行器所有权。运行状态根据原生消息终态、最近流式写入和目标心跳判断；旧进程异常退出但未写终态时，活跃判断有两分钟的过期窗口。
+
+构建及隔离数据库检查通过，覆盖原 ID 复用、桌面续写刷新、工具去重、隐藏内部消息及完成状态。真实原会话只读检查已读到正文和操作；手机端与桌面 GUI 同时操作尚未实测。
+
+### 更新期间模型入口（0.6.174）
+
+旧主执行器有任务时，单独更新网关并不会更新其已加载的模型目录。0.6.174 在这种情况下按需使用 `agent-host-zcode.json` 对应的当前版本执行器提供 ZCode 能力：目录、发送和交互使用相同路由，已有任务仍交给原所有者。主执行器空闲升级后新任务回归主执行器；临时执行器的任务结束后释放连接，无客户端和任务约一分钟后退出。分组启动不会把其他执行器持有的任务改成中断。
+
+实际模型接口已确认 ZCode 可用，返回 GLM-5.3 / GLM-5.3-Flash；4 项定向检查通过。未发送真实生成消息，手机端无需更新 APK，重新打开模型菜单即可获取新目录。
+
+### 原生子代理（0.6.175）
+
+原生 `subagent_child` 会话按 `parent_id` 接入现有父子会话界面，复用正文、操作折叠、切换和关闭入口。父会话使用已有映射后的网关 ID；目录探测及内部提示仍不进入会话列表。0.6.173 所述的子会话排除已由此规则替代。
+
+关闭前读取原生子任务状态；共享运行时使用 `session/cancelBackgroundTask`，必要时只停止指定子会话。关闭已完成子树仅记录控制台隐藏状态，保留原生历史和用量。旧的独立桌面后端只能只读观察，运行中的子任务仍需在 ZCode 内停止；不会为停止而恢复第二份会话，也不会停止父会话或整个共享进程。
+
+子代理用量按各自原生 ID 写入现有 `session_usage_tokens` 与父子关系表，父会话分别返回自身、子代理及合计。隐藏或归档子代理不会删除这些累计记录。
+
+### 工具显示与繁忙恢复（0.6.176）
+
+模型流 `tool_call` 可能携带完整输入，而后续 `scheduled` 使用 `inputOmitted / inputRef=model_stream`。适配器现在合并这两类记录，也读取工具开始、进度、结果和 Part 快照；相同调用只完成一次，结构化失败结果不会误标成功。共用事件携带轮次，工具前后正文分段显示。
+
+丢弃的 admission / stream recovery 尝试不再产生历史结束标记；每个逻辑轮次只保留最终结束。控制台执行中的原生失败快照不会盖过自动恢复状态。
+
+沿用设置中的“模型繁忙自动重试”开关，仅对明确的 Start Plan busy、容量不足或过载恢复。15 秒起递增至 120 秒，无次数上限。原会话通过带保留输入 ID 的继续指令恢复，不调用会回滚执行的 `retryTurn`，不重发原始消息或附件；控制台历史将继续指令合并进原轮次。用户停止立即取消等待，关闭开关在一秒内取消。此机制只管理控制台发起的任务，不接管只读观察的桌面任务；原生客户端可能显示继续指令。
+
+协议 fixture 覆盖 10 次繁忙后恢复、停止与关闭开关、结构化工具输出和历史轮次合并，未向真实会话注入测试消息。旧执行器保留正在运行的任务，空闲后升级。
+
+### 重启后列表恢复（0.6.177）
+
+ZCode 与 DeepSeek 的原生索引按各自 Harness 筛选独立加载；不再共用 DeepSeek 布尔开关。列表和搜索候选共用索引选择，显式保留其他 Harness 会话时读取对应原生索引，原生 ID 与网关映射保持不变。修复重启后选择 ZCode 时列表为空的问题，不重建会话、不迁移历史数据库，无需更新 Android。
+
+冷启动空存量、已有映射、跨 Harness 保留及既有分页定向检查通过。实际网关 0.6.177 返回原会话，能够读取原消息和工具事件；未向真实会话发送测试消息。
+
+### 桌面创建运行时的反向请求（0.6.179）
+
+桌面创建的会话可能保留 `subagentRuntimeConfigEnabled`，转由网关续聊时仍会在输入准备阶段请求 `subagents/readRuntimeConfig`。网关返回协议定义的 `built-in-fallback`，保留默认子代理，不因缺少桌面 profile host 而终止整轮。本机没有自定义 Agent profile；读取桌面自定义 profile 尚未接入。
+
+未实现的交互返回 JSON-RPC `-32601`，不再统一伪装为内部错误 `-32603`；错误消息只标识方法，不返回参数或内部异常原文。定向协议检查覆盖这个继承能力的续聊流程；真实原会话未注入测试消息。
+
+## 用量
+
+历史统计只读 `~/.zcode/cli/db/db.sqlite` 的 `model_usage`，兼容 `ZCODE_DATA_BASE_DIR` 和 `ZCODE_STORAGE_DIR`。一行对应一次原生请求尝试，包含失败、取消和重试，不能直接当作用户消息数。
+
+Web 和 Android 统计包括按模型和日期的输入、输出、缓存读取、缓存写入、推理 Token 和请求次数。输入已包含缓存读取，推理已包含在输出内，合计不再次相加。逐条请求记录保留耗时、首 Token 时间和平均输出速度；首 Token 可能是推理，不标成首个可见文字。原生完成状态优先于内部早期错误字段，避免成功重试被算作失败。
+
+原生没有逐条费用字段，请求记录金额保留未知；总览沿用已有 GLM API 参考价，并与实际支付费用区分。没有测得的时间也保留未知。
+
+统计历史写入现有 `external-history.sqlite`，保留原有稳定 ID。重复刷新更新同一记录；原生日志被删除后，已收录的用量仍保留。会话累计用量使用原生累计快照。上下文优先读取已有共享运行时 `session/read` 的 `contextUsed` / `contextWindow`，标记为 reported；没有实时投影时，使用最后一次已完成请求的输入加输出估算，标记为 estimated，窗口使用对应模型目录。压缩后尚无新请求时清空旧上下文，标记 awaiting_usage。离线库没有准确的单轮边界时 `last` 保持未知，不再拿累计差值冒充本轮或上下文。
+
+### 旧运行时上下文上限（0.6.178）
+
+共享运行时可能继续保留旧的 200K 模型窗口。统一用量接口保留其实时已用上下文，并按当前原生模型的已安装配置校正总上限；供应商和个人精确覆盖继续生效。规则文件按修改时间缓存，不为用量读取创建或恢复会话，也不重启原生任务。Web 和 Android 同时生效。
+
+实际 GLM-5.3-Flash 原会话已核对为 616629 / 1000000，旧运行时当时仍上报 200000；另两个历史会话同样返回 1000000。构建及两项定向检查通过，未向真实会话发送测试消息。
+
+## 初次接入部署与验证（0.6.168）
+
+本轮版本：网关 0.6.168、Android 0.6.486 / versionCode 458。源码和实际运行产物的回退保存在 `D:/codex/build/Codex-mobile-control/zcode486-before`。
+
+TypeScript 构建与四项定向检查通过，覆盖流式轮次、续聊、审批、提问、异常退出、累计快照和历史保留。实际只读目录读取成功；运行中统计接口核对 2,133 条原生记录，输入、输出、缓存、推理与原生总量一致，重复刷新不增加总量，手机接口能读取耗时及首 Token 时间。
+
+部署保留正在执行的 Harness 任务。旧执行器有任务时继续工作，空闲后通过已有机制自动加载新版本；这段时间新 ZCode 模型入口需等待执行器升级。网关及统计服务独立更新，共享 Codex 后端保持运行。
+
+未向真实会话注入测试消息，真实 ZCode 生成、工具执行和移动设备交互尚未实测。最小手动检查：更新 Android 后选 ZCode 模型和思考等级，发起自己的任务，观察完成、续聊和会话用量；在请求记录中筛选 ZCode，确认对应请求的 Token 与耗时。

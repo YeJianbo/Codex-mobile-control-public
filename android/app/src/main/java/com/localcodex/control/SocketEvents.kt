@@ -11,7 +11,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.takeWhile
 
-internal fun <T> socketEvents(discardPendingOnClose:Boolean=false,connect: ((T) -> Boolean, (Throwable?) -> Unit) -> (() -> Unit)): Flow<T> = flow {
+internal fun <T> socketEvents(discardPendingOnClose:Boolean=false,onBufferOverflow:()->Unit={},onConsumerFailure:(Throwable)->Unit={},connect: ((T) -> Boolean, (Throwable?) -> Unit) -> (() -> Unit)): Flow<T> = flow {
     val failure=AtomicReference<Throwable?>()
     val finished=AtomicBoolean()
     callbackFlow<T> {
@@ -21,7 +21,7 @@ internal fun <T> socketEvents(discardPendingOnClose:Boolean=false,connect: ((T) 
         // Socket callbacks also read pongs. Never block that reader on the UI.
         // Overflow ends this connection so the existing reconnect path reloads
         // history and submission receipts instead of silently dropping events.
-        if (sent.isFailure && !isClosedForSend) fail(IOException("实时连接需要重新同步"))
+        if (sent.isFailure && !isClosedForSend) {onBufferOverflow();fail(IOException("实时连接需要重新同步"))}
         sent.isSuccess
     }, { error -> if(error!=null)fail(error) else {finished.set(true);close()}; Unit })
     awaitClose { disconnect() }
@@ -32,5 +32,10 @@ internal fun <T> socketEvents(discardPendingOnClose:Boolean=false,connect: ((T) 
         // stale queue must not hold the UI. Notification readers keep queued work.
         failure.get()?.let{throw it}
         !discardPendingOnClose||!finished.get()
-    }.collect { event -> emit(event) }
+    }.collect { event ->
+        try{emit(event)}catch(error:Throwable){
+            if(error !is kotlinx.coroutines.CancellationException)onConsumerFailure(error)
+            throw error
+        }
+    }
 }

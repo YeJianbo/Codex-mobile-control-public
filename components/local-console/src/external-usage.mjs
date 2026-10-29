@@ -6,6 +6,7 @@ import {isDeepStrictEqual} from 'node:util';
 import {DatabaseSync} from 'node:sqlite';
 import {calendarRange} from './analytics-core.mjs';
 import {readHermesUsage,readDeepSeekUsage,harnessSummary} from './harness-usage.mjs';
+import {readZcodeUsage} from './zcode-usage.mjs';
 import {readOpenCodeUsage,openCodeActivitySummary} from './opencode-usage.mjs';
 
 const number=value=>Number.isFinite(Number(value))?Math.max(0,Number(value)):0;
@@ -33,7 +34,7 @@ export class ExternalUsage{
   fs.mkdirSync(this.historyDir,{recursive:true});const db=new DatabaseSync(path.join(this.historyDir,'external-history.sqlite'));
   try{
    db.exec('CREATE TABLE IF NOT EXISTS usage(source TEXT,id TEXT,time REAL,data TEXT,PRIMARY KEY(source,id));CREATE INDEX IF NOT EXISTS usage_time ON usage(time);');
-   const incremental=source==='opencode'||source==='opencode:activity';
+   const incremental=source==='opencode'||source==='opencode:activity'||source==='zcode';
    const put=db.prepare(incremental?'INSERT INTO usage VALUES(?,?,?,?) ON CONFLICT(source,id) DO UPDATE SET time=excluded.time,data=excluded.data WHERE usage.time IS NOT excluded.time OR usage.data IS NOT excluded.data':'INSERT OR REPLACE INTO usage VALUES(?,?,?,?)');db.exec('BEGIN');
    const occurrences=new Map();
    for(const row of rows){const base=JSON.stringify([row.model,row.sessionId,row.time]),n=occurrences.get(base)||0;occurrences.set(base,n+1);const id=row.usageId||base+':'+n;put.run(source,id,row.time,JSON.stringify(row));}
@@ -49,7 +50,15 @@ export class ExternalUsage{
    db.exec('COMMIT');return db.prepare('SELECT data FROM usage WHERE source=?').all(source).map(r=>JSON.parse(r.data));
   }finally{db.close();}
  }
- zcode(range,bounds){const dbFile=path.join(this.home,'.zcode','cli','db','db.sqlite');if(!fs.existsSync(dbFile))return finish('zcode',range,bounds,this.retain('zcode',[]),{kind:'tokens',available:true,historyOnly:true});const recent=this.cache.get('zcode');if(recent&&Date.now()-recent.checkedAt<this.refreshMs)return finish('zcode',range,bounds,recent.rows,{kind:'tokens',available:true});const db=new DatabaseSync(dbFile,{readOnly:true});try{const rows=[];for(const item of db.prepare('SELECT rowid usage_id,model_id,session_id,started_at,input_tokens,output_tokens,reasoning_tokens,cache_creation_input_tokens,cache_read_input_tokens FROM model_usage').iterate()){rows.push({usageId:JSON.stringify([item.usage_id,item.session_id,item.started_at]),time:item.started_at,model:item.model_id,sessionId:item.session_id,input:number(item.input_tokens),output:number(item.output_tokens),reasoning:number(item.reasoning_tokens),cacheRead:number(item.cache_read_input_tokens),cacheWrite:number(item.cache_creation_input_tokens),requests:1});}const saved=this.retain('zcode',rows);this.cache.set('zcode',{rows:saved,checkedAt:Date.now()});return finish('zcode',range,bounds,saved,{kind:'tokens',available:true,reasoningIncludedInOutput:true});}finally{db.close();}}
+ zcode(range,bounds){
+  const recent=this.cache.get('zcode');let data=recent;
+  if(!recent||Date.now()-recent.checkedAt>=this.refreshMs){
+   const native=readZcodeUsage(this.home,{environment:this.environment}),rows=this.retain('zcode',native.rows);
+   data={rows,coverage:{...native.coverage,available:native.coverage.available||rows.length>0,historyOnly:!native.coverage.available&&rows.length>0},checkedAt:Date.now()};this.cache.set('zcode',data);
+  }
+  return {...harnessSummary('zcode',data.rows,calendarRange(range,Date.now(),bounds),data.coverage),range};
+ }
+
  opencode(range,bounds){
   const home=path.join(this.environment.XDG_DATA_HOME||path.join(this.home,'.local','share'),'opencode'),signature=openCodeSourceStamp(home);
   let data=this.cache.get('opencode'),checkedAt=Date.now();const cached=data?.signature===signature;

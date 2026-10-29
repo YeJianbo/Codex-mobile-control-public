@@ -9,12 +9,24 @@ data class ConnectionDraft(
 
 enum class ConnectionRoute { AUTO, LOCAL, PUBLIC }
 
+internal fun publicConnectionAddressError(value:String):String? {
+    val uri=runCatching{URI(value)}.getOrNull()
+    if(uri?.scheme!="https"||uri.host.isNullOrBlank()||uri.rawUserInfo!=null||uri.rawQuery!=null||uri.rawFragment!=null)
+        return "请输入完整的公网 HTTPS 地址"
+    val suffix=uri.rawPath.orEmpty()
+    if(suffix.isNotEmpty()&&suffix!="/"&&!suffix.matches(Regex("/[A-Za-z0-9_-]{22,128}/?")))
+        return "秘密路径需要 22 至 128 个字母、数字、下划线或短横线"
+    return null
+}
+
 // Only the existing gateway APK route belongs to the in-app downloader. Resolve
 // it through the active client so its TLS, device identity and route stay intact.
 internal fun nativeGatewayDownloadEndpoint(href:String,addresses:List<String>):String? {
     val target=runCatching{URI(href)}.getOrNull()?:return null
-    if(target.rawPath!="/downloads/android.apk"||target.rawUserInfo!=null)return null
-    if(target.scheme==null)return if(target.rawAuthority==null)target.rawPath else null
+    val endpoint="/downloads/android.apk"
+    if(target.rawUserInfo!=null)return null
+    fun matchesPath(address:URI)=target.rawPath==endpoint||target.rawPath==address.rawPath.orEmpty().trimEnd('/')+endpoint
+    if(target.scheme==null)return if(target.rawAuthority==null&&(target.rawPath==endpoint||addresses.any{address->runCatching{matchesPath(URI(address))}.getOrDefault(false)}))endpoint else null
     fun origin(uri:URI):Triple<String,String,Int>? {
         val scheme=uri.scheme?.lowercase()?:return null
         if(scheme!="https"&&scheme!="http"||uri.rawUserInfo!=null)return null
@@ -22,7 +34,7 @@ internal fun nativeGatewayDownloadEndpoint(href:String,addresses:List<String>):S
         return Triple(scheme,host,if(uri.port>=0)uri.port else if(scheme=="https")443 else 80)
     }
     val requested=origin(target)?:return null
-    return target.rawPath.takeIf{addresses.any{address->runCatching{origin(URI(address))}.getOrNull()==requested}}
+    return endpoint.takeIf{addresses.any{address->runCatching{val uri=URI(address);origin(uri)==requested&&matchesPath(uri)}.getOrDefault(false)}}
 }
 
 internal fun connectionRouteCandidates(local:String,remote:String,password:String,route:ConnectionRoute=ConnectionRoute.AUTO):List<String> = when(route){

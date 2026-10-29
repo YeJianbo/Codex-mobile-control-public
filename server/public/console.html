@@ -72,7 +72,7 @@
       <div class="brand">
         <span class="brand-symbol" data-icon="code"></span
         ><button id="harnessBtn" class="harness-switch" aria-label="切换助手">Codex<span data-icon="chevron-down" aria-hidden="true"></span></button
-        ><button
+        ><button id="sidebarSearchToggle" class="icon-button" aria-label="搜索会话" title="搜索会话" data-icon="search"></button><button
           class="icon-button"
           id="closeDrawer"
           aria-label="收起侧栏"
@@ -80,14 +80,6 @@
           data-icon="panel"
         ></button>
       </div>
-      <button id="newThreadBtn" class="new-thread">
-        <span data-icon="compose"></span>新会话<span class="key-hint">Ctrl K</span>
-      </button>
-      <nav class="sidebar-tools" aria-label="项目工具">
-        <button data-page="terminal"><span data-icon="terminal"></span>终端</button>
-        <button data-page="preview"><span data-icon="globe"></span>浏览器预览</button>
-      </nav>
-      <button id="sidebarSearchToggle" class="new-thread"><span data-icon="search"></span>搜索会话</button>
       <label class="search-box" id="sidebarSearchBox" hidden
         ><span data-icon="search"></span
         ><input
@@ -96,6 +88,19 @@
           aria-label="搜索项目与会话"
         /><kbd>/</kbd></label
       >
+      <nav class="sidebar-navigation" aria-label="常用功能">
+        <button id="newThreadBtn" class="new-thread" title="新会话 · Ctrl K"><span data-icon="compose"></span>新会话</button>
+        <button id="usageBtn" class="icon-button" aria-label="账号额度" data-tooltip="账号额度" data-icon="chart"></button>
+        <button id="automationsBtn" class="icon-button" aria-label="定时任务" data-tooltip="定时任务" data-icon="clock"></button>
+        <details class="sidebar-toolbox">
+          <summary class="icon-button" aria-label="工具" title="工具"><span data-icon="folder"></span></summary>
+          <nav class="sidebar-tools" aria-label="项目工具">
+            <button data-page="terminal"><span data-icon="terminal"></span>终端</button>
+            <button data-page="preview"><span data-icon="globe"></span>浏览器预览</button>
+            <button id="cloudSnapshotImportBtn"><span data-icon="file"></span>导入云端快照</button>
+          </nav>
+        </details>
+      </nav>
       <div class="sidebar-scroll" tabindex="0" aria-label="项目与会话列表">
         <div class="list-heading">
           <button type="button" class="section-toggle" data-collapse="projects" aria-controls="projects" aria-expanded="true"><span data-icon="chevron-down"></span><span>项目</span><span class="section-count"></span></button><button
@@ -116,7 +121,6 @@
         <div id="threadMatches" class="thread-list"></div>
         <div class="list-heading recent-heading">
           <button type="button" class="section-toggle" data-collapse="threads" aria-controls="threads" aria-expanded="true"><span data-icon="chevron-down"></span><span>最近会话</span><span class="section-count"></span></button><button
-            id="cloudSnapshotImportBtn" class="icon-button small" aria-label="导入云端快照" title="导入云端快照" data-icon="file"></button><button
             id="refreshThreads"
             class="icon-button small"
             aria-label="刷新会话"
@@ -127,15 +131,6 @@
       </div>
       <div id="sidebarScrollbar" class="sidebar-scrollbar" aria-hidden="true" hidden><div id="sidebarThumb" class="sidebar-thumb"></div></div>
       <div class="sidebar-footer">
-        <button id="usageBtn" class="text-button"><span data-icon="chart"></span>账号额度</button>
-        <button id="automationsBtn" class="text-button"><span data-icon="clock"></span>定时任务</button>
-        <button id="managementBtn" class="text-button"><span data-icon="settings"></span>后台管理</button>
-        <button data-page="settings" class="nav-item">
-          <span data-icon="settings"></span>设置<span
-            data-icon="chevron-right"
-            class="trailing-icon"
-          ></span>
-        </button>
         <button id="connectionBtn" class="computer-card">
           <span class="computer-icon" data-icon="monitor"></span
           ><span class="computer-label"
@@ -143,6 +138,7 @@
             ><small id="computerAddress">本地工作区</small></span
           ><span id="sidebarStatusDot" class="status-dot"></span>
         </button>
+        <button data-page="settings" class="icon-button" aria-label="设置" data-tooltip="设置" data-icon="settings"></button>
       </div>
     </aside>
     <main id="main" class="main-shell">
@@ -194,18 +190,15 @@
         </div>
         <div class="composer-wrap">
           <div id="welcome" class="welcome"><span class="welcome-mark" data-icon="code" aria-hidden="true"></span><h1>有什么需要完成？</h1></div>
-          <div id="taskProgress" class="task-progress" role="status" hidden></div>
           <div id="followupQueue" class="followup-queue" aria-label="待发消息" hidden></div>
           <div id="goalDock" class="goal-dock" hidden>
             <div class="goal-dock-header">
               <button id="threadGoal" class="goal-chip" type="button" aria-expanded="false" aria-controls="goalDetails"><span class="goal-icon" data-icon="target" aria-hidden="true"></span><span id="goalChipText"></span><span id="goalRunTime" hidden></span><span id="goalChipStatus"></span><span class="goal-chevron" data-icon="chevron-down" aria-hidden="true"></span></button>
-              <button id="closeGoal" class="goal-close" type="button" aria-label="关闭目标">关闭</button>
             </div>
             <div id="goalDetails" class="goal-details" hidden>
-              <div class="goal-details-heading"><strong>目标</strong><span id="goalStatus"></span></div>
               <p id="goalObjective"></p>
               <small id="goalBudget" hidden></small>
-              <div class="goal-actions"><button id="editGoal" type="button">编辑</button><button id="toggleGoal" type="button">暂停</button></div>
+              <div class="goal-actions"><button id="editGoal" type="button">编辑</button><button id="toggleGoal" type="button">暂停</button><button id="closeGoal" class="goal-close" type="button" aria-label="关闭目标">关闭</button></div>
             </div>
           </div>
           <button id="jumpLatest" class="jump-latest" hidden>
@@ -464,6 +457,7 @@
                   id="desktopNotify"
                   role="switch" /></label
             ></section>
+            <section class="settings-section"><h2>助手显示</h2><div id="harnessVisibility" role="group" aria-label="显示的助手"></div></section>
             <section class="settings-section">
               <div class="section-heading">
                 <span data-icon="spark"></span>
@@ -532,7 +526,7 @@
                   id="settingRemoteAutoApproval"
                   role="switch" /></label
               >
-              <label class="switch-row"><span>容量不足自动重试<small>模型繁忙时递增等待并持续重试；保留目标与原消息，可随时关闭</small></span><input type="checkbox" id="settingCapacityRetry" role="switch" /></label>
+              <label class="switch-row"><span>模型繁忙自动重试<small>Codex、ZCode 模型繁忙时递增等待并持续重试，可随时停止或关闭</small></span><input type="checkbox" id="settingCapacityRetry" role="switch" /></label>
               <details class="settings-section"><summary>助手公网访问</summary><div id="harnessPublicAccess"></div></details>
               <label class="switch-row"
                 ><span
@@ -589,7 +583,7 @@
                 <button id="uploadStorageBtn" class="button secondary compact">存储与缓存</button>
               </div>
             </section>
-            <section class="settings-section management-shortcuts"><div class="section-heading"><span data-icon="settings"></span><h2>后台管理</h2></div><div class="button-row"><button id="pairStartBtn" class="button secondary compact" data-management-page="access">网关与手机绑定</button><button class="button secondary compact" data-management-page="channels">QQ / 微信</button><button class="button secondary compact" data-management-page="accounts">账号管理</button></div></section>
+            <section class="settings-section management-shortcuts"><div class="section-heading"><span data-icon="settings"></span><h2>后台管理</h2><button id="managementBtn" class="icon-button" aria-label="打开后台管理" data-icon="arrow-up-right"></button></div><div class="button-row"><button id="pairStartBtn" class="button secondary compact" data-management-page="access">网关与手机绑定</button><button class="button secondary compact" data-management-page="channels">QQ / 微信</button><button class="button secondary compact" data-management-page="accounts">账号管理</button></div></section>
             <section class="settings-section">
               <div class="section-heading">
                 <span data-icon="monitor"></span>

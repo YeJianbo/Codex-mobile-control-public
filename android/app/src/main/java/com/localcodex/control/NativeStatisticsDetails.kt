@@ -51,7 +51,7 @@ import java.util.Locale
 import kotlin.math.ceil
 import kotlin.math.roundToInt
 
-private val detailTabs=listOf("tokens" to "Token","speed" to "速度","activity" to "活跃","sessions" to "会话","tools" to "工具","skills" to "Skills","changes" to "改动","quota" to "配额")
+private val detailTabs=listOf("tokens" to "Token","requests" to "请求","speed" to "速度","activity" to "活跃","sessions" to "会话","tools" to "工具","skills" to "Skills","changes" to "改动","quota" to "配额")
 private val detailSources=listOf("all" to "全部来源","codex" to "Codex","agy" to "Antigravity","claude" to "Claude Code","zcode" to "ZCode","grok" to "Grok","hermes" to "Hermes","deepseek" to "DeepSeek","opencode" to "OpenCode")
 private val detailRanges=listOf("today" to "今天","yesterday" to "昨天","week" to "本周","month" to "本月","year" to "今年","custom" to "时间段")
 private val detailMuted:Color @Composable get()=MaterialTheme.colors.onSurface.copy(alpha=.62f)
@@ -103,14 +103,18 @@ private fun detailDate(value:Double?,seconds:Boolean=false):String=value?.let{ru
 private fun detailError(error:Exception)=if(error is LocalConsoleRequestException&&error.status==404)"电脑网关需要更新后才能查看详细统计" else error.message?.take(300).orEmpty().ifBlank{"统计暂时不可用，请重试"}
 
 /** The management destination adds Web detail views while retaining the existing dashboard statistics. */
-@Composable internal fun NativeStatisticsManagement(vm:NativeViewModel,back:()->Unit){
+@Composable internal fun NativeStatisticsManagement(vm:NativeViewModel,back:()->Unit,initialSource:String="all"){
     val address=vm.state.address
     val connected=vm.state.connected
     val active=LocalManagementPageActive.current
     val owner=LocalLifecycleOwner.current
     var foreground by remember(owner){mutableStateOf(owner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))}
     DisposableEffect(owner){val observer=LifecycleEventObserver{_,_->foreground=owner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)};owner.lifecycle.addObserver(observer);onDispose{owner.lifecycle.removeObserver(observer)}}
-    var selection by rememberSaveable(stateSaver=statisticsSelectionSaver){mutableStateOf(StatisticsSelection())}
+    var selection by rememberSaveable(initialSource,stateSaver=statisticsSelectionSaver){mutableStateOf(StatisticsSelection(source=initialSource))}
+    if(selection.tab=="requests"){
+        NativeRequestRecords(vm,back){StatisticsTabStrip(detailTabs,selection.tab,{selection=selection.copy(tab=it)})}
+        return
+    }
     val request=selection.route()
     var page by remember(vm,address){mutableStateOf(StatisticsPageState())}
     val cache=remember(vm,address){mutableMapOf<String,JSONObject>()}
@@ -163,10 +167,10 @@ private fun detailError(error:Exception)=if(error is LocalConsoleRequestExceptio
     modifier:Modifier=Modifier,
 ){
     val data=state.data?.takeIf{statisticsContentKey(state.dataRequest)==statisticsContentKey(selection.route())}
-    NativeManagementPage("详细统计","",back,modifier.testTag("statisticsManagement"),actions={TextButton(onClick=onRefresh,enabled=connected&&!state.loading&&state.busy.isBlank()){Text("刷新")}}){
+    NativeManagementPage("详细统计","",back,modifier.testTag("statisticsManagement"),actions={ChromeButton(R.drawable.ic_lucide_rotate_cw,"刷新",onRefresh,enabled=connected&&!state.loading&&state.busy.isBlank())}){
         val scroll=rememberScrollState()
         LaunchedEffect(selection.tab){scroll.scrollTo(0)}
-        Column(Modifier.weight(1f).verticalScroll(scroll).padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
+        Column(Modifier.weight(1f).nativeManagementScroll(scroll).padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
             StatisticsTabStrip(detailTabs,selection.tab,{onSelection(selection.copy(tab=it,range=if(selection.range=="rolling"&&it!="quota")"week" else selection.range))})
             if(selection.tab!="activity")StatisticsTabStrip(detailRanges,selection.range,{onSelection(selection.copy(range=it))})
             if(selection.tab=="quota")StatisticsTabStrip(listOf("1" to "近 24 小时","7" to "近 7 天","30" to "近 30 天","90" to "近 90 天"),if(selection.range=="rolling")selection.days else "",{onSelection(selection.copy(range="rolling",days=it))})
@@ -256,18 +260,18 @@ private fun detailError(error:Exception)=if(error is LocalConsoleRequestExceptio
 private fun statisticsOptions(data:JSONObject?,key:String,extra:List<Pair<String,String>> = emptyList()):List<Pair<String,String>> =
     (listOf("all" to "全部")+data?.detailRows(key).orEmpty().map{it.detailText("value") to when(it.detailText("label")){"fast"->"Fast";"standard"->"标准";else->it.detailText("label")}}+extra).distinctBy{it.first}
 
-@Composable private fun StatisticsPicker(label:String,value:String,options:List<Pair<String,String>>,onSelect:(String)->Unit,modifier:Modifier=Modifier,enabled:Boolean=true){
+@Composable internal fun StatisticsPicker(label:String,value:String,options:List<Pair<String,String>>,onSelect:(String)->Unit,modifier:Modifier=Modifier,enabled:Boolean=true){
     var expanded by remember{mutableStateOf(false)}
     val entries=if(options.any{it.first==value})options else options+(value to when(value){"all"->"全部";"missing"->"未记录";"pending"->"待回填";else->value.removePrefix("v:")})
     Box(modifier){
-        OutlinedButton(onClick={expanded=true},enabled=enabled,modifier=Modifier.fillMaxWidth(),contentPadding=PaddingValues(horizontal=12.dp,vertical=10.dp)){
+        OutlinedButton(onClick={expanded=true},enabled=enabled,modifier=Modifier.fillMaxWidth(),shape=Radius.Control,contentPadding=PaddingValues(horizontal=12.dp,vertical=8.dp)){
             Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(3.dp)){
                 Text(label,fontSize=10.sp,color=detailMuted)
                 Text(entries.find{it.first==value}?.second.orEmpty(),fontSize=13.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
             }
-            Text("⌄",Modifier.padding(start=8.dp),color=detailMuted)
+            ModernIcon(R.drawable.ic_lucide_chevron_down,"选择$label",Modifier.padding(start=8.dp).size(14.dp),detailMuted)
         }
-        DropdownMenu(expanded,onDismissRequest={expanded=false},modifier=Modifier.heightIn(max=340.dp)){
+        NativeDropdownMenu(expanded,onDismissRequest={expanded=false},modifier=Modifier.heightIn(max=340.dp)){
             entries.forEach{(id,title)->DropdownMenuItem(onClick={expanded=false;onSelect(id)}){Text(title,fontSize=13.sp,maxLines=2,overflow=TextOverflow.Ellipsis)}}
         }
     }
@@ -304,9 +308,9 @@ private fun statisticsOptions(data:JSONObject?,key:String,extra:List<Pair<String
     val tokens=data.tokens
     val input=tokens.input?:0;val cached=tokens.cached?:0
     StatisticsResultCard("Token 总量"){
-        Text(consoleCount(tokens.total),fontSize=34.sp,fontWeight=FontWeight.SemiBold,letterSpacing=(-.7).sp)
-        Text("${consoleCount(tokens.records)} 条计量记录 · 全部输入 + 输出",fontSize=12.sp,color=detailMuted)
+        Text(consoleCount(tokens.total),fontSize=34.sp,lineHeight=42.sp,fontWeight=FontWeight.SemiBold,letterSpacing=(-.7).sp)
         StatisticsMetrics(listOf("非缓存输入" to if(cached<=input)nativeTokenCount(input-cached) else "—","缓存输入" to consoleCount(tokens.cached),"输出（含推理）" to consoleCount(tokens.output),"推理输出" to consoleCount(tokens.reasoning),"输入缓存命中率" to if(input>0&&cached<=input)detailPercent(cached.toDouble()/input*100) else "—","缓存写入" to consoleCount(tokens.cacheWrite)))
+        Text("${consoleCount(tokens.records)} 条计量记录",fontSize=11.sp,color=detailMuted)
         if(cached>input)Text("日志缓存计数大于输入，当前无法计算命中率",fontSize=12.sp,color=MaterialTheme.colors.error)
     }
     val coverage=raw.optJSONObject("tokenCoverage")
@@ -422,22 +426,24 @@ private fun statisticsSpeedIndexStatus(progress:JSONObject):String?{
 private fun statisticsSpeedModel(row:JSONObject):String{
     val tier=row.detailText("tier")
     val mode=when(tier){"fast"->"Fast";"standard"->"标准";""->"模式未记录";else->tier}
-    return row.detailText("model").ifBlank{"未记录模型"}+" · "+mode
+    val effort=row.detailText("effort").let{if(it.isBlank())"强度未记录" else effortName(it)}
+    val phase=when(row.detailText("phase")){"commentary"->"进度说明";"final_answer"->"最终回复";else->""}
+    return listOf(row.detailText("model").ifBlank{"未记录模型"},mode,effort,phase).filter{it.isNotBlank()}.joinToString(" · ")
 }
 
 @Composable internal fun StatisticsSpeedDetails(data:JSONObject){
     val native=data.detailText("source")=="native"
     val totals=data.optJSONObject("totals")?:JSONObject();val coverage=data.optJSONObject("coverage")?:JSONObject();val progress=data.optJSONObject("progress")?:JSONObject()
     StatisticsResultCard(if(native)"可见回复速度" else "请求输出速度",backgroundStatus=if(native)statisticsSpeedIndexStatus(progress) else null){
-        StatisticsMetrics(listOf((if(native)"平均吐字速度（估算）" else "平均输出速度") to detailRate(totals.detailNumber("averageTPS")),"速度 P50" to detailRate(totals.detailNumber("p50TPS")),"有效计量" to detailCount(totals.detailNumber("samples")),if(native)"会话数" to data.detailRows("groups").flatMap{it.detailRows("sessions")}.map{it.detailText("id")}.distinct().size.toString() else "首个输出等待 P50" to detailDuration(totals.detailNumber("p50FirstOutputMs")),"请求耗时 P50" to detailDuration(totals.detailNumber("p50DurationMs")),"请求耗时 P95" to detailDuration(totals.detailNumber("p95DurationMs"))))
-        Text(if(native)"可见文本 Token 使用 o200k_base 估算；按回复开始至完成时间计算。" else "输出 Token（含推理）÷ 请求总耗时，包含等待与思考。首个输出含正文、思考或工具参数增量。",fontSize=11.sp,color=detailMuted)
+        StatisticsMetrics(listOf((if(native)"回复平均速度（估算）" else "请求平均速率") to detailRate(totals.detailNumber("averageTPS")),"速度 P50" to detailRate(totals.detailNumber("p50TPS")),"有效计量" to detailCount(totals.detailNumber("samples")),if(native)"会话数" to data.detailRows("groups").flatMap{it.detailRows("sessions")}.map{it.detailText("id")}.distinct().size.toString() else "首字等待 P50" to detailDuration(totals.detailNumber("p50FirstTextMs")),"耗时 P50" to detailDuration(totals.detailNumber("p50DurationMs")),"耗时 P95" to detailDuration(totals.detailNumber("p95DurationMs"))))
+        Text(if(native)"按模型、思考强度和回复类型分组。可见文本 Token 估算 ÷ 整段回复耗时；Fast 来自会话记录。" else "输出 Token（含推理）÷ 请求总耗时，包含等待与思考。首字等待以正文首个增量为准；Fast 按上游返回等级记录。",fontSize=11.sp,color=detailMuted)
         Text("${detailCount(coverage.detailNumber("failed"))} 次失败 · ${detailCount(coverage.detailNumber("unmeasured"))} 条缺少有效用量或时间",fontSize=11.sp,color=detailMuted)
         if(!native)Text("${detailCount(coverage.detailNumber("excludedTests"))} 次模型测试、${detailCount(coverage.detailNumber("excludedCompact"))} 次压缩请求未计入",fontSize=11.sp,color=detailMuted)
     }
     if(progress.detailText("error").isNotBlank())Text(progress.detailText("error"),fontSize=12.sp,color=MaterialTheme.colors.error)
     val groups=data.detailRows("groups")
     if(groups.isEmpty())DashboardCard{Text(if(coverage.has("available")&&!coverage.isNull("available")&&!coverage.optBoolean("available"))"本机尚未发现完整流式回复历史" else "当前范围暂无完整速度计量",fontSize=13.sp,color=detailMuted)}
-    groups.forEach{group->key(native,group.opt("model"),group.opt("provider"),group.detailText("tier").ifBlank{null}){
+    groups.forEach{group->key(native,group.opt("model"),group.opt("provider"),group.detailText("tier").ifBlank{null},group.opt("effort"),group.opt("phase")){
         var expanded by remember{mutableStateOf(false)}
         var visible by remember{mutableIntStateOf(30)}
         DashboardCard{
@@ -446,7 +452,7 @@ private fun statisticsSpeedModel(row:JSONObject):String{
                 Text(detailRate(group.detailNumber("averageTPS")),fontSize=23.sp,fontWeight=FontWeight.SemiBold)
                 Text("${detailCount(group.detailNumber("samples"))} 条计量"+(if(native)" · ${detailCount(group.detailNumber("sessionCount"))} 个会话 · ${if(expanded)"收起" else "展开"}" else " · "+group.detailText("providerName").ifBlank{group.detailText("provider").ifBlank{"未记录提供商"}}),fontSize=12.sp,color=detailMuted)
             }
-            if(!native)Text("速度 P50 ${detailRate(group.detailNumber("p50TPS"))} · 首个输出 P50 ${detailDuration(group.detailNumber("p50FirstOutputMs"))} · 耗时 P95 ${detailDuration(group.detailNumber("p95DurationMs"))}",fontSize=11.sp,color=detailMuted)
+            if(!native)Text("速度 P50 ${detailRate(group.detailNumber("p50TPS"))} · 首字等待 P50 ${detailDuration(group.detailNumber("p50FirstTextMs"))} · 耗时 P95 ${detailDuration(group.detailNumber("p95DurationMs"))}",fontSize=11.sp,color=detailMuted)
             if(native&&expanded){
                 val sessions=group.detailRows("sessions")
                 sessions.take(visible).forEach{session->Divider(color=detailDivider);Column(verticalArrangement=Arrangement.spacedBy(4.dp)){
@@ -464,7 +470,7 @@ private fun statisticsSpeedModel(row:JSONObject):String{
         recent.forEach{row->Column(verticalArrangement=Arrangement.spacedBy(4.dp)){
             Text(statisticsSpeedModel(row),fontSize=13.sp,fontWeight=FontWeight.Medium)
             Text("${detailDate(row.detailNumber("timestamp"),true)} · ${detailCount(row.detailNumber("outputTokens"))} 输出 Token",fontSize=11.sp,color=detailMuted)
-            Text("${detailRate(row.detailNumber("endToEndTPS"))} · 耗时 ${detailDuration(row.detailNumber("durationMs"))} · 首个输出 ${detailDuration(row.detailNumber("firstOutputMs"))}",fontSize=11.sp,color=detailMuted)
+            Text("${detailRate(row.detailNumber("endToEndTPS"))} · 耗时 ${detailDuration(row.detailNumber("durationMs"))} · 首字等待 ${detailDuration(row.detailNumber("firstTextMs"))}",fontSize=11.sp,color=detailMuted)
         }}
     }
 }
@@ -592,6 +598,7 @@ private fun detailDayPoint(row:JSONObject,fields:List<String>):DetailChartPoint{
     val maximum=if(percent)100.0 else (ordered.flatMap{it.values}.filterNotNull().maxOrNull()?:0.0).coerceAtLeast(1.0)
     val start=ordered.first().at;val end=ordered.last().at
     var selected by remember(points){mutableIntStateOf(-1)}
+    val touchPosition=remember(points){mutableStateOf(Offset.Zero)}
     Column(modifier,verticalArrangement=Arrangement.spacedBy(10.dp)){
         Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(12.dp)){labels.forEachIndexed{index,label->Text("● $label",fontSize=10.sp,color=palette[index%palette.size])}}
         Row(Modifier.fillMaxWidth()){
@@ -599,6 +606,7 @@ private fun detailDayPoint(row:JSONObject,fields:List<String>):DetailChartPoint{
             Column(Modifier.weight(1f)){
                 Box(Modifier.fillMaxWidth().height(168.dp)){
                     Canvas(Modifier.fillMaxSize().semantics{contentDescription="按住或横向滑动查看明细，松开后隐藏"}.nativeChartPress(ordered,{position,size->
+                        touchPosition.value=position
                         val target=start.toDouble()+(position.x/size.width.coerceAtLeast(1)).coerceIn(0f,1f).toDouble()*(end-start)
                         selected=ordered.indices.minByOrNull{kotlin.math.abs(ordered[it].at-target)}?:-1
                     },{selected=-1})){
@@ -621,7 +629,7 @@ private fun detailDayPoint(row:JSONObject,fields:List<String>):DetailChartPoint{
                         }
                         if(selected in ordered.indices)drawLine(grid,Offset(x(selected),top),Offset(x(selected),bottom),1.dp.toPx())
                     }
-                    ordered.getOrNull(selected)?.let{point->ChartCallout(if(start==end).5f else (point.at-start).toFloat()/(end-start),1f-((point.values.filterNotNull().maxOrNull()?:0.0)/maximum).toFloat()){
+                    ordered.getOrNull(selected)?.let{point->ChartCallout(touchPosition){
                         Column(Modifier.padding(horizontal=10.dp,vertical=8.dp),verticalArrangement=Arrangement.spacedBy(4.dp)){
                             Text(point.label,fontSize=10.sp,color=muted)
                             labels.forEachIndexed{index,label->Text(label+" "+(if(percent)detailPercent(point.values.getOrNull(index)) else detailCount(point.values.getOrNull(index))),fontSize=11.sp)}
@@ -645,12 +653,14 @@ private fun detailDayPoint(row:JSONObject,fields:List<String>):DetailChartPoint{
     val scroll=rememberScrollState()
     val ink=MaterialTheme.colors.primary;val empty=detailDivider;val muted=detailMuted
     var selected by remember(rows){mutableIntStateOf(-1)}
+    val touchPosition=remember(rows){mutableStateOf(Offset.Zero)}
     LaunchedEffect(end,weeks){scroll.scrollTo(scroll.maxValue)}
     Row(Modifier.fillMaxWidth()){
         Column(Modifier.width(22.dp).height(112.dp),verticalArrangement=Arrangement.SpaceAround){listOf("一","三","五","日").forEach{Text(it,fontSize=9.sp,color=muted)}}
         Box(Modifier.weight(1f).horizontalScroll(scroll)){
             Box(Modifier.width((weeks*14).dp).height(112.dp)){
                 Canvas(Modifier.fillMaxSize().semantics{contentDescription="今年每日 Token 活动，按住查看日期与用量"}.nativeChartPress(days,{position,_->
+                    touchPosition.value=position
                     val column=(position.x/cellWidth).toInt();val row=(position.y/cellHeight).toInt()
                     selected=(column*7+row).takeIf{row in 0..6&&it in days.indices}?:-1
                 },{selected=-1})){
@@ -660,7 +670,7 @@ private fun detailDayPoint(row:JSONObject,fields:List<String>):DetailChartPoint{
                         drawRoundRect(if(total==0L)empty else ink.copy(alpha=level),topLeft=Offset(index/7*14.dp.toPx(),index%7*16.dp.toPx()),size=androidx.compose.ui.geometry.Size(11.dp.toPx(),12.dp.toPx()),cornerRadius=androidx.compose.ui.geometry.CornerRadius(3.dp.toPx()))
                     }
                 }
-                days.getOrNull(selected)?.let{day->ChartCallout((selected/7+.5f)/weeks,(selected%7+.5f)/7){Column(Modifier.padding(horizontal=9.dp,vertical=7.dp),verticalArrangement=Arrangement.spacedBy(3.dp)){Text(day.toString(),fontSize=10.sp,color=muted);Text(nativeTokenCount(values[day.toString()]?:0)+" Token",fontSize=12.sp,fontWeight=FontWeight.Medium)}}}
+                days.getOrNull(selected)?.let{day->ChartCallout(touchPosition){Column(Modifier.padding(horizontal=9.dp,vertical=7.dp),verticalArrangement=Arrangement.spacedBy(3.dp)){Text(day.toString(),fontSize=10.sp,color=muted);Text(nativeTokenCount(values[day.toString()]?:0)+" Token",fontSize=12.sp,fontWeight=FontWeight.Medium)}}}
             }
         }
     }

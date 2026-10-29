@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import vm from 'node:vm';
 import {errorMessage,displayThreadTitle,displayPath} from '../public/console-core.js';
+import {automationScheduleEditor,automationRuleLabel} from '../public/automation-schedule.js';
 
 test('display formatting removes scheduled title markup and extended Windows prefixes only for display',()=>{
  assert.equal(displayThreadTitle('<heartbeat> <automation_id>task','任务'), '任务');
@@ -45,7 +46,7 @@ function fixture(){
 }
 
 function automationFixture(){
-  const f=fixture();vm.runInContext(section('function sameConversationData(', 'let conversationThread = null;')+section('async function showAutomations(', 'function runEndLabel('),f.context);
+  const f=fixture();Object.assign(f.context,{automationScheduleEditor,automationRuleLabel});vm.runInContext(section('function sameConversationData(', 'let conversationThread = null;')+section('async function showAutomations(', 'function runEndLabel('),f.context);
   f.liveButton=label=>f.buttons.get(label)?.findLast(node=>node.isConnected);
   f.submit=()=>f.nodes.findLast(node=>node.tag==='form').onsubmit({preventDefault(){}});
   return f;

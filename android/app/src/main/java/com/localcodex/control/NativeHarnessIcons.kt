@@ -1,6 +1,7 @@
 package com.localcodex.control
 
 import androidx.compose.material.Icon
+import androidx.compose.material.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -27,6 +28,8 @@ import androidx.compose.ui.unit.dp
             }.build()
         }
         rememberVectorPainter(vector)
-    }else painterResource(when(key){"claude"->R.drawable.harness_claude;"antigravity"->R.drawable.harness_antigravity;"grok"->R.drawable.harness_grok;"deepseek"->R.drawable.harness_deepseek;"opencode"->R.drawable.harness_opencode;else->R.drawable.harness_codex})
-    Icon(painter,null,modifier,tint=tint)
+    }else painterResource(when(key){"claude"->R.drawable.harness_claude;"antigravity"->R.drawable.harness_antigravity;"grok"->R.drawable.harness_grok;"deepseek"->R.drawable.harness_deepseek;"opencode"->R.drawable.harness_opencode;"zcode"->R.drawable.harness_zcode;else->R.drawable.harness_codex})
+    Icon(painter,null,modifier,tint=if(key=="zcode") {
+        if(MaterialTheme.colors.isLight)Color.Black else Color.White
+    } else tint)
 }

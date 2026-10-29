@@ -5,8 +5,16 @@ import {readCodexThreadUsage} from './codexSessions.js';
 import type {CodexAppServerClient} from '../codex/appServerClient.js';
 import {UsageTrends} from './usageTrends.js';
 import {notificationTokenInfo,type TokenSnapshot} from './codexTokenUsage.js';
+import {CodexSubagentUsage,type SessionTokenLedger} from './sessionTokenLedger.js';
+import {subagentMetadata} from './subagentThreads.js';
 
 const number=(value:unknown):number|null=>typeof value==='number'&&Number.isFinite(value)&&value>=0?value:null;
+export function creditBalance(value:any){
+  if(!value||typeof value!=='object'||Array.isArray(value))return null;
+  const raw=value.balance;
+  const balance=typeof raw==='number'||typeof raw==='string'&&raw.trim()!==''?number(Number(raw)):null;
+  return {balance,unlimited:value.unlimited===true,hasCredits:typeof value.hasCredits==='boolean'?value.hasCredits:typeof value.has_credits==='boolean'?value.has_credits:null};
+}
 const isContextEstimate=(last:any)=>number(last?.total_tokens)!==null&&last.total_tokens>0&&last.input_tokens===0&&last.output_tokens===0;
 export function quotaWindows(response:any){
   const limits=response?.rateLimitsByLimitId&&Object.keys(response.rateLimitsByLimitId).length?Object.values(response.rateLimitsByLimitId):response?.rateLimits?[response.rateLimits]:[];
@@ -36,41 +44,46 @@ async function quotaIdentity():Promise<QuotaIdentity>{
   const account=typeof value==='string'&&value?value:null;
   return {home,account,key:JSON.stringify([home,account])};
 }
-const emptyQuota=()=>({windows:[],plan:null,updatedAt:null,source:null,stale:true});
+const emptyQuota=()=>({windows:[],credits:null,plan:null,updatedAt:null,source:null,stale:true});
 async function savedQuota(identity:QuotaIdentity){
   try{
     const {home,account}=identity;
     const saved=await fs.readFile(path.join(home,'codexmate','local-console','quota-current.json'),'utf8').then(JSON.parse);
     if(!account||!(saved.accountKey===account||saved.accountKey?.endsWith('::'+account)))return null;
     const convert=(w:any)=>w?{usedPercent:w.used_percent,windowDurationMins:typeof w.limit_window_seconds==='number'?w.limit_window_seconds/60:null,resetsAt:w.reset_at}:null;
-    return {windows:quotaWindows({rateLimits:{limitId:'codex',primary:convert(saved.primary),secondary:convert(saved.secondary)}}),plan:saved.plan||null,updatedAt:saved.at,source:'local-console-cache',stale:true};
+    return {windows:quotaWindows({rateLimits:{limitId:'codex',primary:convert(saved.primary),secondary:convert(saved.secondary)}}),credits:creditBalance(saved.credits),creditsUpdatedAt:saved.at,subscriptionEstimate:saved.subscriptionEstimate??null,plan:saved.plan||null,updatedAt:saved.at,source:'local-console-cache',stale:true};
   }catch{return null;}
 }
 type QuotaHistoryRow={at:number;name:string;durationMins:number;remainingPercent:number};
+type CreditHistoryRow={at:number;balance:number};
+type QuotaHistorySnapshot={windows:QuotaHistoryRow[];credits:CreditHistoryRow[]};
 class QuotaHistory {
-  private cached:{key:string;rows:QuotaHistoryRow[]}|null=null;
-  private pending=new Map<string,Promise<QuotaHistoryRow[]>>();
+  private cached:{key:string;rows:QuotaHistorySnapshot}|null=null;
+  private pending=new Map<string,Promise<QuotaHistorySnapshot>>();
   private latestKey='';
-  private async load(file:string,account:string):Promise<QuotaHistoryRow[]>{
+  private async load(file:string,account:string):Promise<QuotaHistorySnapshot>{
     const content=await fs.readFile(file,'utf8');
     const rows:QuotaHistoryRow[]=[];
+    const credits:CreditHistoryRow[]=[];
     for(const line of content.split('\n')){
       if(!line.trim())continue;
       let entry:any;try{entry=JSON.parse(line);}catch{continue;}
       if(typeof entry.accountKey!=='string'||!(entry.accountKey===account||entry.accountKey.endsWith('::'+account)))continue;
       const at=entry.timestamp*1000;
       if(!Number.isFinite(at))continue;
+      const credit=creditBalance(entry.credits);
+      if(credit?.balance!==null&&credit?.balance!==undefined&&!credit.unlimited)credits.push({at,balance:credit.balance});
       for(const [key,durationMins] of [['primaryUsedPercent',300],['secondaryUsedPercent',10080]] as const){
         const used=number(entry[key]);
         if(used!==null&&used<=100)rows.push({at,name:'Codex',durationMins,remainingPercent:100-used});
       }
     }
-    return rows;
+    return {windows:rows,credits};
   }
-  async read(days:number,identity:QuotaIdentity):Promise<QuotaHistoryRow[]>{
+  async read(days:number,identity:QuotaIdentity):Promise<QuotaHistorySnapshot>{
     try{
       const {home,account}=identity;
-      if(!account)return [];
+      if(!account)return {windows:[],credits:[]};
       const file=path.join(home,'codexmate','local-console','quota-history.jsonl'),stat=await fs.stat(file);
       const key=JSON.stringify([home,account,stat.size,stat.mtimeMs,stat.ctimeMs]);
       this.latestKey=key;
@@ -84,8 +97,8 @@ class QuotaHistory {
         rows=await read;
       }
       const now=Date.now(),cutoff=now-days*86400000;
-      return rows.filter(row=>row.at>=cutoff&&row.at<=now+60000);
-    }catch{return [];}
+      return {windows:rows.windows.filter(row=>row.at>=cutoff&&row.at<=now+60000),credits:rows.credits.filter(row=>row.at>=cutoff&&row.at<=now+60000)};
+    }catch{return {windows:[],credits:[]};}
   }
 }
 function mergedTrend(local:ReturnType<UsageTrends['read']>,history:QuotaHistoryRow[]){
@@ -95,6 +108,7 @@ function mergedTrend(local:ReturnType<UsageTrends['read']>,history:QuotaHistoryR
   return [...samples.values()].sort((a,b)=>a.at-b.at||a.durationMins-b.durationMins);
 }
 export class UsageReader {
+  private family?:CodexSubagentUsage;
   private trends=new UsageTrends();
   private history=new QuotaHistory();
   private cached:any=null;
@@ -107,11 +121,17 @@ export class UsageReader {
   private live=new Map<string,TokenSnapshot>();
   private compactions=new Map<string,{itemId:string;startedAt:string;before:TokenSnapshot|undefined;completed:boolean}>();
   private notification=(event:any)=>{
+    if(event.method==='thread/started'&&this.ledger){
+      const thread=event.params?.thread,parent=thread&&subagentMetadata(thread)?.parentThreadId;
+      if(parent&&typeof thread.id==='string')this.ledger.relate(thread.id,parent,thread.name||thread.agentNickname||'子代理');
+    }
     const threadId=event?.params?.threadId;if(typeof threadId!=='string')return;
     const at=new Date().toISOString();
     if(event.method==='thread/tokenUsage/updated'){
       const info=notificationTokenInfo(event.params.tokenUsage);if(!info)return;
+      this.ledger?.recordSnapshot(threadId,{info,updatedAt:at});
       this.live.set(threadId,{info,updatedAt:at});this.updated(threadId);
+      for(const parent of this.ledger?.ancestors(threadId)||[])this.updated(parent);
     }else if(event.method==='item/started'&&event.params.item?.type==='contextCompaction'){
       const itemId=event.params.item.id||'';
       if(itemId&&this.compactions.get(threadId)?.itemId===itemId)return;
@@ -134,7 +154,8 @@ export class UsageReader {
     }
     if(this.live.size>128)this.live.delete(this.live.keys().next().value!);
   };
-  constructor(private codex:CodexAppServerClient,private updated:(threadId:string)=>void=()=>{}){
+  constructor(private codex:CodexAppServerClient,private updated:(threadId:string)=>void=()=>{},private ledger?:SessionTokenLedger){
+    if(ledger)this.family=new CodexSubagentUsage(ledger);
     if(typeof codex.on==='function')codex.on('notification',this.notification);
   }
   private async quota(identity:QuotaIdentity){
@@ -156,7 +177,10 @@ export class UsageReader {
       try{
         const response:any=await this.codex.request('account/rateLimits/read',{});
         if(!current()||(await quotaIdentity()).key!==identity.key)return null;
-        const value={windows:quotaWindows(response),plan:response?.rateLimits?.planType||null,updatedAt:new Date().toISOString(),source:'codex',stale:false};
+        const limit=(response?.rateLimitsByLimitId?.codex??response?.rateLimits) as any;
+        const saved=await savedQuota(identity);if(!current())return null;
+        const liveCredits=creditBalance(limit?.credits),updatedAt=new Date().toISOString();
+        const value={windows:quotaWindows(response),credits:liveCredits??saved?.credits??null,creditsUpdatedAt:liveCredits?updatedAt:saved?.creditsUpdatedAt??null,subscriptionEstimate:saved?.subscriptionEstimate??null,plan:limit?.planType||null,updatedAt,source:'codex',stale:false};
         this.cached=value;this.captured=Date.now();return value;
       }catch{
         if(!current())return null;
@@ -173,9 +197,16 @@ export class UsageReader {
     const identity=await quotaIdentity(),quota=await this.quota(identity);
     if(!quota.stale&&identity.account&&this.quotaScope===identity.key)this.trends.record(quota.windows,Date.now(),identity.key);
   }
+  // Other harnesses report quota through their own CLI. They share this sample
+  // store so the phone gets the same 5h/7d history for every assistant.
+  recordExternalQuota(scope:string,windows:{name:string;durationMins:number|null;remainingPercent:number|null}[],now=Date.now()):void{
+    this.trends.record(windows,now,scope);
+  }
+  externalQuotaTrend(scope:string,days=7,now=Date.now()){return this.trends.read(days,now,scope);}
   async read(threadId?:string,days=7){
     const identity=await quotaIdentity();
-    const [quota,disk]=await Promise.all([this.quota(identity),threadId?readCodexThreadUsage(threadId).catch(()=>null):null]);
+    const [quota,disk]=await Promise.all([this.quota(identity),threadId?readCodexThreadUsage(threadId).catch(()=>null):null,
+      threadId?this.family?.capture(threadId):null]);
     const live=threadId?this.live.get(threadId):undefined;
     // A delayed completion notification must not hide the estimate already
     // written during this compaction. Older estimates remain ineligible.
@@ -186,8 +217,14 @@ export class UsageReader {
     if(!quota.stale&&identity.account&&this.quotaScope===identity.key)this.trends.record(quota.windows,Date.now(),identity.key);
     const history=await this.history.read(days,identity);
     const current=this.quotaScope===identity.key;
-    return {quota:current?quota:emptyQuota(),tokens:usage?{...tokenCounts(usage.info,usage.contextPending),updatedAt:usage.updatedAt}:null,
-      quotaTrend:current&&identity.account?mergedTrend(this.trends.read(days,Date.now(),identity.key),history):[]};
+    const creditAt=Date.parse(quota.creditsUpdatedAt),balance=quota.credits?.balance;
+    const credits=history.credits;
+    if(current&&identity.account&&!quota.credits?.unlimited&&typeof balance==='number'&&creditAt>=Date.now()-days*86400000&&creditAt>(credits.at(-1)?.at??0))credits.push({at:creditAt,balance});
+    const tokens=usage?{...tokenCounts(usage.info,usage.contextPending),updatedAt:usage.updatedAt}:null;
+    return {quota:current?quota:emptyQuota(),tokens:threadId&&this.ledger?this.ledger.combine(threadId,tokens):tokens,
+      quotaTrend:current&&identity.account?mergedTrend(this.trends.read(days,Date.now(),identity.key),history.windows):[],
+      creditTrend:current&&identity.account?credits:[]};
   }
+  async capture(threadId:string){await this.family?.capture(threadId,true);}
   close():void{if(typeof this.codex.off==='function')this.codex.off('notification',this.notification);this.live.clear();this.compactions.clear();this.trends.close();}
 }

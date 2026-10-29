@@ -11,6 +11,8 @@ export interface ChannelTaskPort {
   validateThread(threadId:string):Promise<void>;
   submit(input:{requestId:string;threadId?:string;projectPath?:string;text:string}):Promise<ChannelReceipt|undefined>;
   validateProject?(projectPath:string):Promise<void>;
+  prepareWorkspace?(requestId:string,previousThreadId?:string):Promise<string>;
+  requiresNewThread?(threadId:string):Promise<boolean>;
   receipt(requestId:string):Promise<ChannelReceipt|undefined>;
   status?(threadId:string):Promise<string>;
   result?(threadId:string):Promise<string>;

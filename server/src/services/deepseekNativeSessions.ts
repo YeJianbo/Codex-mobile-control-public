@@ -1,4 +1,5 @@
 import {promises as fs} from 'node:fs';
+import {stripSessionInstructionPrefix} from './agentInstructions.js';
 import os from 'node:os';
 import path from 'node:path';
 import {zstdDecompressSync} from 'node:zlib';
@@ -68,7 +69,7 @@ export function deepseekSessionFromRows(rows:any[],file:string,revision:string,m
     }else if(row.type==='user/message'||row.type==='assistant/message'){
       const message=row.type==='user/message'?data:data.message;
       if(row.type==='user/message'&&message?.source?.kind&&message.source.kind!=='user')continue;
-      const text=messageText(message);if(!text)continue;
+      const text=row.type==='user/message'?stripSessionInstructionPrefix(messageText(message)):messageText(message);if(!text)continue;
       const itemId=message.id||`${header.id}:${row.seq}`;
       const event:GatewayEvent=row.type==='user/message'?{...base,type:'user.message',turnId,itemId,text}:
         {...base,type:'message.delta',turnId,itemId,text,textComplete:true};

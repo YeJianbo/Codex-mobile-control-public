@@ -24,21 +24,30 @@ internal data class NativeQuotaWindow(val name:String,val durationMins:Long,val 
 
 internal const val LOW_QUOTA_PERCENT=10.0
 
-internal fun quotaWindowNotice(windows:List<NativeQuotaWindow>,nowSeconds:Long):ModelServiceNotice? {
+internal fun quotaWindowNotice(windows:List<NativeQuotaWindow>,nowSeconds:Long,credits:Double?=null,unlimitedCredits:Boolean=false):ModelServiceNotice? {
     val low=windows.filter{it.remainingPercent?.let{value->value.isFinite()&&value<=LOW_QUOTA_PERCENT}==true&&(it.resetsAt==null||it.resetsAt>nowSeconds)}
     if(low.isEmpty())return null
     val exhausted=low.filter{it.remainingPercent!!<=0}
-    if(exhausted.isNotEmpty())return modelServiceNotice(ModelServiceIssue.QUOTA,resetAt=exhausted.mapNotNull{it.resetsAt}.maxOrNull()).copy(quotaSnapshot=true)
-    val tightest=low.minBy{it.remainingPercent!!}
-    val window=when{
-        tightest.durationMins>=1440&&tightest.durationMins%1440==0L->"${tightest.durationMins/1440} 天额度"
-        tightest.durationMins>=60&&tightest.durationMins%60==0L->"${tightest.durationMins/60} 小时额度"
-        tightest.durationMins>0->"${tightest.durationMins} 分钟额度"
-        else->"账号额度"
+    // A 5h shortfall and a 7d shortfall are different limits. List every low
+    // window instead of reporting only the tightest one.
+    val parts=low.sortedWith(compareBy({it.durationMins},{it.name})).map{window->
+        val label=when{
+            window.durationMins>=1440&&window.durationMins%1440==0L->"${window.durationMins/1440} 天额度"
+            window.durationMins>=60&&window.durationMins%60==0L->"${window.durationMins/60} 小时额度"
+            window.durationMins>0->"${window.durationMins} 分钟额度"
+            else->"账号额度"
+        }
+        val remaining=java.text.DecimalFormat("0.#").format(window.remainingPercent)
+        val reset=window.resetsAt?.let{"（"+java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT,java.text.DateFormat.SHORT).format(java.util.Date(it*1000))+" 恢复）"}.orEmpty()
+        "$label 剩余 $remaining%$reset"
     }
-    val remaining=java.text.DecimalFormat("0.#").format(tightest.remainingPercent)
-    val reset=tightest.resetsAt?.let{"预计 "+java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT,java.text.DateFormat.SHORT).format(java.util.Date(it*1000))+" 恢复。"}.orEmpty()
-    return ModelServiceNotice("quota-low","额度剩余不多","$window 剩余 $remaining%。$reset",quotaSnapshot=true)
+    if(exhausted.isNotEmpty()){
+        val available=unlimitedCredits||credits?.let{it.isFinite()&&it>0}==true
+        val balance=if(unlimitedCredits)"Credits 不限额" else credits?.takeIf{available}?.let{"Credits 余额 "+java.text.DecimalFormat("#,##0.##").format(it)}
+        val suffix=balance?.let{"；$it"}?:if(exhausted.none{it.resetsAt!=null})"。等待额度恢复后再试" else ""
+        return ModelServiceNotice(if(available)"quota-low" else "quota",if(available)"订阅额度已用完" else "额度已用完",parts.joinToString("；")+suffix+"。",quotaSnapshot=true)
+    }
+    return ModelServiceNotice("quota-low","额度剩余不多",parts.joinToString("；")+"。",quotaSnapshot=true)
 }
 
 /** 同一轮的重复错误只提醒一次；历史回放不触发提醒。 */
@@ -60,7 +69,7 @@ internal class ModelServiceNoticeTracker {
         return if(kinds.add(issue))modelServiceNotice(issue,event.threadId) else null
     }
 
-    fun quota(harness:String,windows:List<NativeQuotaWindow>,stale:Boolean,nowSeconds:Long):ModelServiceNotice? {
+    fun quota(harness:String,windows:List<NativeQuotaWindow>,stale:Boolean,nowSeconds:Long,credits:Double?=null,unlimitedCredits:Boolean=false):ModelServiceNotice? {
         if(stale||windows.isEmpty())return null
         val known=windows.filter{it.remainingPercent?.isFinite()==true}
         if(known.isEmpty())return null
@@ -69,6 +78,6 @@ internal class ModelServiceNoticeTracker {
         val previous=quotaWarnings[harness].orEmpty()
         val unknown=windows.filter{it.remainingPercent?.isFinite()!=true}.map{"${it.name}:${it.durationMins}:"}
         quotaWarnings[harness]=keys+previous.filter{key->unknown.any{key.startsWith(it)}}
-        return if((keys-previous).isNotEmpty())quotaWindowNotice(windows,nowSeconds) else null
+        return if((keys-previous).isNotEmpty())quotaWindowNotice(windows,nowSeconds,credits,unlimitedCredits) else null
     }
 }

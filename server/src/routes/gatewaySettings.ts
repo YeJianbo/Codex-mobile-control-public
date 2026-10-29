@@ -12,7 +12,7 @@ export function registerGatewaySettings(app:FastifyInstance,config:ServerConfig,
   const harnessAccess=()=>({agents:Object.entries(agentNames).map(([agent,name])=>({agent,name,enabled:publicAgentAllowed(agent as keyof typeof agentNames)}))});
   app.get('/api/settings/harness-access',async()=>harnessAccess());
   app.put('/api/settings/harness-access',async request=>{
-    const agents=z.object({codex:z.boolean().optional(),claude:z.boolean().optional(),antigravity:z.boolean().optional(),grok:z.boolean().optional(),deepseek:z.boolean().optional(),hermes:z.boolean().optional(),opencode:z.boolean().optional()}).strict().parse(z.object({agents:z.unknown()}).strict().parse(request.body).agents);
+    const agents=z.object({codex:z.boolean().optional(),claude:z.boolean().optional(),antigravity:z.boolean().optional(),grok:z.boolean().optional(),deepseek:z.boolean().optional(),hermes:z.boolean().optional(),opencode:z.boolean().optional(),zcode:z.boolean().optional()}).strict().parse(z.object({agents:z.unknown()}).strict().parse(request.body).agents);
     await updateServerConfig(config,draft=>{draft.publicAgents={...draft.publicAgents,...agents};});
     configurePublicAgentAccess(config.publicAgents);
     return harnessAccess();

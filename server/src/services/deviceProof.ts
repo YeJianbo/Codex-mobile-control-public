@@ -3,6 +3,12 @@ import type { IncomingHttpHeaders } from 'node:http';
 
 const seen=new Map<string,number>();
 const certificates=new Map<string,X509Certificate>();
+// Only the authenticated public proxy may preserve the signed external target
+// while forwarding the prefix-free gateway route.
+export function deviceProofTarget(url:string,headers:IncomingHttpHeaders,proxySecret:string|undefined):string {
+  const original=headers['x-public-request-target'];
+  return proxySecret&&headers['x-public-proxy-secret']===proxySecret&&typeof original==='string'?original:url;
+}
 export function verifyDeviceProof(certificateBase64:string,method:string,url:string,headers:IncomingHttpHeaders):boolean {
   const time=Number(headers['x-device-time']);
   const nonce=headers['x-device-nonce'];

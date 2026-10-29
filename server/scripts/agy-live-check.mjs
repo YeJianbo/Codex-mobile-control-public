@@ -21,16 +21,17 @@ const effort=process.env.CODEX_AGY_TEST_EFFORT||'medium';
 function proof(method,target){const time=String(Date.now()),nonce=crypto.randomUUID();return {'X-Device-Time':time,'X-Device-Nonce':nonce,'X-Device-Signature':crypto.sign('sha256',Buffer.from(`${method}\n${target}\n${time}\n${nonce}`),cert.private).toString('base64')};}
 async function until(fn,timeout=180000){const deadline=Date.now()+timeout;while(Date.now()<deadline){const value=await fn();if(value)return value;await new Promise(r=>setTimeout(r,100));}throw Error('AGY check timed out');}
 async function request(method,target,body,remote=false,pairing=false){
-  const url=new URL(target,remote&&installed?entry.publicUrl:base);
+  const url=new URL((remote&&installed?entry.publicUrl:base).replace(/\/$/,'')+target);
   const text=body===undefined?undefined:JSON.stringify(body);
-  const headers={Authorization:`Bearer ${remote?device.token:config.token}`,...(text===undefined?{}:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(text)}),...((remote||pairing)?proof(method,target):{}),...(remote?(installed?{'X-Remote-Password':entry.password}:{'X-Public-Proxy-Secret':entry.proxySecret}):{})};
+  const headers={Authorization:`Bearer ${remote?device.token:config.token}`,...(text===undefined?{}:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(text)}),...((remote||pairing)?proof(method,url.pathname+url.search):{}),...(remote?(installed?{'X-Remote-Password':entry.password}:{'X-Public-Proxy-Secret':entry.proxySecret}):{})};
   return new Promise((resolve,reject)=>{
     const req=(url.protocol==='https:'?https:http).request(url,{method,headers,...(!remote&&config.https?.enabled?{ca:config.ca,servername:'localhost'}:{}),timeout:10000},res=>{let result='';res.setEncoding('utf8');res.on('data',x=>result+=x);res.on('end',()=>{try{resolve({status:res.statusCode,body:JSON.parse(result||'{}')})}catch{reject(Error(`Non-JSON HTTP ${res.statusCode}`))}})});req.on('error',reject);req.on('timeout',()=>req.destroy(Error('HTTP timeout')));req.end(text);
   });
 }
 async function connect(){
   const target='/ws?device=AGY-check&token='+encodeURIComponent(device.token);
-  socket=new WebSocket((installed?entry.publicUrl:base).replace(/^http/,'ws')+target,{headers:{...proof('GET',target),...(installed?{'X-Remote-Password':entry.password}:{'X-Public-Proxy-Secret':entry.proxySecret})}});
+  const socketUrl=new URL((installed?entry.publicUrl:base).replace(/\/$/,'').replace(/^http/,'ws')+target);
+  socket=new WebSocket(socketUrl,{headers:{...proof('GET',socketUrl.pathname+socketUrl.search),...(installed?{'X-Remote-Password':entry.password}:{'X-Public-Proxy-Secret':entry.proxySecret})}});
   const mark=events.length;socket.on('message',raw=>{const e=JSON.parse(raw.toString());if(!e.replayed){events.push(e);if(e.threadId&&e.threadId===threadId&&['turn.started','turn.completed','tool.started','error'].includes(e.type))console.log(new Date().toISOString(),e.type,e.status||e.title||e.message||'');}});
   await Promise.race([until(()=>events.slice(mark).some(e=>e.type==='connected'),15000),new Promise((_,reject)=>socket.once('error',reject))]);
 }

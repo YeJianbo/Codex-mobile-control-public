@@ -45,7 +45,8 @@ class NativeTrendInteractionProfileTest {
         ui.runOnIdle{data.value=initial.copy(modelSeries=initial.modelSeries.map{if(it.model=="刷新模型 A")it.copy(total=120-it.total) else it})}
         val refreshed=chart.captureToImage().asAndroidBitmap()
         assertFalse("New data must redraw the curve",original.sameAs(refreshed))
-        chart.performTouchInput{down(center)}
+        chart.performTouchInput{down(center);advanceEventTime(200)}
+        ui.waitUntil(2000){ui.onAllNodesWithTag("chartCallout").fetchSemanticsNodes().isNotEmpty()}
         ui.onNodeWithText("2025-01-02").assertIsDisplayed()
         ui.onNode(hasText("100") and hasAnyAncestor(hasTestTag("chartCallout"))).assertIsDisplayed()
         chart.performTouchInput{up()}
@@ -56,7 +57,8 @@ class NativeTrendInteractionProfileTest {
         ui.runOnIdle{width.value=240.dp}
         val resized=chart.captureToImage().asAndroidBitmap()
         assertTrue("Width change must resize the drawing",resized.width<focused.width)
-        chart.performTouchInput{down(center)}
+        chart.performTouchInput{down(center);advanceEventTime(200)}
+        ui.waitUntil(2000){ui.onAllNodesWithTag("chartCallout").fetchSemanticsNodes().isNotEmpty()}
         ui.onNodeWithText("2025-01-02").assertIsDisplayed()
         ui.onNode(hasText("100") and hasAnyAncestor(hasTestTag("chartCallout"))).assertIsDisplayed()
         chart.performTouchInput{up()}
@@ -86,7 +88,8 @@ class NativeTrendInteractionProfileTest {
         }},"trend-drag-sample")
         sampler.start()
         try{
-            chart.performTouchInput{down(Offset(width*.25f,centerY))}
+            chart.performTouchInput{down(Offset(width*.25f,centerY));advanceEventTime(200)}
+            ui.waitUntil(2000){ui.onAllNodesWithTag("chartCallout").fetchSemanticsNodes().isNotEmpty()}
             ui.onNodeWithText(first.plusDays(91).toString()).assertIsDisplayed()
             repeat(30){index->
                 chart.performTouchInput{moveTo(Offset(width*(.25f+.5f*(index+1)/30),centerY))}

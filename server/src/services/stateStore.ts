@@ -7,6 +7,10 @@ import type { Device, GatewayEvent, PairingSession, PendingApproval, PersistentS
 import { appHome } from "./paths.js";
 import {CodexLiveHistory} from './codexLiveHistory.js';
 import {ParsedEventHistory} from './parsedEventHistory.js';
+import {SessionTokenLedger} from './sessionTokenLedger.js';
+import {readStoredThreadEvents} from './storedThreadHistory.js';
+import {deferMobileActivityDetails,deferLiveActivityDetails,isVisibleMobileThreadEvent} from './mobileActivityDetails.js';
+import {confirmedToolChanges} from './fileChanges.js';
 
 const sqlitePath = path.join(appHome(), "state.sqlite");
 const legacyJsonPath = path.join(appHome(), "state.json");
@@ -56,6 +60,14 @@ type EventRow = {
 };
 
 export class StateStore {
+  sessionUsage:SessionTokenLedger|null=null;
+  private readonly transientThreads=new Map<string,{thread:ThreadRecord;events:GatewayEvent[]}>();
+  private readonly closedTransientThreads=new Set<string>();
+  isEphemeral(threadId:string){return this.transientThreads.has(threadId)||this.closedTransientThreads.has(threadId);}
+  dropEphemeral(threadId:string){
+    this.transientThreads.delete(threadId);this.closedTransientThreads.add(threadId);
+    if(this.closedTransientThreads.size>128)this.closedTransientThreads.delete(this.closedTransientThreads.values().next().value!);
+  }
   private state: PersistentState = emptyState();
   private db: DatabaseSync | null = null;
   private hiddenThreads = new Set<string>();
@@ -69,10 +81,14 @@ export class StateStore {
   async load(): Promise<void> {
     await fs.mkdir(appHome(), { recursive: true });
     this.db = new DatabaseSync(sqlitePath);
+    // The assistant host and the gateway keep separate connections to this file.
+    this.db.exec("PRAGMA busy_timeout=5000");
+    if(process.env.CODEX_MOBILE_CONTROL_AGENT_HOST==='1')this.db.exec("PRAGMA journal_mode=WAL");
     this.eventSql=null;
     this.threadSql=null;
     this.deviceTouchSql=null;this.approvalSql=null;
     this.initSchema();
+    this.sessionUsage=new SessionTokenLedger(this.db);
     this.parsedHistory=new ParsedEventHistory(this.db);
     this.codexLiveHistory=new CodexLiveHistory(this.db,this.parsedHistory);
     this.db.exec("CREATE TABLE IF NOT EXISTS thread_sources (thread_id TEXT PRIMARY KEY, source TEXT NOT NULL)");
@@ -80,6 +96,7 @@ export class StateStore {
     this.db.exec('CREATE TABLE IF NOT EXISTS thread_completions (thread_id TEXT PRIMARY KEY,completed_at_ms INTEGER NOT NULL,desktop_unread_seen INTEGER NOT NULL DEFAULT 0)');
     this.db.exec('CREATE TABLE IF NOT EXISTS thread_pins (thread_id TEXT PRIMARY KEY,pinned_at INTEGER NOT NULL)');
     this.db.exec("CREATE TABLE IF NOT EXISTS archived_threads (id TEXT PRIMARY KEY,payload TEXT NOT NULL); CREATE TABLE IF NOT EXISTS unread_threads (id TEXT PRIMARY KEY,completed_at_ms INTEGER NOT NULL)");
+    for(const thread of this.archivedThreads())this.sessionUsage.observeThread(thread);
     this.hiddenThreads = new Set((this.db.prepare("SELECT id FROM hidden_threads").all() as { id: string }[]).map(row => row.id));
     const sqliteState = this.loadSqliteState();
     if (hasState(sqliteState)) {
@@ -119,7 +136,7 @@ export class StateStore {
 
   get threads(): ThreadRecord[] {
     const pins=new Map((this.db!.prepare('SELECT thread_id,pinned_at FROM thread_pins ORDER BY pinned_at,thread_id').all() as {thread_id:string;pinned_at:number}[]).map((row,index)=>[row.thread_id,index+1]));
-    return this.state.threads.filter(thread => !this.hiddenThreads.has(thread.id)).map(thread=>pins.has(thread.id)?{...thread,pinnedIndex:pins.get(thread.id)}:thread).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return [...this.state.threads,...[...this.transientThreads.values()].map(value=>value.thread)].filter(thread => !this.hiddenThreads.has(thread.id)).map(thread=>pins.has(thread.id)?{...thread,pinnedIndex:pins.get(thread.id)}:thread).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   }
   setThreadPinned(threadId:string,pinned:boolean):void{
     if(pinned)this.db!.prepare('INSERT OR IGNORE INTO thread_pins(thread_id,pinned_at) VALUES (?,?)').run(threadId,Date.now());
@@ -285,8 +302,16 @@ export class StateStore {
     this.requireDb().prepare('INSERT INTO device_certificates(device_id,certificate) VALUES (?,?) ON CONFLICT(device_id) DO UPDATE SET certificate=excluded.certificate').run(deviceId,certificate);
   }
 
-  async upsertThread(input: { id: string; projectPath?: string; title?: string; status?: ThreadRecord["status"]; source?: ThreadRecord["source"] }): Promise<ThreadRecord> {
+  async upsertThread(input: { id: string; projectPath?: string; title?: string; status?: ThreadRecord["status"]; source?: ThreadRecord["source"];ephemeral?:boolean;forkedFromId?:string }): Promise<ThreadRecord> {
     const now = new Date().toISOString();
+    if(this.closedTransientThreads.has(input.id))return {id:input.id,title:'侧聊已结束',status:'completed',createdAt:now,updatedAt:now,ephemeral:true};
+    if(input.ephemeral||this.transientThreads.has(input.id)){
+      const previous=this.transientThreads.get(input.id);
+      const thread:ThreadRecord={createdAt:now,updatedAt:now,title:'侧聊',status:'idle',...previous?.thread,...Object.fromEntries(Object.entries(input).filter(([,value])=>value!==undefined)),id:input.id,ephemeral:true};
+      thread.updatedAt=now;
+      this.transientThreads.set(input.id,{thread,events:previous?.events??[]});
+      return thread;
+    }
     const previous = this.state.threads.find((item) => item.id === input.id);
     const thread:ThreadRecord = previous ? {
       ...previous,
@@ -322,6 +347,7 @@ export class StateStore {
   }
 
   private saveThread(thread:ThreadRecord):void {
+    this.sessionUsage?.observeThread(thread);
     const db=this.requireDb();
     const sql=this.threadSql??={
       upsert:db.prepare(`INSERT INTO threads(id,project_path,title,status,created_at,updated_at) VALUES (?,?,?,?,?,?)
@@ -351,6 +377,7 @@ export class StateStore {
     this.db!.prepare('DELETE FROM archived_threads WHERE id=?').run(id);
   }
   archiveThread(id:string,thread?:ThreadRecord):void {
+    if(thread)this.sessionUsage?.observeThread(thread);
     // Preserve local replay/history while excluding this ID from every sidebar
     // refresh, including a still-cached desktop family snapshot.
     this.hiddenThreads.add(id);
@@ -364,6 +391,7 @@ export class StateStore {
     db.exec('BEGIN');
     try{
       for(const thread of threads){
+        this.sessionUsage?.observeThread(thread);
         db.prepare('INSERT OR IGNORE INTO hidden_threads(id) VALUES (?)').run(thread.id);
         db.prepare('INSERT OR REPLACE INTO archived_threads(id,payload) VALUES (?,?)').run(thread.id,JSON.stringify({...thread,closureKind:'gatewayClosed'}));
       }
@@ -422,8 +450,8 @@ export class StateStore {
     return approval;
   }
 
-  async expirePendingApprovals(): Promise<void> {
-    const pending = this.state.approvals.filter(approval => approval.status === "pending");
+  async expirePendingApprovals(keep?: (approval: PendingApproval) => boolean): Promise<void> {
+    const pending = this.state.approvals.filter(approval => approval.status === "pending" && !keep?.(approval));
     if (!pending.length) return;
     const next=pending.map(approval=>({...approval,status:"expired" as const,resolvedAt:new Date().toISOString()}));
     this.saveApprovals(next);
@@ -452,6 +480,16 @@ export class StateStore {
   }
 
   async appendEvent(event: GatewayEvent): Promise<void> {
+    if('threadId' in event&&this.closedTransientThreads.has(event.threadId??''))return;
+    const transient='threadId' in event?this.transientThreads.get(event.threadId??''):undefined;
+    if(transient){
+      const previous=transient.events.at(-1);
+      if((event.type==='message.delta'||event.type==='reasoning.summary')&&previous?.type===event.type&&previous.itemId===event.itemId&&previous.turnId===event.turnId){
+        transient.events[transient.events.length-1]={...previous,eventId:event.eventId,createdAt:event.createdAt??previous.createdAt,text:previous.text+event.text};
+      }else transient.events.push(event);
+      if(transient.events.length>maxEvents)transient.events.splice(0,transient.events.length-maxEvents);
+      return;
+    }
     const payload=JSON.stringify(event);
     const db=this.requireDb(),sql=this.eventWrites();
     // Commit history and replay together before exposing the event in memory.
@@ -483,8 +521,22 @@ export class StateStore {
     };
   }
 
+  recentEventsForThread(threadId:string):GatewayEvent[]{
+    return this.transientThreads.get(threadId)?.events.slice()??this.state.events.filter(event=>'threadId' in event&&event.threadId===threadId&&isThreadConversationEvent(event));
+  }
+
+  async readThreadEvents(threadId:string,deferred:boolean|'live'=false,signal?:AbortSignal):Promise<GatewayEvent[]>{
+    if(this.transientThreads.has(threadId))return this.eventsForThread(threadId,1000);
+    const complete=await readStoredThreadEvents(threadId,deferred,signal);
+    const recent=this.recentEventsForThread(threadId);
+    const additions=deferred?confirmedToolChanges(recent.filter(isVisibleMobileThreadEvent)).map(event=>(deferred==='live'?deferLiveActivityDetails(event):deferMobileActivityDetails(event)) as GatewayEvent):recent;
+    return this.mergeThreadEvents(additions,complete);
+  }
+
   eventsForThread(threadId: string, limit = 200): GatewayEvent[] {
-    if (/^(antigravity|claude|grok|deepseek|hermes|opencode)-/.test(threadId)) {
+    const transient=this.transientThreads.get(threadId);
+    if(transient)return transient.events.slice(-limit).map(event=>event.type==='message.delta'||event.type==='reasoning.summary'?{...event,eventId:`history:side:${event.eventId}`,textComplete:true}:event);
+    if (/^(antigravity|claude|grok|deepseek|hermes|opencode|zcode)-/.test(threadId)) {
       // External CLIs have no Codex rollout reader. Their transcript must outlive
       // both the reconnect ring and unrelated threads producing streaming events.
       this.requireDb();
@@ -495,23 +547,29 @@ export class StateStore {
       .filter(isThreadConversationEvent)
       .slice(-limit);
     const complete=this.codexLiveHistory?.read(threadId);
+    return this.mergeThreadEvents(recent,complete??[]);
+  }
+
+  private mergeThreadEvents(recent:GatewayEvent[],complete:GatewayEvent[]):GatewayEvent[]{
     if(!complete?.length)return recent;
     // The disk window protects whole replies, while the existing ring may still
     // contain earlier upload IDs or live operation IDs needed by cached pages.
     const ids=new Set(complete.map(event=>event.eventId).filter(Boolean));
+    const diffTurns=new Set(complete.flatMap(event=>event.type==='diff.updated'&&event.turnId?[event.turnId]:[]));
       const times=new Map<string,number>();
       const at=(event:GatewayEvent)=>{
         const value=event.createdAt||'',known=times.get(value);
         if(known!==undefined)return known;
         const parsed=Date.parse(value)||0;times.set(value,parsed);return parsed;
       };
-    return [...recent.filter(event=>!event.eventId||!ids.has(event.eventId)),...complete]
+    return [...recent.filter(event=>(!event.eventId||!ids.has(event.eventId))&&
+        !(event.type==='diff.updated'&&event.turnId&&diffTurns.has(event.turnId))),...complete]
         .sort((a,b)=>at(a)-at(b));
   }
 
   eventsForIds(threadId:string,ids:readonly string[]):GatewayEvent[] {
     const wanted=new Set(ids),found=new Map(this.state.events.filter(event=>'threadId' in event&&event.threadId===threadId&&event.eventId&&wanted.has(event.eventId)).map(event=>[event.eventId!,event]));
-    const table=/^(antigravity|claude|grok|deepseek|hermes|opencode)-/.test(threadId)?'agent_history':'codex_live_events';
+    const table=/^(antigravity|claude|grok|deepseek|hermes|opencode|zcode)-/.test(threadId)?'agent_history':'codex_live_events';
     const read=this.requireDb().prepare(`SELECT payload FROM ${table} WHERE event_key=? AND thread_id=?`);
     for(const id of wanted)if(!found.has(id)){
       const row=read.get(id,threadId) as EventRow|undefined;if(row)found.set(id,JSON.parse(row.payload) as GatewayEvent);
@@ -525,7 +583,7 @@ export class StateStore {
   }
 
   private archiveAgentEvent(event: GatewayEvent,encoded?:string): void {
-    if (!("threadId" in event) || !event.threadId || !/^(antigravity|claude|grok|deepseek|hermes|opencode)-/.test(event.threadId) ||
+    if (!("threadId" in event) || !event.threadId || !/^(antigravity|claude|grok|deepseek|hermes|opencode|zcode)-/.test(event.threadId) ||
         !(isThreadConversationEvent(event) || event.type === 'turn.started')) return;
     const payload = encoded??JSON.stringify(event);
     const inserted=this.eventWrites().archiveAgent.run(event.eventId || payload, event.threadId, payload);
@@ -629,6 +687,7 @@ export class StateStore {
   }
 
   close(): void {
+    this.sessionUsage=null;
     this.db?.close();
     this.db = null;
     this.parsedHistory=null;this.codexLiveHistory=null;

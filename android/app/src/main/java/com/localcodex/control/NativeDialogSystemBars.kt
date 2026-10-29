@@ -22,6 +22,10 @@ import androidx.core.view.WindowInsetsControllerCompat
     edgeToEdge:Boolean=immersive
 ){
     val window=(LocalView.current.parent as? DialogWindowProvider)?.window
+    DisposableEffect(window){
+        window?.let{NativePerformanceRecorder.attach(it,dialog=true)}
+        onDispose{window?.let{NativePerformanceRecorder.detach(it)}}
+    }
     DisposableEffect(window,immersive,edgeToEdge){
         val controller=window?.let{WindowCompat.getInsetsController(it,it.decorView)}
         val decor=window?.decorView

@@ -27,4 +27,17 @@ class ConnectionRaceTest {
         }
         assertEquals("public",chosen.first)
     }
+    @Test fun healthyHttpWithBrokenSocketStillAttemptsTheOtherRoute()=runBlocking{
+        val routes=listOf("local","public")
+        val healthy=firstResponsiveRoute(routes){"HTTP 200"}
+        val handshakes=mutableListOf<String>()
+        val connected=nativeConnectionAttemptRoutes(routes,healthy.first).firstOrNull{route->
+            handshakes.add(route)
+            route=="public"
+        }
+        assertEquals("public",connected)
+        assertEquals(listOf("local","public"),handshakes)
+        assertEquals(listOf("public","local"),nativeConnectionAttemptRoutes(routes,"public"))
+        assertEquals(listOf("local"),nativeConnectionAttemptRoutes(listOf("local"),"local"))
+    }
 }

@@ -33,6 +33,10 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.window.Popup
+import kotlinx.coroutines.delay
 import kotlin.math.min
 
 internal val NativeInk:Color @Composable get()=MaterialTheme.colors.onSurface
@@ -50,22 +54,37 @@ internal fun nativeDisclosureEnter()=expandVertically(animationSpec=spring(dampi
 internal fun nativeDisclosureExit()=shrinkVertically(animationSpec=spring(dampingRatio=1f,stiffness=1200f))+fadeOut(tween(100,easing=NativeControlEase))
 internal fun nativeChevronMotion()=spring<Float>(dampingRatio=1f,stiffness=1000f,visibilityThreshold=0.1f)
 internal fun nativePressMotion(pressed:Boolean)=tween<Float>(if(pressed)80 else 120,easing=NativeControlEase)
-@Composable internal fun ChromeControl(click:()->Unit,emphasized:Boolean,modifier:Modifier=Modifier,enabled:Boolean=true,content:@Composable ()->Unit){
+@Composable internal fun ChromeControl(click:()->Unit,emphasized:Boolean,modifier:Modifier=Modifier,enabled:Boolean=true,onLongClick:(()->Unit)?=null,content:@Composable ()->Unit){
     val interaction=remember{MutableInteractionSource()}
     val pressed by interaction.collectIsPressedAsState()
     val scale=animateFloatAsState(if(pressed)0.97f else 1f,nativePressMotion(pressed),label="chromePress")
     val floating=LocalNativeFloatingChrome.current
     val touch: @Composable ()->Unit={Box(Modifier.fillMaxSize().clip(if(floating)CircleShape else Radius.Button)
         .background(if(emphasized)NativeWash else Color.Transparent)
-        .clickable(enabled=enabled,interactionSource=interaction,indication=LocalIndication.current,role=Role.Button,onClick=click),contentAlignment=Alignment.Center){content()}}
+        .combinedClickable(enabled=enabled,interactionSource=interaction,indication=LocalIndication.current,role=Role.Button,onClick=click,onLongClick=onLongClick),contentAlignment=Alignment.Center){content()}}
     val frame=modifier.size(48.dp).graphicsLayer{scaleX=scale.value;scaleY=scale.value}
     if(floating)NativeGlassSurface(frame,shape=CircleShape,content=touch) else Box(frame){touch()}
 }
 @Composable internal fun ModernIcon(icon:Int,label:String?=null,modifier:Modifier=Modifier.size(20.dp),tint:Color=NativeInk){
     Icon(painterResource(icon),label,modifier=modifier,tint=tint)
 }
-@Composable internal fun ChromeButton(icon:Int,label:String,click:()->Unit,emphasized:Boolean=false,enabled:Boolean=true){
-    ChromeControl(click,emphasized,enabled=enabled){ModernIcon(icon,label,Modifier.size(21.dp),if(enabled)NativeInk else NativeMuted)}
+@Composable internal fun ChromeButton(icon:Int,label:String,click:()->Unit,emphasized:Boolean=false,enabled:Boolean=true,modifier:Modifier=Modifier){
+    var hint by remember(label){mutableStateOf(false)}
+    LaunchedEffect(hint){if(hint){delay(1400);hint=false}}
+    Box(modifier,contentAlignment=Alignment.Center){
+        ChromeControl(click,emphasized,enabled=enabled,onLongClick={hint=true}){ModernIcon(icon,label,Modifier.size(21.dp),if(enabled)NativeInk else NativeMuted)}
+        if(hint){
+            val backdrop=LocalNativeOverlayBackdrop.current?:LocalNativeGlassBackdrop.current
+            val offset=with(LocalDensity.current){48.dp.roundToPx()}
+            Popup(alignment=Alignment.TopCenter,offset=IntOffset(0,offset),onDismissRequest={hint=false}){
+                CompositionLocalProvider(LocalNativeGlassBackdrop provides backdrop){
+                    NativeGlassSurface(shape=Radius.MenuItem,kind=NativeGlassKind.MENU){
+                        Text(label,Modifier.widthIn(max=240.dp).padding(horizontal=12.dp,vertical=8.dp),fontSize=13.sp,color=NativeInk)
+                    }
+                }
+            }
+        }
+    }
 }
 @Composable internal fun NativeTextEntry(value:String,change:(String)->Unit,hint:String,modifier:Modifier=Modifier,surface:Color=NativeWash,label:String=hint,enabled:Boolean=true){
     Box(modifier.clip(Radius.Field).background(surface).padding(14.dp)) {

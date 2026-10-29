@@ -28,11 +28,12 @@ function channelState(service:ChannelService){
     return {id:account.id,channel:account.channel,label:account.label,projectPath:account.projectPath,state:account.state,
       bindingCount:raw.bindings.filter(binding=>binding.accountId===account.id).length,
       details:{configured:details.configured===true,appId:text(details.appId,30),ownerId:text(details.ownerId,512),
-        transport:text(details.transport,80),lastError:text(details.lastError,1000)}};
+        transport:text(details.transport,80),lastError:text(details.lastError,1000),authorizedCount:number(details.authorizedCount)??0}};
   })};
 }
 
 const channelMessages=new Set(['通道账号不存在','此通道的平台驱动尚未接入','此通道不使用手动凭据','此通道不支持扫码','请先断开通道',
+  '请选择 QQ 通道账号','最多授权 8 个 QQ 账号，请先清除旧授权',
   '请先断开当前通道再连接','项目配置暂不可用','请先扫码登录微信','微信未返回登录二维码','微信登录响应缺少凭据','微信返回的服务地址无效']);
 async function respond(reply:FastifyReply,operation:()=>Promise<unknown>){
   try{return await operation();}catch(error){
@@ -81,10 +82,14 @@ export function registerMobileSessionsChannels(app:FastifyInstance,options:{clie
     return {account:channelState(channels).accounts.find(row=>row.id===account.id)};
   }));
   app.post('/api/mobile-management/channels/accounts/:id/:action',async(request,reply)=>respond(reply,async()=>{
-    const params=z.object({id:z.string().trim().min(1).max(512),action:z.enum(['settings','credentials','login','connect','disconnect','remove'])}).strict().parse(request.params);
+    const params=z.object({id:z.string().trim().min(1).max(512),action:z.enum(['settings','credentials','login','connect','disconnect','remove','pair','revoke-access'])}).strict().parse(request.params);
     const channels=requireChannels();
-    if(params.action==='settings'){
-      const body=z.object({projectPath:z.string().trim().min(1).max(2048)}).strict().parse(request.body);
+    if(params.action==='pair'){
+      empty.parse(request.body??{});return channels.qqAccess.pair(params.id);
+    }else if(params.action==='revoke-access'){
+      z.object({confirm:z.literal(true)}).strict().parse(request.body);channels.qqAccess.revoke(params.id);
+    }else if(params.action==='settings'){
+      const body=z.object({projectPath:z.string().trim().max(2048)}).strict().parse(request.body);
       await channels.setProject(params.id,body.projectPath);
     }else if(params.action==='credentials'){
       const body=z.object({appId:z.string().trim().regex(/^\d{4,30}$/),appSecret:z.string().trim().min(8).max(512)}).strict().parse(request.body);

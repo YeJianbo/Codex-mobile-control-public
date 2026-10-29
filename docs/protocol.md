@@ -129,6 +129,12 @@ Authorization: Bearer <token>
 
 返回已知 Codex threads，按更新时间倒序。
 
+### `GET /api/usage?threadId=...` 的会话用量
+
+Codex 的 `tokens.input/cached/output/reasoning/total` 为当前会话与其所有子代理的累计合计。有子代理时，`tokens.self` 返回当前会话自身累计，`tokens.subagents` 返回子代理合计、`count`、`knownCount` 和各子代理的 `threads` 分项。每个分项包含会话标识、直接父会话标识、名称、执行器及自身累计；多层后代各计算一次。
+
+`context/contextWindow/contextPercent/contextState/last` 仍只描述当前会话，不叠加子代理上下文。缺失用量保持 `null`，合计有缺项时 `partial=true`。父子关系与累计快照单独存入 `state.sqlite`；关闭、归档、删除会话展示记录不清除这些用量。旧会话可从仍存在的原生记录补入；已经彻底删除且未曾记账的原始用量无法凭空恢复。
+
 ### `GET /api/threads/:threadId/events`
 
 返回指定 thread 最近事件，用于手机端断线后恢复上下文。
@@ -699,7 +705,7 @@ Android 与 Web 聊天均按此方式订阅当前会话。Web 在空白对话时
 | `GET /api/settings/approval-summary` | 审批策略摘要 |
 | `GET/PUT /api/settings/remote-approval` | 桌面审批自动处理开关 |
 | `GET /api/settings/public-access`、`PUT /api/settings/public-access/password` | 公网入口状态 / 公网独立密码 |
-| `GET /api/usage?agent=&days=&threadId=` | 用量与配额（1-90 天） |
+| `GET /api/usage?agent=&days=&threadId=` | 用量与配额（1-90 天）；Codex 会话累计包含子代理，并返回独立分项 |
 | `GET /api/network/openai` | 读取电脑端 Clash 中名称包含 OpenAI 的分组、当前选择和节点延迟 |
 | `PUT /api/network/openai/node` | `{group,node}`，校验节点属于 OpenAI 组，切换后读回当前选择 |
 | `POST /api/network/openai/test` | `{group,node}`，测试指定节点延迟，返回 `{delay}`（毫秒） |

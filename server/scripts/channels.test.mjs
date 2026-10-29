@@ -19,6 +19,7 @@ async function fixture(t){
   });
   service.register({kind:'qq',connect:async value=>{context=value;return {onEvent:output=>sent.push(output),close:async()=>{}};}});
   const account=store.addAccount('qq','My QQ');
+  store.putPrivate(account.id,'qq-authorized',['owner','other']);
   const binding=await service.bind({accountId:account.id,chatId:'chat',senderId:'owner',threadId:'thread-a'});
   t.after(async()=>{await service.close();assert.ok(folder.startsWith(path.join(os.tmpdir(),'cmc-channels-')));await fs.rm(folder,{recursive:true,force:true});});
   return {store,service,account,binding,sent,receipts,get context(){return context;},get submitted(){return submitted;}};

@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import assert from 'node:assert/strict';
 import selfsigned from 'selfsigned';
 import WebSocket from 'ws';
+import {normalizePublicAccessUrl} from '../dist/services/publicAccessUrl.js';
 
 const home=path.join(os.homedir(),'.codex-mobile-control');
 const gateway=JSON.parse(fs.readFileSync(path.join(home,'server.json'),'utf8'));
@@ -14,6 +15,8 @@ const entry=JSON.parse(fs.readFileSync(path.join(home,'public-access.json'),'utf
 const password=fs.readFileSync(path.join(home,'public-password.txt'),'utf8').trim();
 const remoteUrl=process.argv[2]?new URL(process.argv[2]):undefined;
 if(remoteUrl&&remoteUrl.protocol!=='https:')throw new Error('Remote check requires HTTPS');
+const publicPrefix=new URL(remoteUrl??entry.publicUrl??'https://localhost').pathname.replace(/\/$/,'');
+const publicTarget=target=>publicPrefix+target;
 const certificate=await selfsigned.generate([{name:'commonName',value:'temporary public check'}],{keySize:2048});
 const encodedCertificate=Buffer.from(certificate.cert).toString('base64');
 function request(publicEntry,method,target,headers={},payload){
@@ -22,7 +25,7 @@ function request(publicEntry,method,target,headers={},payload){
   return new Promise((resolve,reject)=>{
     const req=transport.request({
       hostname:publicEntry&&remoteUrl?remoteUrl.hostname:'127.0.0.1',
-      port:publicEntry?(remoteUrl?Number(remoteUrl.port||443):entry.port):gateway.port,path:target,method,
+      port:publicEntry?(remoteUrl?Number(remoteUrl.port||443):entry.port):gateway.port,path:publicEntry?publicTarget(target):target,method,
       ...(!publicEntry?{ca:fs.readFileSync(gateway.https.certPath),servername:'localhost'}:{}),
       headers:{...headers,...(body===undefined?{}:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(body)})},
       timeout:target.startsWith('/api/models')?30000:10000,
@@ -44,7 +47,7 @@ function requestBytes(target,headers){
     const req=transport.request({
       hostname:remoteUrl?remoteUrl.hostname:'127.0.0.1',
       port:remoteUrl?Number(remoteUrl.port||443):entry.port,
-      path:target,method:'GET',headers,timeout:10000,
+      path:publicTarget(target),method:'GET',headers,timeout:10000,
     },response=>{
       const chunks=[];
       response.on('data',part=>chunks.push(part));
@@ -57,12 +60,12 @@ function requestBytes(target,headers){
 }
 function proof(method,target){
   const time=String(Date.now()),nonce=crypto.randomBytes(18).toString('base64url');
-  const signer=crypto.createSign('sha256');signer.update(`${method}\n${target}\n${time}\n${nonce}`);signer.end();
+  const signer=crypto.createSign('sha256');signer.update(`${method}\n${publicTarget(target)}\n${time}\n${nonce}`);signer.end();
   return {'X-Device-Time':time,'X-Device-Nonce':nonce,'X-Device-Signature':signer.sign(certificate.private).toString('base64')};
 }
 function checkSocket(target,headers){
   const base=remoteUrl??new URL(`http://127.0.0.1:${entry.port}`);
-  const url=new URL(target,base);
+  const url=new URL(publicTarget(target),base);
   url.protocol=url.protocol==='https:'?'wss:':'ws:';
   return new Promise((resolve,reject)=>{
     const socket=new WebSocket(url,{headers,handshakeTimeout:10000});
@@ -80,7 +83,7 @@ let device;
 try {
   const pairing=await request(false,'POST','/api/pair/start',admin);
   assert.equal(pairing.status,200);
-  const configuredPublicUrl=/^https:\/\/[^/?#]+\/?$/.test(entry.publicUrl||'')?entry.publicUrl.replace(/\/$/,''):'';
+  const configuredPublicUrl=entry.publicUrl?normalizePublicAccessUrl(entry.publicUrl):'';
   assert.equal(pairing.body.publicUrl,configuredPublicUrl);
   assert.ok(pairing.body.setupUrl.includes('certSha256=')&&pairing.body.setupUrl.includes('publicUrl='));
   const claimTarget='/api/pair/claim';

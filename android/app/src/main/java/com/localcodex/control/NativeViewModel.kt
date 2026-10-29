@@ -15,11 +15,53 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
+import org.json.JSONArray
 import java.util.UUID
 
 private data class NativePending(val id:String,val threadId:String,val selection:Int,val text:String,val images:List<NativeImage>,val uploads:List<NativeUploadedFile>,val plan:Boolean=false,val restoreDraft:Boolean=true,
     val address:String="",val draftKey:String="",val projectId:String="",val model:String="",val effort:String="",val permission:String="full",val mode:String="",val fast:Boolean?=null,val submittedAt:String=java.time.Instant.now().toString(),val uncertain:Boolean=true,val failure:String="",val wireCommand:String="",val goal:Boolean=false,val certificateSha256:String?=null)
 class NativeViewModel(application:Application):AndroidViewModel(application) {
+    internal val sideChat=NativeSideChats(viewModelScope){
+        check(state.connected){"连接电脑后使用侧聊"}
+        checkNotNull(client){"尚未连接电脑"}.also{it.uploadOwner=store.uploadOwner()}
+    }
+    internal var threadToolBusy by mutableStateOf(false);private set
+    internal var threadToolError by mutableStateOf("");private set
+    internal fun returnFromSideChat(){
+        sideChat.minimize()
+    }
+    internal fun forkConversation(lastTurnId:String?=null){
+        if(threadToolBusy||!state.connected||state.threadId.isBlank())return
+        val api=client?:return;val source=state.threadId;val epoch=generation;val chosen=selection
+        threadToolBusy=true;threadToolError=""
+        viewModelScope.launch{
+            try{
+                val result=api.nativeJsonAsync("POST","/api/threads/$source/fork",JSONObject().put("ephemeral",false).put("lastTurnId",lastTurnId))
+                if(epoch==generation&&client===api&&chosen==selection)openThread(result.getJSONObject("thread").toThreadRecord())
+            }catch(e:CancellationException){throw e}catch(e:Exception){threadToolError=e.message.orEmpty()}
+            finally{threadToolBusy=false}
+        }
+    }
+    internal suspend fun threadToolRequest(method:String,path:String,body:JSONObject?=null):JSONObject {
+        val api=client?:throw IllegalStateException("尚未连接电脑");val epoch=generation
+        val response=api.nativeJsonAsync(method,path,body)
+        if(epoch!=generation||client!==api)throw CancellationException("电脑连接已变化")
+        return response
+    }
+    internal fun startPerformanceRecording(){
+        val owner=NativePerformanceRecorder.start()?:return
+        viewModelScope.launch{
+            try{NativePerformanceRecorder.gatewaySnapshot(owner,gatewayPerformanceSnapshot()?.toString(),before=true)}
+            catch(e:CancellationException){throw e}catch(_:Exception){/* Local capture also works while disconnected. */}
+        }
+    }
+    internal suspend fun gatewayPerformanceSnapshot():JSONObject? {
+        val api=client?:return null
+        if(!state.connected)return null
+        val epoch=generation
+        val result=api.nativeJsonAsync("GET","/api/diagnostics/performance")
+        return result.takeIf{epoch==generation&&client===api}
+    }
     suspend fun managementRequest(route:String,body:JSONObject?=null):JSONObject {
         val api=client?:throw IllegalStateException("尚未连接电脑")
         if(!state.connected)throw IllegalStateException("连接电脑后使用管理功能")
@@ -53,10 +95,10 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
     fun setHarnessPublicAccess(agent:String,enabled:Boolean)=agentHealthController.setPublicAccess(agent,enabled)
     fun loadAgentHealth(force:Boolean=false):Job?=agentHealthController.load(force)
     fun checkAgentUpdates():Job?=agentHealthController.checkUpdates()
-    private val networkController=NativeNetworkController(viewModelScope,::managementConnection,::nativeError)
+    private val networkController=NativeNetworkController(viewModelScope,::managementConnection,::nativeError){refreshBackends(force=true)}
     internal val networkState:NativeNetworkState get()=networkController.state
     private fun resetNetwork()=networkController.reset()
-    fun loadNetwork()=networkController.load()
+    fun loadNetwork(provider:String=networkState.provider)=networkController.load(provider)
     fun selectNetworkNode(group:String,node:String)=networkController.selectNode(group,node)
     fun testNetworkNode(group:String,node:String)=networkController.testNode(group,node)
     internal val readingPositions=NativeReadingPositions()
@@ -69,9 +111,9 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
     private var uploadDraftJob:Job?=null
     private fun uploadDraftBody():JSONObject {
         val records=(failedSends.values.toList()+listOfNotNull(pending)).filter(::sameComputer)
-        val refs=store.uploadDraftRefs(state.address,state.certificateSha256)+
-            (state.images+records.flatMap{it.images}).map{JSONObject().put("kind","image").put("id",it.id)}+
-            (state.uploads+records.flatMap{it.uploads}).map{JSONObject().put("kind","file").put("id",it.id)}
+        val refs=store.uploadDraftRefs(state.address,state.certificateSha256)+sideChat.uploadDraftRefs()+
+            (state.images+state.messageEditImages+records.flatMap{it.images}).map{JSONObject().put("kind","image").put("id",it.id)}+
+            (state.uploads+state.messageEditUploads+records.flatMap{it.uploads}).map{JSONObject().put("kind","file").put("id",it.id)}
         return JSONObject().put("owner",store.uploadOwner()).put("items",org.json.JSONArray(refs.distinctBy{it.toString()}))
     }
     private fun scheduleUploadDraftSync(){
@@ -208,6 +250,15 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         return value
     }
     private val prefs=application.getSharedPreferences("native",0)
+    internal var hiddenHarnesses by mutableStateOf(prefs.getStringSet("hiddenHarnesses",emptySet()).orEmpty().filter{it in nativeHarnesses}.toSet());private set
+    internal fun setHarnessVisible(agent:String,visible:Boolean){
+        if(agent !in nativeHarnesses)return
+        val hidden=if(visible)hiddenHarnesses-agent else hiddenHarnesses+agent
+        if(nativeHarnesses.all{it in hidden})return
+        hiddenHarnesses=hidden
+        prefs.edit().putStringSet("hiddenHarnesses",hidden).apply()
+    }
+    internal val appUpdates=NativeAppUpdateController(application,viewModelScope,connection={client})
     private val modelServiceNotices=ModelServiceNoticeTracker()
     private val eventIndex=NativeEventIndex()
     private val eventBuffer=NativeEventBuffer()
@@ -218,7 +269,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         private set(value){
             val previous=currentState
             if(previous.events!==value.events){eventIndex.onEventsChanged(value.events);eventBuffer.onEventsChanged(value.events)}
-            currentState=value
+            currentState=if(value.editingMessage!=null&&value.editingMessage.threadId!=value.threadId)value.copy(editingMessage=null,messageEditText="",messageEditImages=emptyList(),messageEditUploads=emptyList(),messageEditAttachments=emptyList())else value
             if(previous.threadId!=value.threadId)client?.focusEvents(value.threadId)
             if(previous.connected&&!value.connected||previous.address!=value.address||previous.certificateSha256!=value.certificateSha256)uploadStorageState=NativeUploadStorageState()
             // Streaming text does not write preferences. Only attachment edits
@@ -227,6 +278,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
                 store.saveAttachmentDraft(attachmentScope(value),value.images,value.uploads)
                 scheduleUploadDraftSync()
             }
+            if(previous.messageEditImages!==value.messageEditImages||previous.messageEditUploads!==value.messageEditUploads)scheduleUploadDraftSync()
             if(value.connected&&(!previous.connected||previous.uploading&&!value.uploading))scheduleUploadDraftSync()
             if(value.recoveryVersion!=previous.recoveryVersion)scheduleUploadDraftSync()
         }
@@ -243,21 +295,27 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
     internal var uiForeground by mutableStateOf(true)
         private set
     private val reconnectWake=Channel<Unit>(Channel.CONFLATED)
-    private val networkMonitor=NativeNetworkMonitor(application){
-        if(uiForeground&&connection?.isActive==true){
-            if(state.connected)verifyForegroundConnection() else requestConnectionRestart()
-        }
+    private val networkMonitor=NativeNetworkMonitor(application){networkChanged()}
+    internal fun networkChanged(){
+        foregroundSocketCheck?.cancel()
+        client?.discardIdleConnections()
+        // A socket on the previous network cannot validate the new route.
+        requestConnectionRestart("network_changed")
     }
-    private fun requestConnectionRestart(){
-        if(connection?.isActive==true){preferLocalReconnect=true;reconnectWake.trySend(Unit)}
+    private fun requestConnectionRestart(cause:String){
+        if(connection?.isActive==true){client?.markEventDisconnect(cause);preferLocalReconnect=true;reconnectWake.trySend(Unit)}
     }
     private fun verifyForegroundConnection(){
-        foregroundSocketCheck?.cancel()
+        if(foregroundSocketCheck?.isActive==true)return
         val active=client?:return;val epoch=generation
-        if("foreground-websocket-probe" !in state.capabilities)return
+        if("foreground-websocket-probe" !in state.capabilities){requestConnectionRestart("foreground_unverified");return}
         foregroundSocketCheck=viewModelScope.launch{
-            val alive=active.verifyEventConnection(if(state.activeAddress==state.address)2000L else 5000L)
-            if(!alive&&epoch==generation&&client===active)requestConnectionRestart()
+            var restarted=false
+            val alive=active.verifyEventConnection(if(state.activeAddress==state.address)800L else 1500L){
+                if(epoch==generation&&client===active){restarted=true;requestConnectionRestart("foreground_probe_timeout")}
+            }
+            if(alive&&epoch==generation&&client===active)NativePerformanceRecorder.session.mark(NativePerformanceStage.SOCKET_VERIFIED)
+            if(!alive&&!restarted&&epoch==generation&&client===active)requestConnectionRestart("foreground_probe_timeout")
         }
     }
     private suspend fun awaitReconnectRetry(attempts:Int){
@@ -266,17 +324,39 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
     private val pendingReads=mutableMapOf<String,Long>()
     private val pendingReadJobs=mutableMapOf<String,Job>()
     private var manualUnreadSelection:Int?=null
+    private var readReceiptGeneration=-1
+    private val readReceipts=mutableMapOf<String,Long>()
+    internal var readableHistory by mutableStateOf<Triple<Int,Int,Long>?>(null)
+        private set
+    private fun knownThreadRead(row:ThreadRecord):ThreadRecord{
+        if(readReceiptGeneration!=generation){readReceipts.clear();readReceiptGeneration=generation}
+        return if(row.completedAt>0&&row.completedAt<=(readReceipts[row.id]?:0L))row.copy(unread=false) else row
+    }
+    private fun listedThread(id:String)=(state.threads.asSequence()+state.projectThreads.values.asSequence().flatMap{it.rows.asSequence()})
+        .filter{it.id==id}.maxWithOrNull(compareBy<ThreadRecord>{it.completedAt}.thenBy{it.unread})
+    internal fun unreadCompletion(id:String)=listedThread(id)?.takeIf{it.unread}?.completedAt?:0L
     private fun applyThreadRead(id:String,readThrough:Long){
-        fun read(row:ThreadRecord)=if(row.id==id&&row.completedAt>0&&row.completedAt<=readThrough)row.copy(unread=false) else row
-        state=state.copy(threads=state.threads.map(::read),projectThreads=state.projectThreads.mapValues{(_,page)->page.copy(rows=page.rows.map(::read))})
+        if(readReceiptGeneration!=generation){readReceipts.clear();readReceiptGeneration=generation}
+        if(readThrough<=(readReceipts[id]?:0L))return
+        readReceipts[id]=maxOf(readReceipts[id]?:0L,readThrough)
+        state=state.copy(threads=state.threads.map(::knownThreadRead),projectThreads=state.projectThreads.mapValues{(_,page)->page.copy(rows=page.rows.map(::knownThreadRead))})
+        if(state.threadFilter==NativeThreadFilter.ALL)rememberSidebar()
     }
     internal fun markResultRead(id:String){
         val api=client?:return
         if(!uiForeground||id!=state.threadId||state.loadingHistory||state.running||manualUnreadSelection==selection||"thread-read-state" !in state.capabilities)return
-        val thread=state.threads.find{it.id==id}?:return
+        val thread=listedThread(id)?:return
         if(!thread.unread||thread.completedAt<=0||pendingReads[id]==thread.completedAt)return
-        // A sidebar refresh may arrive before the new result's history.
-        if(state.events.none{it.type=="turn.completed"&&runCatching{java.time.Instant.parse(it.createdAt).toEpochMilli()}.getOrDefault(0)>=thread.completedAt})return
+        if("history" in state.historyErrors)return
+        // Native histories can use different completion timestamps. A successful
+        // history read covers the sidebar revision captured before that read.
+        val historyThrough=readableHistory?.takeIf{it.first==generation&&it.second==selection}?.third?:0L
+        if(historyThrough<thread.completedAt&&state.events.none{it.type=="turn.completed"&&runCatching{java.time.Instant.parse(it.createdAt).toEpochMilli()}.getOrDefault(0)>=thread.completedAt}){
+            // The sidebar may arrive after the initial history. Read the newer
+            // revision through the existing coalesced loader instead of waiting for polling.
+            refreshChangedHistory(id)
+            return
+        }
         val at=thread.completedAt;val epoch=generation
         pendingReads[id]=at
         pendingReadJobs[id]=viewModelScope.launch{
@@ -288,15 +368,17 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         }
     }
     fun setForeground(visible:Boolean){
+        sideChat.setForeground(visible)
         if(uiForeground==visible)return
         uiForeground=visible
+        if(visible)NativePerformanceRecorder.session.resume()
         foregroundSocketCheck?.cancel()
         if(!visible)state=state.copy(taskNotice=null)
         if(visible){
             // Silence during an idle conversation does not mean its transport is dead.
             if(state.connected)verifyForegroundConnection()
-            else if(state.connecting)requestConnectionRestart()
-            nextLocalRouteProbeAt=0L;probeLocalRoute();loadFast()
+            else if(connection?.isActive==true)requestConnectionRestart("foreground_reconnect")
+            probeLocalRoute();loadFast()
         }else localRouteProbe?.cancel()
         if(state.connected&&visible)startPolling()
     }
@@ -316,7 +398,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
                     catch(e:CancellationException){throw e}catch(_:Exception){false}
                 if(available&&isActive&&uiForeground&&generation==epoch&&client===active&&state.connected){
                     // Return through the existing socket loop; keep the conversation and caches.
-                    requestConnectionRestart()
+                    requestConnectionRestart("prefer_local")
                     return@launch
                 }
             }
@@ -461,13 +543,17 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
     }
     private fun sendingRecord(id:String,text:String,images:List<NativeImage>,uploads:List<NativeUploadedFile>,restore:Boolean=true)=NativePending(id,state.threadId,selection,text,images,uploads,state.nextMode=="plan",restore,store.baseUrl().trimEnd('/'),key(),state.projectId,state.model,state.effort,state.permission,state.nextMode,if(state.harness=="codex")state.fastMode else null,certificateSha256=state.certificateSha256.lowercase())
     private fun freezeCommand(p:NativePending,thread:ThreadRecord?=state.threads.find{it.id==p.threadId}):NativePending {
-        val command=client!!.nativeCommand(thread,state.projects.find{it.id==p.projectId},p.text,p.model,p.effort,p.permission,p.id,if(p.goal)emptyList() else p.images,if(p.goal)emptyList() else p.uploads,p.mode,p.fast)
+        val command=client!!.nativeCommand(p.threadId,thread,state.projects.find{it.id==p.projectId},p.text,p.model,p.effort,p.permission,p.id,if(p.goal)emptyList() else p.images,if(p.goal)emptyList() else p.uploads,p.mode,p.fast)
         return p.copy(wireCommand=command.toString())
     }
     private fun confirmSend(id:String,threadId:String="",status:String=""){
         val p=pending?.takeIf{it.id==id}?:failedSends[id]?:return
         if(!sameComputer(p))return
         val confirmedThread=threadId.ifBlank{p.threadId}
+        if(p.threadId.isNotBlank()&&confirmedThread!=p.threadId){
+            if(pending?.id==id)recoverPending("消息回执与发送会话不一致，内容已保留，请检查会话")
+            return
+        }
         val scopes=listOfNotNull(attachmentScope(draftKey=p.draftKey),confirmedThread.takeIf{it.isNotBlank()}?.let{
             attachmentScope(state.copy(threadId=it,harness=nativeThreadAgent(it)))
         }).distinct()
@@ -490,7 +576,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
             if(sameContext)state=state.copy(images=state.images.filter{it.id !in imageIds},uploads=state.uploads.filter{it.id !in fileIds})
         }
         if(sameContext&&(pending==null||pending?.id==id)&&(p.selection==selection||failedSends.containsKey(id))){
-            if(threadId.isNotBlank()&&(state.threadId.isBlank()||state.threadId==p.threadId)){
+            if(threadId.isNotBlank()&&p.threadId.isBlank()&&state.threadId.isBlank()&&p.selection==selection){
                 moveCreatedConversationDraft(p,threadId)
                 state=state.copy(threadId=threadId,fastMode=null)
             }
@@ -530,6 +616,16 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
     fun retryFailedMessage(id:String){
         if(isReadOnly())return
         val p=failedSends[id]?.takeIf{sameComputer(it)}?:return;val api=client?:return
+        if(p.wireCommand.isNotBlank()){
+            val command=JSONObject(p.wireCommand)
+            // Old versions could freeze thread.start for an existing conversation.
+            // A newly created thread keeps its original new-conversation draft key.
+            val existingOrigin=p.threadId.isNotBlank()&&p.draftKey==key(state.copy(threadId=p.threadId,harness=nativeThreadAgent(p.threadId)))
+            if(command.optString("type")=="thread.start"&&existingOrigin||command.optString("type")=="turn.start"&&command.optString("threadId")!=p.threadId){
+                error("旧消息的发送目标不一致，内容已保留，请复制后在原会话发送")
+                return
+            }
+        }
         nativeModelSelectionError(nativeAgent(p.model),p.model,state.models).takeIf{it.isNotBlank()}?.let{error(it);return}
         if(state.sending||!state.connected)return
         val epoch=generation;val chosen=selection;val current=p.copy(selection=chosen)
@@ -598,8 +694,9 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         fastReadClient=null;fastReadContext=null;lastFastReadAt=0L
         recoveryQuery?.cancel();recoveryQuery=null
         submissionRetry?.cancel();submissionRetry=null
+        backendStatusTicket++;modelCatalogJob?.cancel();modelCatalogJob=null
         resetUsageRefresh()
-        state=state.copy(fastBusy=client?.let{fastWrites[it to state.threadId]?.isActive}==true,remoteApprovalBusy=false,capacityRetryBusy=false)
+        state=state.copy(fastBusy=client?.let{fastWrites[it to state.threadId]?.isActive}==true,remoteApprovalBusy=false,capacityRetryBusy=false,backendStatusLoading=false)
     }
     private fun clearConversationModelServiceNotice(){if(state.modelServiceNotice?.quotaSnapshot!=true)dismissModelServiceNotice()}
     private var stopRequestId:String?=null
@@ -629,7 +726,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         rememberThreadSettings()
         return true
     }
-    private fun applyConnectedModelCatalog(api:GatewayClient,address:String,incoming:List<NativeModel>,pending:Set<String>){
+    private fun applyModelCatalog(api:GatewayClient,incoming:List<NativeModel>,pending:Set<String>){
         val models=nativeMergeModelDirectory(incoming,state.models,pending)
         if(models.isEmpty()&&state.harness in pending)return
         val candidates=models.filter{it.harness==state.harness&&it.available}
@@ -637,7 +734,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
             else candidates.firstOrNull{it.id==state.model}?:candidates.firstOrNull{it.id==prefs.getString("model:${state.harness}",prefs.getString("model",""))}?:candidates.firstOrNull{it.id.endsWith("::default")}?:candidates.find{it.id=="gpt-6-sol"}?:candidates.find{it.id=="gpt-6.1-sol"}?:candidates.firstOrNull()
         val keepSelection=model==null&&state.harness in pending
         val savedEffort=if(model?.id==state.model)state.effort else model?.let{prefs.getString("effort:${it.id}",nativeTaskDefaultEffort(it.id,it.defaultEffort)).orEmpty()}
-        state=state.copy(models=nativeModelsWithSelection(models,model),modelsFallback=false,backends=api.nativeBackendStatuses,backendStatusError="",model=if(keepSelection)state.model else model?.id.orEmpty(),effort=if(keepSelection)state.effort else if(model?.efforts?.contains(savedEffort)==true)savedEffort.orEmpty() else model?.defaultEffort.orEmpty(),activeAddress=address)
+        state=state.copy(models=nativeModelsWithSelection(models,model),modelsFallback=false,backends=api.nativeBackendStatuses,backendStatusError="",model=if(keepSelection)state.model else model?.id.orEmpty(),effort=if(keepSelection)state.effort else if(model?.efforts?.contains(savedEffort)==true)savedEffort.orEmpty() else model?.defaultEffort.orEmpty())
         applyDesktopModel()
     }
     private fun key(value:NativeState=state)="native:"+(if(value.harness=="codex")"" else value.harness+":")+value.threadId.ifBlank { "new:${value.projectId}" }
@@ -723,10 +820,9 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
     fun testPublicConnection(publicUrl:String=state.publicUrl,password:String=state.remotePassword) {
         if(state.publicTestRunning)return
         val remote=publicUrl.trim().trimEnd('/')
-        val uri=runCatching{java.net.URI(remote)}.getOrNull()
         val invalid=when {
             remote.isBlank()->"请先填写公网 HTTPS 地址"
-            uri?.scheme!="https"||uri.host.isNullOrBlank()||uri.userInfo!=null||!uri.rawPath.isNullOrBlank()||uri.rawQuery!=null||uri.rawFragment!=null->"请输入完整的公网 HTTPS 地址，例如 https://example.com"
+            publicConnectionAddressError(remote)!=null->publicConnectionAddressError(remote)
             password.isBlank()->"请先填写公网独立密码"
             else->null
         }
@@ -740,8 +836,8 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
             // A separate client keeps the current session and its socket untouched.
             val probe=GatewayClient(remote,token,remotePassword=password,useDeviceCertificate=true)
             try {
-                withTimeout(25000) {
-                    check(withContext(Dispatchers.IO){probe.health()}.ok){"服务健康检查未通过"}
+                withTimeout(40000) {
+                    check(probe.probeHealth().ok){"服务健康检查未通过"}
                     if(token.isBlank()){
                         state=state.copy(publicTestMessage="公网可达，密码验证通过；配对后可继续验证设备认证和实时连接")
                         return@withTimeout
@@ -768,6 +864,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
             catch(e:Exception){
                 val detail=when {
                     e.message?.contains("401")==true&&stage=="公网 HTTPS"->"公网密码不正确"
+                    e.message?.contains("404")==true&&stage=="公网 HTTPS"->"公网地址或秘密路径不匹配，请复制控制台中的完整地址"
                     e.message?.contains("401")==true->"设备认证未通过，请重新配对"
                     else->nativeError(e)
                 }
@@ -805,10 +902,13 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
                     }}
                     val fresh=quota?.optBoolean("stale",true)==false
                     val now=System.currentTimeMillis()/1000
-                    val notice=modelServiceNotices.quota(harness,windows,!fresh,now)
+                    val credit=quota?.optJSONObject("credits")
+                    val creditBalance=credit?.optDouble("balance",Double.NaN)?.takeIf{it.isFinite()&&it>=0}
+                    val unlimitedCredits=credit?.optBoolean("unlimited")==true
+                    val notice=modelServiceNotices.quota(harness,windows,!fresh,now,creditBalance,unlimitedCredits)
                     if(notice!=null&&(notice.kind=="quota"||state.modelServiceNotice?.kind !in setOf("capacity","quota")))state=state.copy(modelServiceNotice=notice)
                     else if(fresh&&state.modelServiceNotice?.quotaSnapshot==true){
-                        val current=quotaWindowNotice(windows,now)
+                        val current=quotaWindowNotice(windows,now,creditBalance,unlimitedCredits)
                         if(current!=null)state=state.copy(modelServiceNotice=current)
                         else if(windows.isNotEmpty()&&windows.all{it.remainingPercent?.let{value->value.isFinite()&&value>LOW_QUOTA_PERCENT}==true})dismissModelServiceNotice()
                     }
@@ -827,22 +927,24 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
     fun draft(text:String){state=state.copy(draft=text);store.saveChatDraft(attachmentScope(),text)}
     internal fun messageEditTurn(event:ChatEvent):String {
         if(state.harness!="codex"||isReadOnly()||state.running||state.sending||state.uploading||state.loadingHistory||"last-message-edit" !in state.capabilities)return ""
-        if(event.type!="user.message"||event.threadId!=state.threadId||event.status=="send.failed"||event.text.isBlank()||event.questionReplies.isNotEmpty())return ""
+        if(event.type!="user.message"||event.threadId!=state.threadId||event.status=="send.failed"||event.questionReplies.isNotEmpty())return ""
         val latest=state.events.lastOrNull{it.type=="user.message"}?:return ""
         if(latest.eventId!=event.eventId||event.eventId.isBlank())return ""
         return event.turnId.ifBlank{state.events.lastOrNull{it.type=="turn.started"}?.turnId.orEmpty()}
     }
-    fun editMessage(event:ChatEvent){if(messageEditTurn(event).isNotBlank())state=state.copy(editingMessage=event,messageEditText=event.text)}
+    fun editMessage(event:ChatEvent){if(messageEditTurn(event).isNotBlank())state=state.copy(editingMessage=event,messageEditText=event.text,messageEditImages=event.images,messageEditUploads=event.uploads,messageEditAttachments=event.attachments)}
     fun messageEditText(text:String){state=state.copy(messageEditText=text)}
-    fun cancelMessageEdit(){state=state.copy(editingMessage=null,messageEditText="")}
+    fun cancelMessageEdit(){if(state.editingMessage!=null&&state.uploading)cancelUpload();state=state.copy(editingMessage=null,messageEditText="",messageEditImages=emptyList(),messageEditUploads=emptyList(),messageEditAttachments=emptyList())}
+    fun removeMessageEditAttachment(path:String){state=state.copy(messageEditAttachments=state.messageEditAttachments.filter{it.path!=path})}
     fun saveMessageEdit(){
         val event=state.editingMessage?:return;val api=client?:return
         if(!state.connected)return
         val turn=messageEditTurn(event);if(turn.isBlank()){error("这条消息已不是最后一条，请刷新后再编辑");return}
-        val text=state.messageEditText.trim();if(text.isBlank())return
+        if(state.uploading)return
+        val text=state.messageEditText.trim();if(text.isBlank()&&state.messageEditImages.isEmpty()&&state.messageEditUploads.isEmpty()&&state.messageEditAttachments.isEmpty())return
         val thread=state.threads.find{it.id==state.threadId}?:ThreadRecord(state.threadId)
-        val record=freezeCommand(sendingRecord(UUID.randomUUID().toString(),text,event.images,event.uploads,false),thread)
-            .let{it.copy(wireCommand=JSONObject(it.wireCommand).put("replaceTurnId",turn).toString())}
+        val record=freezeCommand(sendingRecord(UUID.randomUUID().toString(),text,state.messageEditImages,state.messageEditUploads,false),thread)
+            .let{it.copy(wireCommand=JSONObject(it.wireCommand).put("replaceTurnId",turn).put("images",JSONArray(state.messageEditImages.map{JSONObject().put("id",it.id).put("name",it.name)})).put("files",JSONArray(state.messageEditUploads.map{JSONObject().put("id",it.id).put("name",it.name).put("mime",it.mime).put("size",it.size)})).put("keepAttachmentPaths",JSONArray(state.messageEditAttachments.map{it.path})).toString())}
         persistSend(record);pending=record;cancelMessageEdit();state=state.copy(sending=true,error="")
         if(!api.sendSocketMessage(JSONObject(record.wireCommand)))recoverPending("连接已断开，编辑尚未提交") else watchSubmission(record)
     }
@@ -903,6 +1005,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
     fun localConsoleAction(action:String,id:String?=null,enabled:Boolean?=null){
         if(!state.connected||state.localConsole.busyAction.isNotBlank())return
         val api=client?:return;val epoch=generation
+        val chosenSelection=selection;val chosenRevision=modelRevision
         consoleInfoTicket++;consoleInfoJob?.cancel()
         state=state.copy(localConsole=state.localConsole.copy(busyAction=action,infoLoading=false,infoError="",actionMessage=""))
         consoleActionJob=viewModelScope.launch {
@@ -912,22 +1015,12 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
                 val message=when(action){"refresh"->if(info.catalog.added.isEmpty())"官方模型已检查，${if(info.catalog.changed)"目录信息已更新" else "暂无新增模型"}" else "已更新模型目录，新增 ${info.catalog.added.size} 个模型";"rebuild"->"模型目录已重建";"toggle"->if(enabled==true)"模型已启用" else "模型已隐藏";"default"->"电脑默认模型已更新";else->"已开始更新统计索引"}
                 state=state.copy(localConsole=state.localConsole.copy(info=info,busyAction="",actionMessage=message))
                 if(action=="index")loadLocalConsole(includeInfo=false)
-                else try{
-                    val models=api.nativeModelsAsync(refresh=true)
-                    if(generation==epoch&&client===api){
-                        val selected=if(state.harness=="opencode")nativeOpenCodeSelection(models,state.model,state.models) else null
-                        state=state.copy(models=nativeModelsWithSelection(nativeModelCatalogOrDefaults(models),selected),modelsFallback=models.isEmpty(),backends=api.nativeBackendStatuses)
-                        if(!applyDesktopModel()){
-                        if(state.harness=="opencode")state=state.copy(model=selected?.id.orEmpty(),effort=state.effort.takeIf{it in selected?.efforts.orEmpty()}?:selected?.defaultEffort.orEmpty())
-                        else{
-                            models.find{it.id==state.model}?.let{current->if(state.effort !in current.efforts)state=state.copy(effort=current.defaultEffort)}
-                            if(state.threadId.isBlank()&&action=="default"&&state.harness=="codex")chooseModel(info.model)
-                            else if(models.none{it.id==state.model})(models.firstOrNull{it.id==info.model&&it.harness==state.harness}?:models.firstOrNull{it.harness==state.harness})?.let{chooseModel(it.id)}
-                        }
-                        }
-                        store.saveModelsAsync(state.address,models){generation==epoch&&client===api}
-                    }
-                }catch(e:CancellationException){throw e}catch(e:Exception){if(generation==epoch)state=state.copy(localConsole=state.localConsole.copy(infoError="控制台操作已完成，但会话模型列表刷新失败，请重连电脑。"))}
+                else {
+                    val defaultModel=info.model.takeIf{action=="default"&&selection==chosenSelection&&modelRevision==chosenRevision}
+                    refreshModelCatalog(force=true,defaultModel=defaultModel)?.join()
+                    if(generation==epoch&&client===api&&state.backendStatusError.isNotBlank())
+                        state=state.copy(localConsole=state.localConsole.copy(infoError="操作已完成，模型目录未全部更新，可重新读取。"))
+                }
             }catch(e:CancellationException){throw e}
             catch(e:Exception){if(generation==epoch)state=state.copy(localConsole=state.localConsole.copy(busyAction="",infoError=consoleError(e)))}
         }
@@ -946,20 +1039,22 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         if(parsed.host.isNullOrBlank()||parsed.userInfo!=null){error("请输入有效的电脑地址");return false}
         if(parsed.scheme!="https"&&parsed.host !in setOf("127.0.0.1","localhost","10.0.2.2")){error("内网地址必须使用 HTTPS");return false}
         val remote=publicUrl.trim().trimEnd('/')
-        if(remote.isNotBlank()&&(Uri.parse(remote).scheme!="https"||Uri.parse(remote).host.isNullOrBlank()||Uri.parse(remote).userInfo!=null)){error("公网地址必须是 HTTPS 地址");return false}
+        if(remote.isNotBlank())publicConnectionAddressError(remote)?.let{error(it);return false}
         if(certificateSha256.isNotBlank()&&!certificateSha256.replace(":","").matches(Regex("[0-9a-fA-F]{64}"))){error("本地证书指纹应为 64 位 SHA-256 十六进制字符");return false}
         if(route==ConnectionRoute.PUBLIC&&(remote.isBlank()||remotePassword.isBlank())){error("请先填写公网地址和独立密码");return false}
         var retryToken=if(code.isNotBlank())"" else token
         var retryCode=code
         connectionRetry={connect(url,retryToken,retryCode,remote,remotePassword,certificateSha256,route)}
         val computerChanged=url.trimEnd('/')!=state.address.trimEnd('/')||certificateSha256.lowercase()!=state.certificateSha256.lowercase()
+        if(computerChanged)sideChat.clear()
         val firstDraft=state.draft.takeIf{state.address.isBlank()&&computerChanged}
         recoverPending()
         if(computerChanged){
             store.saveChatDraft(attachmentScope(),state.draft)
             selection++;historyTicket++;historyJob?.cancel();historyInFlightFor=null;historyTurns=10
         }
-        cancelActivityLoads();localRouteProbe?.cancel();foregroundSocketCheck?.cancel();preferLocalReconnect=false
+        client?.markEventDisconnect("profile_changed")
+        cancelActivityLoads();localRouteProbe?.cancel();foregroundSocketCheck?.cancel();preferLocalReconnect=false;nextLocalRouteProbeAt=0L
         if(code.isNotBlank())state=state.copy(threads=emptyList(),projects=emptyList(),sidebarProjects=emptyList())
         else if(url!=state.address||certificateSha256!=state.certificateSha256||state.threads.isEmpty())restoreSidebar(url,fingerprint=certificateSha256)
         clearFileContext(preserveImage=code.isBlank()&&(!computerChanged||certificateSha256.isNotBlank()&&certificateSha256.equals(state.certificateSha256,ignoreCase=true)))
@@ -973,7 +1068,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         dismissModelServiceNotice()
         resetConsole()
         resetNetwork();resetArchivedThreads()
-        searchJob?.cancel();searchTicket++;state=state.copy(remoteSearch=NativeThreadSearch());queueMutationVersions.clear();connection?.cancel();polling?.cancel();listJob?.cancel();historyJob?.cancel();historyTicket++;historyInFlightFor=null;hydration=null;lastPinOrder=null;clearImageLoads();activityGroups.clear();activityDetails.clear();lastListRefresh=0;nextListRetryAt=0;state=state.copy(projectThreads=emptyMap(),activityLoading=emptySet(),activityErrors=emptyMap());generation++;foregroundTasks=TaskNotificationTracker();completedGoalNotices.clear();state=state.copy(taskNotice=null,automationSaving=false,automationsLoading=false,automationError="");val epoch=generation
+        searchJob?.cancel();searchTicket++;state=state.copy(remoteSearch=NativeThreadSearch());queueMutationVersions.clear();connection?.cancel();polling?.cancel();listJob?.cancel();historyJob?.cancel();historyTicket++;historyInFlightFor=null;hydration=null;lastPinOrder=null;clearImageLoads();activityGroups.clear();activityDetails.clear();lastListRefresh=0;nextListRetryAt=0;state=state.copy(projectThreads=emptyMap(),activityLoading=emptySet(),activityErrors=emptyMap());generation++;foregroundTasks=TaskNotificationTracker();taskNoticeWork.clear();taskNoticeTicket++;completedGoalNotices.clear();questionNoticeKeys.clear();state=state.copy(taskNotice=null,automationSaving=false,automationsLoading=false,automationError="");val epoch=generation
         if(computerChanged||code.isNotBlank()||retryToken!=store.token())client=null
         store.saveProfile(url,retryToken,remote,remotePassword,certificateSha256,route)
         restoreModels(url,preserveSelection=!computerChanged&&code.isBlank())
@@ -990,7 +1085,6 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
             var pairPending=retryCode.isNotBlank()
             var attempts=0
             var immediateLocalRetryAvailable=true
-            var recentLocalHealth:Pair<GatewayHealth,Long>?=null
             val transports=mutableMapOf<Pair<String,String>,GatewayClient>()
             fun transport(candidate:String):GatewayClient=transports.getOrPut(candidate to savedToken){
                 val publicConnection=candidate==remote&&remote.isNotBlank()
@@ -1000,8 +1094,9 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
                 var authenticationFailed=false
                 val restarted=runNativeConnectionAttempt(reconnectWake){
                 val candidates=connectionRouteCandidates(url,remote,remotePassword,route)
-                val reusedLocal=recentLocalHealth?.takeIf{!pairPending&&state.activeAddress==url&&url in candidates&&android.os.SystemClock.elapsedRealtime()-it.second<60000}
-                val ready=reusedLocal?.let{url to it.first}?:if(route==ConnectionRoute.AUTO&&!pairPending&&candidates.size>1){
+                // A disconnected socket invalidates its route evidence. Race fresh
+                // probes so a stale LAN result cannot delay the public fallback.
+                val ready=if(route==ConnectionRoute.AUTO&&!pairPending&&candidates.size>1){
                     try{firstResponsiveRoute(candidates){candidate->
                         transport(candidate).probeHealth().also{
                             check(it.ok){"服务健康检查未通过"}
@@ -1014,8 +1109,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
                         return@runNativeConnectionAttempt
                     }
                 }else null
-                // A cached LAN route still falls through to public if its handshake fails.
-                for((index,candidate) in (if(reusedLocal!=null)candidates else ready?.let{listOf(it.first)}?:candidates).withIndex()) {
+                for((index,candidate) in nativeConnectionAttemptRoutes(candidates,ready?.first).withIndex()) {
                   if(!isActive||generation!=epoch)break
                   val publicConnection=candidate==remote&&remote.isNotBlank()
                   var opened=false
@@ -1029,7 +1123,6 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
                         store.saveProfile(url,savedToken,remote,remotePassword,certificateSha256,route)
                     }
                     val health=ready?.takeIf{it.first==candidate}?.second?:api.probeHealth()
-                    val healthCheckedAt=if(reusedLocal!=null&&candidate==url)reusedLocal.second else android.os.SystemClock.elapsedRealtime()
                     check(health.ok){"服务健康检查未通过"}
                     state=state.copy(capabilities=health.capabilities,threadFilter=if("thread-sidebar-filters" in health.capabilities)state.threadFilter else NativeThreadFilter.ALL)
                     check(health.minAndroidProtocolVersion<=1){"请更新客户端"}
@@ -1040,33 +1133,19 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
                     state=state.copy(activeAddress=candidate)
                     listJob?.cancel()
                     launch{refreshLists(true,reportErrors=false)}
-                    val modelJob=launch modelLoad@{
-                    for(modelAttempt in 0..2){try{
-                    val models=connectedApi.nativeModelUpdates(){partial,pending->
-                        if(generation!=epoch||client!==connectedApi)throw CancellationException("电脑连接已变化")
-                        applyConnectedModelCatalog(connectedApi,candidate,partial,pending)
-                    }
-                    check(models.isNotEmpty()){"电脑没有返回可选模型，请重试"}
-                    if(generation!=epoch||client!==connectedApi)return@modelLoad
-                    store.saveModelsAsync(url,models){generation==epoch&&client===connectedApi}
-                    break
-                    }catch(e:CancellationException){throw e}catch(e:Exception){
-                        if(generation!=epoch||client!==connectedApi)return@modelLoad
-                        if(modelAttempt<2)delay((modelAttempt+1)*1000L)
-                        else state=state.copy(backendStatusError="模型目录读取失败：${nativeError(e)}")
-                    }}
-                    }
+                    val modelJob=refreshModelCatalog(attempts=3)
                     try{connectedApi.events(deferActivities="mobile-live-activity-details" in health.capabilities,streamThreadId=state.threadId.takeIf{"focused-thread-stream" in health.capabilities},discardPendingOnClose=true).collect { event ->
                         if(event.type=="connection.opened") {
+                            NativePerformanceRecorder.session.mark(NativePerformanceStage.SOCKET_OPEN)
                             opened=true
                             openedAt=android.os.SystemClock.elapsedRealtime()
                             preferLocalReconnect=false
-                            if(!publicConnection)recentLocalHealth=health to healthCheckedAt
                             historyRetryAfter.clear();state=state.copy(connected=true,connecting=false,error="",fastBusy=fastWrites[connectedApi to state.threadId]?.isActive==true);connectedApi.focusEvents(state.threadId);checkSubmission()
+                            appUpdates.check(automatic=true)
                             probeLocalRoute()
                             startPolling()
                         } else receive(event)
-                    }}finally{modelJob.cancel()}
+                    }}finally{modelJob?.cancel()}
                   }catch(e:CancellationException){throw e}
                   catch(e:Exception){if(!preferLocalReconnect)state=state.copy(error=if(route==ConnectionRoute.LOCAL)"内网连接失败：${nativeError(e)}" else if(!publicConnection&&index==0)"内网连接中断，正在重试：${nativeError(e)}" else connectionAttemptError(nativeError(e),publicConnection,remote,remotePassword));if(e.message?.contains("401")==true){authenticationFailed=true;break}}
                   finally{if(generation==epoch){
@@ -1080,8 +1159,14 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
                   recoverPending();state=state.copy(connected=false,connecting=true,historySyncing=false,loadingHistory=false,loadingOlderHistory=false)
                   }}
                   if(opened&&android.os.SystemClock.elapsedRealtime()-openedAt>=5000L){attempts=0;immediateLocalRetryAvailable=true}
-                  if(opened&&!publicConnection&&uiForeground&&immediateLocalRetryAvailable){preferLocalReconnect=true;immediateLocalRetryAvailable=false}
-                  if(preferLocalReconnect||opened&&!publicConnection)break
+                  if(opened&&!publicConnection&&!preferLocalReconnect){
+                      // HTTP can remain healthy while this route's WebSocket is
+                      // broken. Try the other route before racing HTTP again,
+                      // and let it settle before attempting to return to LAN.
+                      nextLocalRouteProbeAt=android.os.SystemClock.elapsedRealtime()+30000L
+                      if(candidates.size==1&&uiForeground&&immediateLocalRetryAvailable){preferLocalReconnect=true;immediateLocalRetryAvailable=false}
+                  }
+                  if(preferLocalReconnect)break
                 }
                 }
                 if(restarted)preferLocalReconnect=true
@@ -1096,7 +1181,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         if(!hasSavedPairing()){error("请先连接电脑并完成配对");return}
         connect(state.address,publicUrl=state.publicUrl,remotePassword=state.remotePassword,certificateSha256=state.certificateSha256,route=route)
     }
-    fun disconnect(){cancelActivityLoads();agentHealthController.reset();localRouteProbe?.cancel();foregroundSocketCheck?.cancel();preferLocalReconnect=false;clearFileContext();clearStop();resetStatusReads();resetConsole();resetNetwork();resetArchivedThreads();searchJob?.cancel();searchTicket++;state=state.copy(remoteSearch=NativeThreadSearch());queueMutationVersions.clear();generation++;foregroundTasks=TaskNotificationTracker();completedGoalNotices.clear();state=state.copy(taskNotice=null,automationSaving=false,automationsLoading=false,automationError="");connection?.cancel();polling?.cancel();listJob?.cancel();historyJob?.cancel();historyTicket++;historyInFlightFor=null;hydration=null;clearImageLoads();recoverPending();state=state.copy(connected=false,connecting=false,historySyncing=false,loadingHistory=false,loadingOlderHistory=false,codexReady=false,codexStarting=false,codexStatusLoading=false,codexStatusError="",backendRestart=NativeBackendRestart(),backendStatusLoading=false,backendStatusError="")}
+    fun disconnect(){client?.markEventDisconnect("user_disconnect");cancelActivityLoads();agentHealthController.reset();localRouteProbe?.cancel();foregroundSocketCheck?.cancel();preferLocalReconnect=false;clearFileContext();clearStop();resetStatusReads();resetConsole();resetNetwork();resetArchivedThreads();searchJob?.cancel();searchTicket++;state=state.copy(remoteSearch=NativeThreadSearch());queueMutationVersions.clear();generation++;foregroundTasks=TaskNotificationTracker();taskNoticeWork.clear();taskNoticeTicket++;completedGoalNotices.clear();questionNoticeKeys.clear();state=state.copy(taskNotice=null,automationSaving=false,automationsLoading=false,automationError="");connection?.cancel();polling?.cancel();listJob?.cancel();historyJob?.cancel();historyTicket++;historyInFlightFor=null;hydration=null;clearImageLoads();recoverPending();state=state.copy(connected=false,connecting=false,historySyncing=false,loadingHistory=false,loadingOlderHistory=false,codexReady=false,codexStarting=false,codexStatusLoading=false,codexStatusError="",backendRestart=NativeBackendRestart(),backendStatusLoading=false,backendStatusError="")}
     fun chooseModel(id:String){if(state.models.any{it.id==id&&!it.available}){error(state.models.find{it.id==id}?.unavailableReason.orEmpty());return};modelRevision++;if(nativeAgent(id)!=state.harness){error("请在新会话中切换助手");return};val m=state.models.find{it.id==id}?:return;val saved=prefs.getString("effort:$id",nativeTaskDefaultEffort(id,m.defaultEffort)).orEmpty();state=state.copy(model=id,effort=if(saved in m.efforts)saved else m.defaultEffort);prefs.edit().putString("model:${state.harness}",id).apply();rememberThreadSettings();if(state.harness=="antigravity"){resetUsageRefresh();state=state.copy(modelServiceNotice=state.modelServiceNotice?.takeUnless{it.quotaSnapshot});if(state.connected)loadUsage()}}
     fun effort(value:String){modelRevision++;if(state.models.find{it.id==state.model}?.efforts?.contains(value)==true){state=state.copy(effort=value);prefs.edit().putString("effort:${state.model}",value).apply();rememberThreadSettings()}}
     fun permission(value:String){if(value in setOf("ask","auto","full")||(value=="custom"&&state.harness=="codex")){state=state.copy(permission=value);prefs.edit().putString("permission:${state.harness}",value).apply();rememberThreadSettings()}}
@@ -1131,15 +1216,20 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         }
     }
     private fun rememberThreadSettings(){if(state.threadId.isNotBlank())prefs.edit().putString("thread:${state.threadId}:model",state.model).putString("thread:${state.threadId}:effort",state.effort).putString("thread:${state.threadId}:permission",state.permission).apply()}
-    fun switchHarness(harness:String){
-        if(harness!=state.harness)dismissModelServiceNotice()
-        if(harness==state.harness)return
-        if(!nativeBackendAvailable(harness,state.models,state.backends)){error(nativeBackendReason(harness,state.models,state.backends));return}
+    fun switchHarness(harness:String):Boolean{
+        if(harness==state.harness)return true
+        if(!nativeBackendAvailable(harness,state.models,state.backends)){error(nativeBackendReason(harness,state.models,state.backends));return false}
+        dismissModelServiceNotice()
         searchJob?.cancel();searchTicket++;state=state.copy(remoteSearch=NativeThreadSearch())
-        if(state.sending){error("消息正在提交，请稍后切换");return}
+        // Recover an unacknowledged submission while its original harness and
+        // draft scope are still selected, just as conversation navigation does.
+        rememberConversation()
+        recoverPending()
         store.saveChatDraft(attachmentScope(),state.draft)
         prefs.edit().putString("workspace:"+state.harness+":thread",state.threadId).putString("workspace:"+state.harness+":project",state.projectId).apply()
-        state=state.copy(harness=harness,draft="",images=emptyList(),uploads=emptyList(),codexStarting=false,codexStatusLoading=false,codexStatusError="");prefs.edit().putString("harness",harness).apply()
+        // A new harness must not queue behind the previous harness's list read.
+        listJob?.cancel();listJob=null;listTicket++;sidebarRefreshPending=false
+        state=state.copy(harness=harness,draft="",images=emptyList(),uploads=emptyList(),loadingSidebar=false,projectThreads=emptyMap(),codexStarting=false,codexStatusLoading=false,codexStatusError="");prefs.edit().putString("harness",harness).apply()
         restoreSidebar(state.address,harness)
         val project=state.projects.find{it.id==prefs.getString("workspace:"+harness+":project","")}
         newThread(project,false)
@@ -1149,6 +1239,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         notificationThreadId=if(thread==null)prefs.getString("workspace:"+harness+":thread","").orEmpty() else ""
         viewModelScope.launch{refreshLists(true)}
         state=state.copy(error="",usage=null,usageError="",files=emptyList(),file=null,fileDraft="",terminal="",terminalSession="",diff="",remoteSearch=NativeThreadSearch())
+        return true
     }
     fun selectNewProject(project:Project?){
         if(state.threadId.isNotBlank())return
@@ -1167,6 +1258,8 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         }
     }
     fun newThread(project:Project?=null,saveCurrent:Boolean=true){
+        sideChat.minimize()
+        notificationThreadId=""
         cancelActivityLoads()
         clearFileContext()
         if(saveCurrent)rememberConversation()
@@ -1267,6 +1360,16 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
                 state=state.copy(threads=state.threads.map(::updated),projectThreads=state.projectThreads.mapValues{(_,page)->page.copy(rows=page.rows.map(::updated))})
                 rememberSidebar();refreshSidebar()
             }}
+        }
+    }
+    fun markThreadRead(thread:ThreadRecord){
+        val api=client?:return
+        if(!state.connected||thread.readOnly||nativeReadOnlyThreadId(thread.id)||thread.completedAt<=0)return
+        val epoch=generation
+        if(state.threadId==thread.id)manualUnreadSelection=null
+        scopedWork({epoch==generation&&api===client}){
+            val readThrough=api.markThreadRead(thread.id,thread.completedAt)
+            withContext(Dispatchers.Main){if(epoch==generation&&api===client){applyThreadRead(thread.id,readThrough);refreshSidebar()}}
         }
     }
     private val goalFailures=mutableStateMapOf<Pair<Int,String>,String>()
@@ -1393,7 +1496,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
             else viewModelScope.launch{refreshLists(true)}
         }
     }
-    fun openThread(thread:ThreadRecord){cancelActivityLoads();if(state.taskNotice?.threadId==thread.id)state=state.copy(taskNotice=null);clearFileContext();rememberConversation();val cached=conversations.get(conversationKey(thread.id,nativeThreadAgent(thread.id)));recoverPending();clearStop();resetUsageRefresh();if(nativeThreadAgent(thread.id)!=state.harness)dismissModelServiceNotice() else clearConversationModelServiceNotice();state=state.copy(threads=(state.threads+thread).distinctBy{it.id});desktopModels.remove(thread.id);store.saveChatDraft(attachmentScope(),state.draft);state=state.copy(harness=nativeThreadAgent(thread.id));prefs.edit().putString("harness",state.harness).apply();selection++;historyTicket++;historyInFlightFor=null;historyJob?.cancel();historyTurns=(cached?.turns?:readingPositions.get(readingPositionKey(thread.id))?.historyTurns?:10).coerceIn(10,2000);val chosenModel=prefs.getString("thread:${thread.id}:model",state.model).orEmpty();val candidates=state.models.filter{it.harness==nativeThreadAgent(thread.id)};val model=if(state.harness=="opencode")nativeOpenCodeSelection(state.models,chosenModel) else candidates.find{it.id==chosenModel}?:candidates.find{it.id=="gpt-6-sol"}?:candidates.find{it.id=="gpt-6.1-sol"}?:candidates.firstOrNull();val chosenEffort=prefs.getString("thread:${thread.id}:effort",model?.let{nativeTaskDefaultEffort(it.id,it.defaultEffort)}).orEmpty();state=state.copy(models=nativeModelsWithSelection(state.models,model),threadId=thread.id,submissionNotice="",submissionNoticeRequestId="",actualModel=cached?.actualModel.orEmpty(),nextMode="default",fastMode=null,sessionFast=null,projectId=state.projects.find{nativePath(it.path)==nativePath(thread.projectPath)}?.id.orEmpty(),model=model?.id.orEmpty(),effort=if(chosenEffort in model?.efforts.orEmpty())chosenEffort else model?.defaultEffort.orEmpty(),permission=prefs.getString("thread:${thread.id}:permission",prefs.getString("permission:${state.harness}","full"))?:"full",events=cached?.events.orEmpty(),queue=emptyList(),queueDrafts=emptyList(),canSteer=false,running=thread.status=="running",sending=false,loadingHistory=cached==null,loadingOlderHistory=false,historySyncing=false,historyErrors=emptyMap(),hasMoreHistory=cached?.hasMore?:false,activityLoading=emptySet(),activityErrors=emptyMap(),usage=null,usageError="");state=state.copy(draft=store.chatDraft(attachmentScope()));restoreAttachmentDraft();viewModelScope.launch{refreshLists(true)};viewModelScope.launch{refreshHistory(force=true)}}
+    fun openThread(thread:ThreadRecord){sideChat.minimize();notificationThreadId="";cancelActivityLoads();if(state.taskNotice?.threadId==thread.id)state=state.copy(taskNotice=null);clearFileContext();rememberConversation();val cached=conversations.get(conversationKey(thread.id,nativeThreadAgent(thread.id)));recoverPending();clearStop();resetUsageRefresh();if(nativeThreadAgent(thread.id)!=state.harness)dismissModelServiceNotice() else clearConversationModelServiceNotice();state=state.copy(threads=(state.threads+thread).distinctBy{it.id});desktopModels.remove(thread.id);store.saveChatDraft(attachmentScope(),state.draft);state=state.copy(harness=nativeThreadAgent(thread.id));prefs.edit().putString("harness",state.harness).apply();selection++;historyTicket++;historyInFlightFor=null;historyJob?.cancel();historyTurns=(cached?.turns?:readingPositions.get(readingPositionKey(thread.id))?.historyTurns?:10).coerceIn(10,2000);val chosenModel=prefs.getString("thread:${thread.id}:model",state.model).orEmpty();val candidates=state.models.filter{it.harness==nativeThreadAgent(thread.id)};val model=if(state.harness=="opencode")nativeOpenCodeSelection(state.models,chosenModel) else candidates.find{it.id==chosenModel}?:candidates.find{it.id=="gpt-6-sol"}?:candidates.find{it.id=="gpt-6.1-sol"}?:candidates.firstOrNull();val chosenEffort=prefs.getString("thread:${thread.id}:effort",model?.let{nativeTaskDefaultEffort(it.id,it.defaultEffort)}).orEmpty();state=state.copy(models=nativeModelsWithSelection(state.models,model),threadId=thread.id,submissionNotice="",submissionNoticeRequestId="",actualModel=cached?.actualModel.orEmpty(),nextMode="default",fastMode=null,sessionFast=null,projectId=state.projects.find{nativePath(it.path)==nativePath(thread.projectPath)}?.id.orEmpty(),model=model?.id.orEmpty(),effort=if(chosenEffort in model?.efforts.orEmpty())chosenEffort else model?.defaultEffort.orEmpty(),permission=prefs.getString("thread:${thread.id}:permission",prefs.getString("permission:${state.harness}","full"))?:"full",events=cached?.events.orEmpty(),queue=emptyList(),queueDrafts=emptyList(),canSteer=false,running=thread.status=="running",sending=false,loadingHistory=cached==null,loadingOlderHistory=false,historySyncing=false,historyErrors=emptyMap(),hasMoreHistory=cached?.hasMore?:false,activityLoading=emptySet(),activityErrors=emptyMap(),usage=null,usageError="");state=state.copy(draft=store.chatDraft(attachmentScope()));restoreAttachmentDraft();viewModelScope.launch{refreshLists(true)};viewModelScope.launch{refreshHistory(force=true)}}
     fun loadOlderHistory(){if(state.threadId.isBlank()||!state.hasMoreHistory||state.loadingOlderHistory||historyInFlightFor!=null)return;historyTurns=(historyTurns+10).coerceAtMost(2000);state=state.copy(loadingOlderHistory=true);viewModelScope.launch{refreshHistory(force=true)}}
     suspend fun refresh(){refreshLists();refreshHistory()}
     private var lastListRefresh=0L
@@ -1489,7 +1592,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         viewModelScope.launch{
             try{
                 val page=withContext(Dispatchers.IO){api.sidebarThreads(limit,harness,"",project.path,filter)}
-                if(epoch==generation&&filterRevision==sidebarFilterRevision&&filter==state.threadFilter&&harness==state.harness)state=state.copy(projectThreads=state.projectThreads+(key to NativeProjectThreads(page.first,limit,page.second,false,true,android.os.SystemClock.elapsedRealtime())))
+                if(epoch==generation&&filterRevision==sidebarFilterRevision&&filter==state.threadFilter&&harness==state.harness)state=state.copy(projectThreads=state.projectThreads+(key to NativeProjectThreads(page.first.map(::knownThreadRead),limit,page.second,false,true,android.os.SystemClock.elapsedRealtime())))
             }catch(e:CancellationException){throw e}catch(e:Exception){if(epoch==generation&&filterRevision==sidebarFilterRevision&&filter==state.threadFilter&&harness==state.harness){state=state.copy(projectThreads=state.projectThreads+(key to previous));error(nativeError(e))}}
         }
     }
@@ -1541,7 +1644,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
                     try{
                         val page=withContext(Dispatchers.IO){api.sidebarThreads(threadLimit,harness,keep,filter=filter)}
                         if(!current())return@launch
-                        val threads=(page.first+conversationLineage(state.threads+state.projectThreads.values.flatMap{it.rows},state.threadId)).distinctBy{it.id}
+                        val threads=(page.first+conversationLineage(state.threads+state.projectThreads.values.flatMap{it.rows},state.threadId)).distinctBy{it.id}.map(::knownThreadRead)
                         val listed=threads.associateBy{it.id}
                         state=state.copy(threads=threads,moreThreads=page.second,cloudListError=api.cloudListError,
                             projectThreads=state.projectThreads.mapValues{(_,p)->p.copy(rows=p.rows.map{row->listed[row.id]?.let{row.copy(title=it.title.ifBlank{row.title},updatedAt=it.updatedAt,status=it.status,goal=it.goal,pinnedIndex=it.pinnedIndex,unread=it.unread,completedAt=it.completedAt)}?:row})})
@@ -1599,6 +1702,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         historyRead=owner;historyInFlightFor=id
         val job=viewModelScope.launch(start=CoroutineStart.LAZY){
         val modelVersion=modelRevision;val queueVersion=queueRevision(api,id)
+        val completionBeforeRead=listedThread(id)?.completedAt?:0L
         val turns=historyTurns;val approvedBefore=state.approvals
         val buffer=mutableListOf<ChatEvent>();hydration=buffer
         fun current()=chosen==selection&&generation==epoch&&historyTicket==ticket&&api===client&&state.threadId==id
@@ -1622,6 +1726,9 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         try{coroutineScope{
             launch{read("history",{api.nativeConversationHistoryAsync(id,turns)}){result->
                 val events=hydratedActivities(result.first)
+                    val previous=readableHistory?.takeIf{it.first==epoch&&it.second==chosen}?.third?:0L
+                    readableHistory=Triple(epoch,chosen,maxOf(previous,completionBeforeRead))
+                    NativePerformanceRecorder.session.mark(NativePerformanceStage.HISTORY_READY)
                     val answered=events.mapNotNull(::nativeAnsweredApproval).toSet()
                     val resolved=events.filter{it.type=="approval.resolved"}.map{it.approvalId}.toSet()+answered
                     resolved.forEach{questionDrafts.remove(questionDraftKey(id,it))}
@@ -1640,6 +1747,11 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
                     if(!state.running&&(state.stopping||state.stopError.isNotBlank()))clearStop()
             }}
             launch{read("approvals",{api.nativeJsonAsync("GET","/api/approvals?threadId=${java.net.URLEncoder.encode(id,"UTF-8")}").getJSONArray("approvals")}){rows->
+                for(index in 0 until rows.length()){
+                    val row=rows.getJSONObject(index)
+                    if(row.optString("threadId")!=id&&row.optString("approvalType")=="question")
+                        receiveQuestionNotice(ChatEvent(type=if(row.optString("status")=="pending")"approval.requested" else "approval.resolved",threadId=row.optString("threadId"),approvalId=row.optString("id"),approvalType="question",title=row.optString("title"),detail=row.optString("detail")))
+                }
                 // Events and local decisions received during the request are newer than its snapshot.
                 val live=buffer.filter{it.type=="approval.requested"||it.type=="approval.resolved"}.associateBy{it.approvalId}
                 // Keep prior decisions for this thread when a delayed snapshot still says pending.
@@ -1678,34 +1790,83 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         viewModelScope.launch{refreshHistory(force=true)}
     }
     private var foregroundTasks=TaskNotificationTracker()
+    private val taskNoticeWork=NativeNotificationWork(viewModelScope)
+    private var taskNoticeTicket=0L
     private val completedGoalNotices=linkedSetOf<String>()
-    fun dismissTaskNotice(key:String){if(state.taskNotice?.key==key)state=state.copy(taskNotice=null)}
+    private val questionNoticeKeys=linkedSetOf<String>()
+    fun dismissTaskNotice(key:String){if(state.taskNotice?.key==key){taskNoticeTicket++;state=state.copy(taskNotice=null)}}
+    private fun receiveTaskNotice(event:ChatEvent){
+        val api=client?:return
+        val epoch=generation;val tracker=foregroundTasks;val ticket=++taskNoticeTicket
+        taskNoticeWork.launch(event.threadId){
+            val history=try{api.nativeTaskHistoryAsync(event.threadId)}catch(error:CancellationException){throw error}catch(_:Exception){emptyList()}
+            if(epoch!=generation||api!==client||ticket!=taskNoticeTicket||!uiForeground||event.threadId==state.threadId)return@launch
+            val thread=state.threads.find{it.id==event.threadId}
+            if(thread?.subagent!=null)return@launch
+            state=state.copy(taskNotice=tracker.content(event,history,thread?.title.orEmpty()))
+        }
+    }
+    private fun receiveQuestionNotice(event:ChatEvent){
+        val answered=nativeAnsweredApproval(event)
+        val resolved=if(event.type=="approval.resolved")event.approvalId else answered
+        if(!resolved.isNullOrBlank())state=state.copy(approvalResults=state.approvalResults+(nativeApprovalKey(event.threadId,resolved) to if(answered!=null)"answered" else "resolved"))
+        if(!resolved.isNullOrBlank()&&state.taskNotice?.let{it.threadId==event.threadId&&it.questionId==resolved}==true)
+            state=state.copy(taskNotice=null)
+        if(event.type!="approval.requested"||event.approvalType!="question"||event.threadId.isBlank()||event.approvalId.isBlank())return
+        if(!state.approvalResults[nativeApprovalKey(event.threadId,event.approvalId)].isNullOrEmpty())return
+        if(event.threadId==state.threadId&&event.approvalId in state.approvals)return
+        if(event.threadId==state.threadId&&state.pendingApprovals.none{it.approvalId==event.approvalId})
+            state=state.copy(pendingApprovals=state.pendingApprovals+event)
+        if(!uiForeground)return
+        val key=questionDraftKey(event.threadId,event.approvalId)
+        if(!questionNoticeKeys.add(key))return
+        if(questionNoticeKeys.size>200)questionNoticeKeys.remove(questionNoticeKeys.first())
+        val question=runCatching{val rows=org.json.JSONObject(event.detail).getJSONArray("questions")
+            (0 until rows.length()).asSequence().map{rows.getJSONObject(it).optString("question")}.firstOrNull{it.isNotBlank()}
+        }.getOrNull().orEmpty().ifBlank{event.title.ifBlank{"点击查看并回答"}}
+        val title=state.threads.find{it.id==event.threadId}?.title.orEmpty()
+        taskNoticeTicket++
+        state=state.copy(taskNotice=TaskNotification("question:$key",event.threadId,"需要你的回答",
+            listOf(title,question).filter{it.isNotBlank()}.joinToString(" · "),questionId=event.approvalId))
+    }
     private var codexStatusTicket=0L
     private var backendStatusTicket=0L
+    private var modelCatalogJob:Job?=null
     fun refreshBackends(force:Boolean=false):Job?{
-        if(!state.connected||state.backendStatusLoading)return null
+        if(!state.connected)return null
+        return refreshModelCatalog(force)
+    }
+    private fun refreshModelCatalog(force:Boolean=false,attempts:Int=1,defaultModel:String?=null):Job?{
+        if(!force&&modelCatalogJob?.isActive==true)return modelCatalogJob
         val api=client?:return null;val epoch=generation;val ticket=++backendStatusTicket
+        val chosenSelection=selection;val chosenRevision=modelRevision
+        modelCatalogJob?.cancel()
         fun current()=epoch==generation&&api===client&&ticket==backendStatusTicket
         state=state.copy(backendStatusLoading=true,backendStatusError="")
         return viewModelScope.launch{
             try{
-                val models=api.nativeModelsAsync(refresh=force)
-                if(current()){
-                    val selected=if(state.harness=="opencode")nativeOpenCodeSelection(models,state.model,state.models) else null
-                    state=state.copy(models=nativeModelsWithSelection(nativeModelCatalogOrDefaults(models),selected),modelsFallback=models.isEmpty(),backends=api.nativeBackendStatuses)
-                    if(!applyDesktopModel()){
-                    if(state.harness=="opencode")state=state.copy(model=selected?.id.orEmpty(),effort=state.effort.takeIf{it in selected?.efforts.orEmpty()}?:selected?.defaultEffort.orEmpty())
-                    else{
-                        models.find{it.id==state.model}?.let{current->if(state.effort !in current.efforts)state=state.copy(effort=current.defaultEffort)}
-                        if(models.none{it.id==state.model&&it.available})models.firstOrNull{it.harness==state.harness&&it.available}?.let{chooseModel(it.id)}
+                for(attempt in 0 until attempts){
+                    try{
+                        val models=api.nativeModelUpdates(refresh=force&&attempt==0){partial,pending->
+                            if(!current())throw CancellationException("电脑连接已变化")
+                            applyModelCatalog(api,partial,pending)
+                        }
+                        if(current()){
+                            if(defaultModel!=null&&selection==chosenSelection&&modelRevision==chosenRevision&&state.threadId.isBlank()&&state.harness=="codex"&&models.any{it.id==defaultModel&&it.available})chooseModel(defaultModel)
+                            store.saveModelsAsync(state.address,models,::current)
+                        }
+                        break
+                    }catch(e:CancellationException){throw e}
+                    catch(e:Exception){
+                        if(!current())return@launch
+                        if(attempt+1==attempts)throw e
+                        delay((attempt+1)*1000L)
                     }
-                    }
-                    store.saveModelsAsync(state.address,models,::current)
                 }
             }catch(e:CancellationException){throw e}
             catch(e:Exception){if(current())state=state.copy(backendStatusError="无法检查助手：${nativeError(e)}")}
             finally{if(current())state=state.copy(backendStatusLoading=false)}
-        }
+        }.also{modelCatalogJob=it}
     }
     fun refreshCodex():Job?{
         if(state.harness!="codex"||!state.connected||state.codexStarting)return null
@@ -1755,6 +1916,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
     private fun receive(event:ChatEvent){
         if(event.type=="thread.read"){applyThreadRead(event.threadId,event.readThrough);if(state.threadFilter==NativeThreadFilter.UNREAD&&!event.replayed)refreshSidebar();return}
         if(event.replayed)return
+        receiveQuestionNotice(event)
         if(event.type=="thread.settings.updated"){
             if(state.connected&&state.harness=="codex"&&state.threadId.isNotBlank()&&event.threadId==state.threadId&&event.hasServiceTier){
                 // A settings notification is newer than any status read already in flight.
@@ -1767,8 +1929,9 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
             return
         }
         val completed=foregroundTasks.accept(event)
+        if(event.type=="turn.started"||event.type=="user.message"&&event.questionReplyId.isBlank())taskNoticeWork.cancel(event.threadId)
         if(completed&&event.threadId!=state.threadId&&event.status.lowercase() in setOf("ok","completed","complete","success","idle")&&uiForeground&&state.threads.find{it.id==event.threadId}?.subagent==null){
-            state=state.copy(taskNotice=foregroundTasks.content(event,state.events,state.threads.find{it.id==event.threadId}?.title.orEmpty()))
+            receiveTaskNotice(event)
         }
         if(event.type=="thread.read-state.changed"){refreshSidebar();return}
         if(event.type=="turn.started"||event.type=="turn.completed")refreshSidebar()
@@ -1778,7 +1941,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         }
         if(event.type=="goal.completed"){
             goalNotification(event,state.threads.find{it.id==event.threadId}?.title.orEmpty())?.let{notice->
-                if(completedGoalNotices.add(notice.key)&&event.threadId!=state.threadId&&uiForeground&&state.threads.find{it.id==event.threadId}?.subagent==null)state=state.copy(taskNotice=notice)
+                if(completedGoalNotices.add(notice.key)&&event.threadId!=state.threadId&&uiForeground&&state.threads.find{it.id==event.threadId}?.subagent==null){taskNoticeTicket++;state=state.copy(taskNotice=notice)}
                 if(completedGoalNotices.size>100)completedGoalNotices.remove(completedGoalNotices.first())
             }
             viewModelScope.launch{refreshLists(true)}
@@ -1810,7 +1973,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
             refreshChangedHistory(event.threadId)
             return
         }
-        if(event.type=="thread.started"&&p!=null&&event.requestId==p.id&&p.selection==selection){
+        if(event.type=="thread.started"&&p!=null&&p.threadId.isBlank()&&state.threadId.isBlank()&&event.requestId==p.id&&p.selection==selection){
             moveCreatedConversationDraft(p,event.threadId)
             pending=p.copy(threadId=event.threadId);persistSend(pending!!)
             state=state.copy(threadId=event.threadId,fastMode=null,sessionFast=p.fast,threads=listOf(ThreadRecord(event.threadId,event.projectPath,event.title,event.status))+state.threads.filter{it.id!=event.threadId});moveGoalAttachments(p,event.threadId);rememberThreadSettings()
@@ -1838,7 +2001,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         }
         val writerConflict=event.type=="error"&&detail.contains("active writer",true)
         val visibleEvent=if(writerConflict)event.copy(text="此会话正由其他客户端占用。消息未发送，已保留在输入框。",detail=event.detail.ifBlank{event.text}) else event
-        if(event.type=="error"&&!event.willRetry&&(event.requestId==p?.id||event.requestId.isBlank()&&(event.threadId==state.threadId||event.threadId.isBlank()))){recoverPending(if(writerConflict)visibleEvent.text else detail,false);state=state.copy(error=if(writerConflict)visibleEvent.text else detail,running=if(writerConflict)state.running else false)}
+        if(event.type=="error"&&!event.willRetry&&(event.requestId==p?.id||event.requestId.isBlank()&&(event.threadId==state.threadId||event.threadId.isBlank()))){recoverPending(if(writerConflict)visibleEvent.text else detail,false);state=state.copy(error=if(writerConflict)visibleEvent.text else detail)}
         // An accepted submission must clear its recovered draft even while a
         // different conversation is visible. Rendering remains selection scoped.
         if(event.type=="user.message"&&event.requestId in failedSends)confirmSend(event.requestId,event.threadId)
@@ -1892,6 +2055,10 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
                     val receipt=response.getJSONObject("submission")
                     val initialHome=chosen==0&&selection==0&&state.threadId.isBlank()&&state.projectId.isBlank()
                     val sameContext=chosen==selection&&(initialHome||saved.draftKey==key()||saved.threadId.isNotBlank()&&saved.threadId==state.threadId)
+                    if(receipt.optString("state")=="accepted"&&saved.threadId.isNotBlank()&&receipt.optString("threadId").ifBlank{saved.threadId}!=saved.threadId){
+                        if(sameContext)error("消息回执与发送会话不一致，内容已保留，请检查会话")
+                        continue
+                    }
                     when(receipt.optString("state")){
                         "accepted"->{
                             if(sameContext&&pending==null){
@@ -2199,19 +2366,19 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         state=state.copy(uploading=false,uploadMessage="",uploadProgress=null,uploadError="")
     }
     fun dismissUploadError(){state=state.copy(uploadError="")}
-    private fun uploadWork(action:suspend (GatewayClient,()->Boolean)->Unit){
-        if(state.uploading)return
-        val api=client?:run{state=state.copy(uploadError="请先连接电脑，再选择附件");return}
+    private fun uploadWork(onFinished:()->Unit={},action:suspend (GatewayClient,()->Boolean)->Unit){
+        if(state.uploading){onFinished();return}
+        val api=client?:run{state=state.copy(uploadError="请先连接电脑，再选择附件");onFinished();return}
         api.uploadOwner=store.uploadOwner()
-        val chosen=selection;val epoch=generation;val ticket=++uploadTicket
-        fun current()=ticket==uploadTicket&&chosen==selection&&epoch==generation&&api===client
+        val chosen=selection;val epoch=generation;val ticket=++uploadTicket;val editOwner=state.editingMessage?.eventId
+        fun current()=ticket==uploadTicket&&chosen==selection&&epoch==generation&&api===client&&editOwner==state.editingMessage?.eventId
         state=state.copy(uploading=true,uploadMessage="正在准备附件",uploadProgress=null,uploadError="")
         uploadJob=viewModelScope.launch{
             try{action(api,::current)}
             catch(e:CancellationException){throw e}
             catch(e:Exception){if(current())state=state.copy(uploadError=if(e is NativeUploadResponseException)e.message.orEmpty() else nativeError(e).ifBlank{"附件上传失败，请重新选择"})}
             finally{if(ticket==uploadTicket){uploadJob=null;state=state.copy(uploading=false,uploadMessage="",uploadProgress=null)}}
-        }
+        }.also{it.invokeOnCompletion{onFinished()}}
     }
     private fun trackUploadProgress(message:String,current:()->Boolean):(NativeUploadProgress)->Unit{
         val ticket=++uploadProgressTicket
@@ -2240,40 +2407,43 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
                 if(!current())break
                 val progress=trackUploadProgress("正在上传图片 ${index+1}/${uris.size}",current)
                 val image=uploadPickedImage(api,uri,progress)
-                if(current())state=state.copy(images=state.images+image)
+                if(current())appendPickedImage(image)
             }
         }
     }
-    fun uploadMedia(uris:List<Uri>){
-        if(uris.isEmpty()||state.uploading)return
-        uploadWork{api,current->
+    fun uploadMedia(uris:List<Uri>,onFinished:()->Unit={}){
+        if(uris.isEmpty()||state.uploading){onFinished();return}
+        uploadWork(onFinished){api,current->
             val resolver=getApplication<Application>().contentResolver
             val media=withContext(Dispatchers.IO){uris.map{it to resolver.getType(it).orEmpty()}}
             val images=media.count{it.second.startsWith("image/")}
             val videos=media.count{it.second.startsWith("video/")}
             require(images+videos==uris.size){"只支持选择图片和视频"}
-            require(state.uploads.size+videos<=8){"每条消息最多 8 个文件或视频"}
+            require(pickedFiles().size+videos<=8){"每条消息最多 8 个文件或视频"}
             for((index,entry) in media.withIndex()){
                 if(!current())break
                 val(uri,mime)=entry
                 val progress=trackUploadProgress("正在上传 ${index+1}/${uris.size}",current)
                 if(mime.startsWith("image/")){
                     val image=uploadPickedImage(api,uri,progress,mime)
-                    if(current())state=state.copy(images=state.images+image)
+                    if(current())appendPickedImage(image)
                 }else{
                     val file=withContext(Dispatchers.IO){
                         val info=nativePickedFileInfo(resolver,uri,"视频")
                         api.nativeUploadFile({resolver.openInputStream(uri)?:throw IllegalStateException("无法读取视频")},mime,info.first,info.second,progress)
                     }
-                    if(current())state=state.copy(uploads=state.uploads+file)
+                    if(current())appendPickedFile(file)
                 }
             }
         }
     }
-    fun removeImage(id:String){state=state.copy(images=state.images.filter{it.id!=id})}
+    private fun appendPickedImage(image:NativeImage){state=if(state.editingMessage!=null)state.copy(messageEditImages=state.messageEditImages+image)else state.copy(images=state.images+image)}
+    private fun appendPickedFile(file:NativeUploadedFile){state=if(state.editingMessage!=null)state.copy(messageEditUploads=state.messageEditUploads+file)else state.copy(uploads=state.uploads+file)}
+    private fun pickedFiles()=if(state.editingMessage!=null)state.messageEditUploads else state.uploads
+    fun removeImage(id:String){state=if(state.editingMessage!=null)state.copy(messageEditImages=state.messageEditImages.filter{it.id!=id})else state.copy(images=state.images.filter{it.id!=id})}
     fun uploadFiles(uris:List<Uri>){
         if(uris.isEmpty()||state.uploading)return
-        if(state.uploads.size+uris.size>8){state=state.copy(uploadError="每条消息最多 8 个文件");return}
+        if(pickedFiles().size+uris.size>8){state=state.copy(uploadError="每条消息最多 8 个文件");return}
         uploadWork{api,current->
             for((index,uri) in uris.withIndex()){
                 if(!current())break
@@ -2283,11 +2453,11 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
                     val info=nativePickedFileInfo(resolver,uri,"附件")
                     api.nativeUploadFile({resolver.openInputStream(uri)?:throw IllegalStateException("无法读取文件")},resolver.getType(uri)?:"application/octet-stream",info.first,info.second,progress)
                 }
-                if(current())state=state.copy(uploads=state.uploads+file)
+                if(current())appendPickedFile(file)
             }
         }
     }
-    fun removeUpload(id:String){state=state.copy(uploads=state.uploads.filter{it.id!=id})}
+    fun removeUpload(id:String){state=if(state.editingMessage!=null)state.copy(messageEditUploads=state.messageEditUploads.filter{it.id!=id})else state.copy(uploads=state.uploads.filter{it.id!=id})}
     fun openUpload(file:NativeUploadedFile){
         fileWork("正在打开 ${file.name}"){api,current->
             val context=getApplication<Application>()
@@ -2296,39 +2466,70 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
             val nameMime=nativeOutputMime(file.name)
             if(mime.startsWith("image/")||nameMime.startsWith("image/")){openImagePreview(endpoint,current);return@fileWork}
             if(mime=="application/pdf"||nameMime=="application/pdf"){openPdfOutput(api,endpoint,file.name,current);return@fileWork}
-            val markdown=nativeIsMarkdownFile(file.name,mime)
-            val preview=file.size<=5L*1024*1024&&(markdown||nativeIsTextFile(file.name,mime))
-            if(!preview&&nativeNeedsStoragePermission(context))throw NativeStoragePermissionRequired()
+            if(nativeIsOfficeFile(file.name)||nativeIsMarkdownFile(file.name,mime)||nativeIsTextFile(file.name,mime)){
+                openReadableOutput(api,endpoint,file.name,nativeFilePathHref(file.name),"","",mime,current);return@fileWork
+            }
+            if(nativeNeedsStoragePermission(context))throw NativeStoragePermissionRequired()
             val target=localStorage.temporaryFile(".part")
             try{
-                api.nativeDownload(endpoint,target,if(preview)5L*1024*1024 else 100L*1024*1024)
-                val content=if(preview)nativeDecodeText(target.readBytes()) else null
-                val saved=if(content==null&&current())nativeSavePublicFile(context,file.name,mime){output->target.inputStream().use{it.copyTo(output)}}else null
+                api.nativeDownload(endpoint,target,100L*1024*1024)
+                val saved=if(current())nativeSavePublicFile(context,file.name,mime){output->target.inputStream().use{it.copyTo(output)}}else null
                 withContext(Dispatchers.Main){if(current()){
-                    when{
-                        content!=null->state=state.copy(markdown=NativeReadableFile(file.name,nativeFilePathHref(file.name),content.content,mime=if(markdown)"text/markdown" else mime,encoding=content.encoding,hasBom=content.hasBom))
-                        saved!=null->nativeOpenSavedFile(context,saved,mime)
-                    }
+                    if(saved!=null)nativeOpenSavedFile(context,saved,mime)
                 }}
             }finally{target.delete()}
         }
     }
     private suspend fun openPdfOutput(api:GatewayClient,endpoint:String,name:String,current:()->Boolean){
-        val scope=cacheScope()
         var file:java.io.File?=null
         var retained=false
         try{
-            if(!state.connected)file=localStorage.document(scope,endpoint,name)
-            if(file==null){
-                val temp=localStorage.temporaryFile(".pdf")
-                try{
-                    try{api.nativeDownload(endpoint,temp);file=localStorage.retainDocument(temp,name,scope,endpoint)}
-                    catch(error:java.io.IOException){file=localStorage.document(scope,endpoint,name)?:throw error}
-                }finally{temp.delete()}
-            }
+            file=downloadPreviewDocument(api,endpoint,name)
             val ready=checkNotNull(file)
             withContext(Dispatchers.Main){if(current()){showCachedPdf(ready.absolutePath,name);retained=true}}
         }finally{if(!retained)file?.let{localStorage.release(it.absolutePath);runCatching{localStorage.trim()}}}
+    }
+    private suspend fun downloadPreviewDocument(api:GatewayClient,endpoint:String,name:String):java.io.File{
+        val scope=cacheScope()
+        if(!state.connected)localStorage.document(scope,endpoint,name)?.let{return it}
+        val temp=localStorage.temporaryFile(".part")
+        try{
+            return try{api.nativeDownload(endpoint,temp);localStorage.retainDocument(temp,name,scope,endpoint)}
+            catch(error:java.io.IOException){localStorage.document(scope,endpoint,name)?:throw error}
+        }finally{temp.delete()}
+    }
+    private suspend fun openReadableOutput(api:GatewayClient,endpoint:String,name:String,sourcePath:String,eventId:String,threadId:String,mime:String,current:()->Boolean){
+        val file=downloadPreviewDocument(api,endpoint,name)
+        var retained=false
+        try{
+            val office=nativeIsOfficeFile(name)
+            val decoded=if(!office&&file.length()<=5L*1024*1024)nativeDecodeText(file.readBytes())else null
+            if(!office&&decoded==null){
+                if(current()){
+                    val context=getApplication<Application>()
+                    if(nativeNeedsStoragePermission(context))throw NativeStoragePermissionRequired()
+                    val saved=nativeSavePublicFile(context,name,mime){output->file.inputStream().use{it.copyTo(output)}}
+                    withContext(Dispatchers.Main){if(current())nativeOpenSavedFile(context,saved,mime)}
+                }
+                return
+            }
+            val content=decoded?.content.orEmpty()
+            val pages=when{
+                office->try{nativeReadOfficeDocument(file,name)}catch(error:Exception){
+                    if(error is CancellationException)throw error
+                    listOf(NativeDocumentPage("预览","<p>${nativeDocumentHtmlEscape(error.message?:"无法读取文档")}</p><p>可保存原文件后使用办公应用打开。</p>"))
+                }
+                nativeIsTabularFile(name)->nativeDelimitedDocument(content,if(name.endsWith(".tsv",true))'\t' else ',')
+                nativeIsHtmlFile(name)->listOf(NativeDocumentPage("正文",content))
+                else->emptyList()
+            }
+            val document=NativeReadableFile(name,sourcePath,content,eventId,threadId,
+                if(nativeIsMarkdownFile(name,mime))"text/markdown" else mime,decoded?.encoding?:NativeTextEncoding.UTF8,decoded?.hasBom?:false,file.absolutePath,pages)
+            withContext(Dispatchers.Main){if(current()){
+                state.markdown?.originalPath?.takeIf{it.isNotEmpty()}?.let(localStorage::release)
+                state=state.copy(markdown=document);retained=true
+            }}
+        }finally{if(!retained)localStorage.release(file.absolutePath);localStorage.trim()}
     }
     private suspend fun outputFileEndpoint(api:GatewayClient,snapshot:NativeState,href:String,eventId:String,threadId:String,current:()->Boolean):String {
         try{return nativeFileEndpoint(snapshot,href)}catch(_:IllegalArgumentException){
@@ -2344,47 +2545,48 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         }
     }
     fun openOutput(href:String){openOutput(href,"",state.threadId)}
-    fun openOutput(href:String,eventId:String,threadId:String){
+    fun openOutput(href:String,eventId:String,threadId:String){openOutputLink(href,eventId,threadId,null)}
+    private fun openOutputLink(href:String,eventId:String,threadId:String,directory:NativeOutputDirectory?){
         val snapshot=state
         val downloadEndpoint=nativeGatewayDownloadEndpoint(href,listOf(snapshot.address,snapshot.publicUrl,snapshot.activeAddress))
         if(downloadEndpoint==null&&(href.startsWith("https://",true)||href.startsWith("http://",true))){nativeOpenBrowser(getApplication<Application>(),href);return}
-        val outputName=if(downloadEndpoint!=null)"Codex-Control.apk" else nativeOutputLinkName(href)
+        val outputName=if(downloadEndpoint!=null)"Codex-Control.apk" else if(directory!=null)nativeOutputName(href) else nativeOutputLinkName(href)
+        suspend fun endpoint(api:GatewayClient,current:()->Boolean)=directory?.let{nativeThreadDirectoryEndpoint(it,href)}
+            ?:outputFileEndpoint(api,snapshot,href,eventId,threadId,current)
+        fun outputWork(label:String,action:suspend (GatewayClient,()->Boolean)->Unit){
+            fileWork(label){api,current->
+                try{action(api,current)}catch(error:NativeFileReadException){
+                    if(error.kind!="directory")throw error
+                    check(eventId.isNotBlank()&&threadId.isNotBlank()&&"local-thread-output-directories" in state.capabilities){"请更新电脑网关后浏览会话文件夹"}
+                    loadOutputDirectory(api,directory?:NativeOutputDirectory(href,eventId,threadId),if(directory==null)"" else href,current)
+                }
+            }
+        }
         if(nativeOutputMime(outputName).startsWith("image/")){
-            fileWork("正在打开图片"){api,current->openImagePreview(outputFileEndpoint(api,snapshot,href,eventId,threadId,current),current)}
+            outputWork("正在打开图片"){api,current->openImagePreview(endpoint(api,current),current)}
             return
         }
-        if(nativeIsMarkdownFile(outputName)){
+        if(nativeIsMarkdownFile(outputName)||nativeIsTextFile(outputName,nativeOutputMime(outputName))||nativeIsOfficeFile(outputName)){
             val name=outputName
-            fileWork("正在打开 $name"){api,current->
-                val file=localStorage.temporaryFile(".md")
-                try{
-                    api.nativeDownload(outputFileEndpoint(api,snapshot,href,eventId,threadId,current),file)
-                    val content=if(file.length()<=5L*1024*1024)nativeDecodeText(file.readBytes())else null
-                    if(content!=null){
-                        withContext(Dispatchers.Main){if(current())state=state.copy(markdown=NativeReadableFile(name,href,content.content,eventId,threadId,encoding=content.encoding,hasBom=content.hasBom))}
-                    }else if(current()){
-                        val context=getApplication<Application>()
-                        val saved=nativeSavePublicFile(context,name,"text/markdown"){output->file.inputStream().use{it.copyTo(output)}}
-                        withContext(Dispatchers.Main){if(current())nativeOpenSavedFile(context,saved,"text/markdown")}
-                    }
-                }finally{file.delete()}
+            outputWork("正在打开 $name"){api,current->
+                openReadableOutput(api,endpoint(api,current),name,href,eventId,threadId,nativeOutputMime(name),current)
             }
             return
         }
         if(outputName.endsWith(".pdf",true)){
             val name=outputName
-            fileWork("正在打开 $name"){api,current->
-                openPdfOutput(api,outputFileEndpoint(api,snapshot,href,eventId,threadId,current),name,current)
+            outputWork("正在打开 $name"){api,current->
+                openPdfOutput(api,endpoint(api,current),name,current)
             }
             return
         }
-        fileWork("正在下载 $outputName"){api,current->
+        outputWork("正在下载 $outputName"){api,current->
             val context=getApplication<Application>()
-            if(nativeNeedsStoragePermission(context))throw NativeStoragePermissionRequired()
             val file=localStorage.temporaryFile(".part")
             try{
-                api.nativeDownload(downloadEndpoint?:outputFileEndpoint(api,snapshot,href,eventId,threadId,current),file)
+                api.nativeDownload(downloadEndpoint?:endpoint(api,current),file)
                 if(current()){
+                    if(nativeNeedsStoragePermission(context))throw NativeStoragePermissionRequired()
                     val mime=nativeOutputMime(outputName)
                     val saved=nativeSavePublicFile(context,outputName,mime){output->file.inputStream().use{it.copyTo(output)}}
                     withContext(Dispatchers.Main){if(current())nativeOpenSavedFile(context,saved,mime)}
@@ -2392,13 +2594,36 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
             }finally{file.delete()}
         }
     }
+    private suspend fun loadOutputDirectory(api:GatewayClient,directory:NativeOutputDirectory,path:String,current:()->Boolean){
+        val rows=api.nativeJson("GET",nativeThreadDirectoryEndpoint(directory,path,browse=true)).getJSONArray("files")
+        val files=(0 until rows.length()).map{index->val row=rows.getJSONObject(index)
+            FileEntry(row.getString("name"),row.getString("path"),row.getString("kind"),row.optLong("size"),row.optString("modifiedAt"))}
+        withContext(Dispatchers.Main){if(current())state=state.copy(outputDirectory=directory.copy(path=path,files=files))}
+    }
+    fun outputDirectory(path:String){
+        val directory=state.outputDirectory?:return
+        fileWork("正在加载文件夹"){api,current->loadOutputDirectory(api,directory,path,current)}
+    }
+    fun openOutputDirectoryEntry(file:FileEntry){
+        val directory=state.outputDirectory?:return
+        if(file.kind=="directory")outputDirectory(file.path)
+        else openOutputLink(file.path,directory.eventId,directory.threadId,directory)
+    }
+    fun closeOutputDirectory(){
+        fileTicket++;fileJob?.cancel();fileJob=null;fileRetry=null
+        state=state.copy(outputDirectory=null,fileBusy=false,fileFeedbackVisible=false,fileError="",fileMessage="")
+    }
     private fun showCachedPdf(path:String,name:String){
         state.pdf?.let{localStorage.release(it.path)}
         state=state.copy(pdf=NativePdf(path,name,System.nanoTime()))
         viewModelScope.launch(Dispatchers.IO){runCatching{localStorage.trim()}}
     }
     fun closePdf(){state.pdf?.let{localStorage.release(it.path)};state=state.copy(pdf=null);viewModelScope.launch(Dispatchers.IO){runCatching{localStorage.trim()}}}
-    fun closeMarkdown(){state=state.copy(markdown=null)}
+    fun closeMarkdown(){
+        state.markdown?.originalPath?.takeIf{it.isNotEmpty()}?.let(localStorage::release)
+        state=state.copy(markdown=null)
+        viewModelScope.launch(Dispatchers.IO){runCatching{localStorage.trim()}}
+    }
     private suspend fun openImagePreview(endpoint:String,current:()->Boolean){
         val image=loadImage(endpoint,2048)
         withContext(Dispatchers.Main){if(current())state=state.copy(openedImage=NativeOpenedImage(endpoint,image.first))}
@@ -2478,11 +2703,32 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
             val endpoint=nativeFileEndpointForPath(snapshot,sourcePath)
             if(file.path.endsWith(".pdf",true)){openPdfOutput(api,endpoint,file.name,current);return@fileWork}
             if(nativeOutputMime(file.name).startsWith("image/")){openImagePreview(endpoint,current);return@fileWork}
+            if(nativeIsOfficeFile(file.name)){
+                openReadableOutput(api,endpoint,file.name,nativeFilePathHref(sourcePath),"","",nativeOutputMime(file.name),current);return@fileWork
+            }
             val result=api.readFile(projectId,file.path).copy(editable=true)
             withContext(Dispatchers.Main){if(current()){
                 val draft=fileDrafts[key]?:result.content
                 if(draft==result.content)fileDrafts.remove(key)
                 state=state.copy(file=result,fileDraft=draft,markdown=if(nativeIsMarkdownFile(file.path))NativeReadableFile(file.name,nativeFilePathHref(sourcePath),draft) else null)
+            }}
+        }
+    }
+    fun previewWorkspaceFile(){
+        val file=state.file?:return
+        val name=nativeOutputName(file.path)
+        val snapshot=state;val draft=snapshot.fileDraft
+        fileWork("正在排版 $name",trackProject=false){_,current->
+            val project=snapshot.projects.find{it.id==snapshot.fileProjectId.ifBlank{snapshot.projectId}}?:throw IllegalArgumentException("请刷新文件列表后重试")
+            val source=nativeFilePathHref(nativeWorkspaceFilePath(project,file.path))
+            val pages=when{
+                nativeIsTabularFile(name)->nativeDelimitedDocument(draft,if(name.endsWith(".tsv",true))'\t' else ',')
+                nativeIsHtmlFile(name)->listOf(NativeDocumentPage("正文",draft))
+                else->emptyList()
+            }
+            withContext(Dispatchers.Main){if(current()){
+                state.markdown?.originalPath?.takeIf{it.isNotEmpty()}?.let(localStorage::release)
+                state=state.copy(markdown=NativeReadableFile(name,source,draft,mime=if(nativeIsMarkdownFile(name))"text/markdown" else nativeOutputMime(name),pages=pages))
             }}
         }
     }
@@ -2582,8 +2828,9 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
     private fun clearFileContext(preserveImage:Boolean=false){
         cancelUpload()
         state.pdf?.let{localStorage.release(it.path);viewModelScope.launch(Dispatchers.IO){runCatching{localStorage.trim()}}}
+        state.markdown?.originalPath?.takeIf{it.isNotEmpty()}?.let(localStorage::release)
         projectTicket++;fileTicket++;diffTicket++;fileJob?.cancel();fileJob=null;fileRetry=null
-        state=state.copy(diff="",terminal="",terminalSession="",terminalDraft="",terminalError="",terminalBusy=false,fileBusy=false,fileMessage="",fileError="",fileFeedbackVisible=false,files=emptyList(),filePath="",file=null,fileDraft="",fileProjectId="",fileRootPath="",pdf=null,markdown=null,openedImage=state.openedImage.takeIf{preserveImage},storagePermissionRequired=false)
+        state=state.copy(diff="",terminal="",terminalSession="",terminalDraft="",terminalError="",terminalBusy=false,fileBusy=false,fileMessage="",fileError="",fileFeedbackVisible=false,files=emptyList(),filePath="",file=null,fileDraft="",fileProjectId="",fileRootPath="",outputDirectory=null,pdf=null,markdown=null,openedImage=state.openedImage.takeIf{preserveImage},storagePermissionRequired=false)
     }
     internal fun storagePermissionResult(granted:Boolean){
         if(!state.storagePermissionRequired)return
@@ -2608,6 +2855,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
             catch(e:NativeStoragePermissionRequired){if(current())state=state.copy(storagePermissionRequired=true,fileFeedbackVisible=false)}
             catch(e:Exception){
                 val message=when{
+                    e is NativeFileReadException->e.message.orEmpty()
                     e.message?.let{it.contains("HTTP 404")||it.contains("(404)") }==true->"文件不存在或已移动，请刷新文件列表"
                     e.message?.let{it.contains("HTTP 503")||it.contains("(503)") }==true->"电脑服务暂不可用，请稍后重试"
                     e.message?.let{it.contains("HTTP 403")||it.contains("(403)") }==true->"没有访问此文件的权限"
@@ -2631,7 +2879,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
             finally{withContext(NonCancellable+Dispatchers.Main){activeWork.remove(token);state=state.copy(workBusy=activeWork.isNotEmpty())}}
         }
     }
-    override fun onCleared(){networkMonitor.close();state.pdf?.let{localStorage.release(it.path)};localRouteProbe?.cancel();connection?.cancel();polling?.cancel();clearImageLoads();super.onCleared()}
+    override fun onCleared(){client?.markEventDisconnect("owner_cleared");networkMonitor.close();state.pdf?.let{localStorage.release(it.path)};state.markdown?.originalPath?.takeIf{it.isNotEmpty()}?.let(localStorage::release);localRouteProbe?.cancel();connection?.cancel();polling?.cancel();clearImageLoads();super.onCleared()}
 }
 
 private fun nativeError(error:Exception):String=when(error){

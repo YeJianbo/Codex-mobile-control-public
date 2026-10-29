@@ -169,8 +169,8 @@ private class AssistantStateHolder(private val scope:CoroutineScope,private val 
     val task=detail?.optJSONObject("task")
     val approvals=relayObjects(detail?.optJSONArray("approvals"))
     var stopConfirmation by remember(state.selectedId){mutableStateOf(false)}
-    NativeManagementPage(if(state.selectedId.isBlank())"个人助理" else "任务详情","",if(state.selectedId.isBlank())back else ({select("")}),modifier=Modifier.testTag("assistantManagement"),actions={TextButton(onClick=refreshTasks,enabled=enabled){Text("刷新")}}){
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(),contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
+    NativeManagementPage(if(state.selectedId.isBlank())"个人助理" else "任务详情","",if(state.selectedId.isBlank())back else ({select("")}),modifier=Modifier.testTag("assistantManagement"),actions={ChromeButton(R.drawable.ic_lucide_rotate_cw,"刷新",refreshTasks,enabled=enabled)}){
+        LazyColumn(Modifier.weight(1f).fillMaxWidth(),state=rememberNativeManagementListState(),contentPadding=nativeManagementPadding(PaddingValues(16.dp)),verticalArrangement=Arrangement.spacedBy(12.dp)){
             if(!connected)item{Text("连接电脑后使用个人助理")}
             if(state.error.isNotBlank())item{SelectionContainer{Text(state.error,color=MaterialTheme.colors.error,fontSize=13.sp)}}
             if(state.message.isNotBlank())item{Text(state.message,color=MaterialTheme.colors.primary,fontSize=13.sp)}
@@ -215,7 +215,7 @@ private class AssistantStateHolder(private val scope:CoroutineScope,private val 
             }
         }
     }
-    if(stopConfirmation)AlertDialog(onDismissRequest={stopConfirmation=false},title={Text("停止任务")},text={Text("将请求执行器停止本轮任务。命令是否退出，以执行回执为准。")},confirmButton={TextButton(onClick={stopConfirmation=false;stop()},enabled=enabled){Text("请求停止")}},dismissButton={TextButton(onClick={stopConfirmation=false}){Text("取消")}})
+    if(stopConfirmation)NativeAlertDialog(onDismissRequest={stopConfirmation=false},title={Text("停止任务")},text={Text("将请求执行器停止本轮任务。命令是否退出，以执行回执为准。")},confirmButton={TextButton(onClick={stopConfirmation=false;stop()},enabled=enabled){Text("请求停止")}},dismissButton={TextButton(onClick={stopConfirmation=false}){Text("取消")}})
 }
 
 @Composable private fun AssistantComposer(state:AssistantUiState,enabled:Boolean,refreshCatalog:()->Unit,editPrompt:(String)->Unit,editProject:(String)->Unit,chooseModel:(String)->Unit,chooseEffort:(String)->Unit,create:()->Unit){
@@ -243,7 +243,7 @@ private class AssistantStateHolder(private val scope:CoroutineScope,private val 
     Column(verticalArrangement=Arrangement.spacedBy(4.dp)){
         Text(label,fontSize=12.sp)
         Box{OutlinedButton(onClick={expanded=true},enabled=enabled&&options.isNotEmpty(),modifier=Modifier.fillMaxWidth()){Text(options.firstOrNull{it.first==selected}?.second?:"请选择",modifier=Modifier.weight(1f))}
-            DropdownMenu(expanded,{expanded=false},modifier=Modifier.heightIn(max=320.dp)){options.forEach{option->DropdownMenuItem(onClick={expanded=false;onSelect(option.first)},enabled=option.third){Text(option.second,fontSize=13.sp)}}}
+            NativeDropdownMenu(expanded,{expanded=false},modifier=Modifier.heightIn(max=320.dp)){options.forEach{option->DropdownMenuItem(onClick={expanded=false;onSelect(option.first)},enabled=option.third){Text(option.second,fontSize=13.sp)}}}
         }
     }
 }

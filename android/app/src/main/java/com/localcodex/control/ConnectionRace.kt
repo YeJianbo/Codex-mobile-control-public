@@ -6,6 +6,11 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+// HTTP health chooses the first handshake, not the only handshake. A route can
+// serve HTTP while its WebSocket upgrade is blocked or temporarily unavailable.
+internal fun nativeConnectionAttemptRoutes(routes:List<String>,preferred:String?):List<String> =
+    if(preferred==null||preferred !in routes)routes else listOf(preferred)+routes.filter{it!=preferred}
+
 // Give the preferred route a short head start, without waiting for an unreachable LAN.
 internal suspend fun <T> firstResponsiveRoute(
     routes:List<String>, headStartMs:Long=300, probe:suspend (String)->T,

@@ -32,6 +32,8 @@ Windows配套发行包同时包含Local Console、Gateway和Android APK。`/cons
 - 终端、文件、预览代理。
 - Telegram、微信等多入口复用。
 
+非 Codex CLI 的进程生命周期、网关重启行为与恢复流程见 [CLI Agent Host](agent-host.md)。
+
 ## 数据模型
 
 Gateway 0.6.90 在历史消息分页后恢复上传附件信息：仅将当前上传存储根目录内的 `<id>/content` 路径匹配到对应元数据，沿用附件 ID 和文件完整性检查。可恢复的条目转为 `files`，其他路径或缺失附件保持原记录；已有文件按 ID 去重，不改写原始历史。先生成历史图片 URL，再移除已恢复的文件附件，保留原图片索引。Android 和 Web 因而沿用现有上传附件预览入口，无需授权上传目录作为项目。

@@ -65,6 +65,8 @@ export type PairingSession = {
 };
 
 export type ThreadRecord = {
+  ephemeral?:boolean;
+  forkedFromId?:string;
   closureKind?:'gatewayClosed';
   unread?:boolean;
   completedAt?:number;
@@ -175,9 +177,9 @@ export type GatewayEvent = (
   | { type: "plan.updated"; threadId:string; turnId?:string; title:string; text:string }
   | { type: "message.delta"; threadId: string; text: string; itemId?: string; turnId?: string; textComplete?: boolean }
   | { type: "terminal.output"; threadId: string; stream: "stdout" | "stderr"; text: string; commandId?: string; cwd?: string; command?: string; status?: TerminalCommandHistory["status"]; createdAt?: string }
-  | { type: "tool.started"; threadId: string; itemId?: string; title: string; detail?: string }
-  | { type: "tool.output"; threadId: string; itemId?: string; text: string }
-  | { type: "tool.completed"; threadId: string; itemId?: string; status: "ok" | "error" | "cancelled"; detail?: string }
+  | { type: "tool.started"; threadId: string; turnId?: string; itemId?: string; title: string; detail?: string }
+  | { type: "tool.output"; threadId: string; turnId?: string; itemId?: string; text: string }
+  | { type: "tool.completed"; threadId: string; turnId?: string; itemId?: string; title?:string; status: "ok" | "error" | "cancelled"; detail?: string }
   | { type: "approval.requested"; threadId: string; turnId?: string; itemId?: string; approvalId?: string; approvalType: "command" | "file" | "permission" | "question" | "desktop"; title: string; detail?: string }
   | { type: "approval.resolved"; threadId: string; approvalId: string; decision: "accept" | "decline" | "resolved" }
   | { type: "file.changed"; threadId: string; turnId?: string; itemId?: string; files: string[]; summary?: string; diff?: string }

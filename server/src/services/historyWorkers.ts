@@ -1,7 +1,7 @@
 import {Worker} from 'node:worker_threads';
 
 type ReadPriority='interactive'|'background';
-type Job={id:number;key:string;affinity:string;method:string;args:unknown[];env:Record<string,string|undefined>;priority:ReadPriority;waiters:number;retained:boolean;resolve:(value:any)=>void;reject:(error:Error)=>void;timer?:NodeJS.Timeout};
+type Job={id:number;key:string;affinity:string;method:string;args:unknown[];env:Record<string,string|undefined>;priority:ReadPriority;waiters:number;retained:boolean;createdAt:number;startedAt?:number;resolve:(value:any)=>void;reject:(error:Error)=>void;timer?:NodeJS.Timeout};
 type Lane={worker?:Worker;current?:Job;queue:Job[];lastInteractive?:boolean};
 type Assignment={lane:Lane;pending:number;revision:number};
 
@@ -12,6 +12,22 @@ private readonly pending=new Map<string,Promise<any>>();
 private readonly pendingJobs=new Map<string,Job>();
 private sequence=0;
 private closed=false;
+private completed=0;
+private failed=0;
+private deduplicated=0;
+private discarded=0;
+private timeouts=0;
+private maxQueueMs=0;
+private maxRunMs=0;
+
+status(){
+  const now=performance.now();
+  return {completed:this.completed,failed:this.failed,deduplicated:this.deduplicated,discarded:this.discarded,timeouts:this.timeouts,
+    maxQueueMs:Math.round(this.maxQueueMs),maxRunMs:Math.round(this.maxRunMs),
+    lanes:this.lanes.map(lane=>({running:Boolean(lane.current),queued:lane.queue.length,
+      runningMs:lane.current?.startedAt===undefined?0:Math.round(now-lane.current.startedAt),
+      oldestQueueMs:lane.queue.length?Math.round(now-lane.queue[0]!.createdAt):0}))};
+}
 
 constructor(private readonly workerUrl=new URL(`./historyWorker.${import.meta.url.endsWith('.ts')?'ts':'js'}`,import.meta.url)){}
 
@@ -29,6 +45,8 @@ private laneFor(key:string):Assignment{
 private finish(lane:Lane,error?:Error,value?:unknown){
   const job=lane.current;if(!job)return;
   clearTimeout(job.timer);lane.current=undefined;
+  if(error)this.failed++;else this.completed++;
+  if(job.startedAt!==undefined)this.maxRunMs=Math.max(this.maxRunMs,performance.now()-job.startedAt);
   const assignment=this.assignments.get(job.affinity);if(assignment)assignment.pending--;
   // Keep affinities warm without retaining every conversation ever opened.
   for(const [key,value]of this.assignments){
@@ -54,6 +72,7 @@ private dispatch(lane:Lane){
   }
   const job=lane.queue.splice(next,1)[0];if(!job){lane.worker?.unref();return;}
   lane.lastInteractive=job.priority==='interactive';
+  job.startedAt=performance.now();this.maxQueueMs=Math.max(this.maxQueueMs,job.startedAt-job.createdAt);
   if(!lane.worker){
     const worker=new Worker(this.workerUrl,{
       // Test loaders may expand execArgv with process-only V8 flags. A worker
@@ -74,6 +93,7 @@ private dispatch(lane:Lane){
   }
   lane.current=job;lane.worker.ref();
   job.timer=setTimeout(()=>{
+    this.timeouts++;
     const worker=lane.worker;lane.worker=undefined;void worker?.terminate();
     this.finish(lane,new Error('历史读取超时，请稍后重试'));
   },30000);
@@ -88,6 +108,7 @@ private discardUnobserved(job:Job){
   // Running work keeps its worker/cache; only an unneeded queued read is removed.
   if(index<0)return;
   queue!.splice(index,1);assignment!.pending--;
+  this.discarded++;
   if(this.assignments.size>128&&!assignment!.pending)this.assignments.delete(job.affinity);
   if(this.pendingJobs.get(job.key)===job){this.pending.delete(job.key);this.pendingJobs.delete(job.key);}
   job.reject(new DOMException('历史读取已取消','AbortError'));
@@ -110,7 +131,7 @@ private observe<T>(job:Job,result:Promise<T>,signal?:AbortSignal):Promise<T>{
 call<T>(method:string,args:unknown[],priority:ReadPriority='interactive',signal?:AbortSignal):Promise<T>{
   if(signal?.aborted)return Promise.reject(new DOMException('历史读取已取消','AbortError'));
   if(this.closed)return Promise.reject(new Error('历史读取工作线程池已关闭'));
-  const env={CODEX_HOME:process.env.CODEX_HOME,CODEX_MOBILE_CONTROL_HOME:process.env.CODEX_MOBILE_CONTROL_HOME,DSH_HOME:process.env.DSH_HOME};
+  const env={CODEX_HOME:process.env.CODEX_HOME,CODEX_MOBILE_CONTROL_HOME:process.env.CODEX_MOBILE_CONTROL_HOME,DSH_HOME:process.env.DSH_HOME,ZCODE_STORAGE_DIR:process.env.ZCODE_STORAGE_DIR,ZCODE_DATA_BASE_DIR:process.env.ZCODE_DATA_BASE_DIR};
   const affinity=JSON.stringify([env,String(args[0]||'')]);
   const assignment=this.laneFor(affinity),lane=assignment.lane;
   // A read requested after an invalidation must run behind it, even when an
@@ -119,6 +140,7 @@ call<T>(method:string,args:unknown[],priority:ReadPriority='interactive',signal?
   const key=JSON.stringify([env,method,args,revision]);
   const existing=this.pending.get(key);
   if(existing){
+    this.deduplicated++;
     if(priority==='interactive'){const job=this.pendingJobs.get(key);if(job)job.priority='interactive';}
     return this.observe(this.pendingJobs.get(key)!,existing,signal);
   }
@@ -126,7 +148,7 @@ call<T>(method:string,args:unknown[],priority:ReadPriority='interactive',signal?
   assignment.revision=revision;assignment.pending++;
   let job!:Job;
   const result=new Promise<T>((resolve,reject)=>{
-    job={id:++this.sequence,key,affinity,method,args,env,priority,waiters:0,retained:false,resolve,reject};
+    job={id:++this.sequence,key,affinity,method,args,env,priority,waiters:0,retained:false,createdAt:performance.now(),resolve,reject};
     this.pendingJobs.set(key,job);lane.queue.push(job);this.dispatch(lane);
   }).finally(()=>{if(this.pendingJobs.get(key)===job){this.pending.delete(key);this.pendingJobs.delete(key);}});
   this.pending.set(key,result);return this.observe(job,result,signal);
@@ -145,4 +167,6 @@ async close():Promise<void>{
 }
 
 const pool=new HistoryWorkerPool();
+export function historyWorkerStatus(){return pool.status();}
+export function closeHistoryWorkers(){return pool.close();}
 export function historyWorkerCall<T>(method:string,args:unknown[],priority:ReadPriority='interactive',signal?:AbortSignal):Promise<T>{return pool.call<T>(method,args,priority,signal);}

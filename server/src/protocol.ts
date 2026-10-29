@@ -5,7 +5,13 @@ export const CONTROL_PROTOCOL_VERSION = 1;
 export const MIN_ANDROID_PROTOCOL_VERSION = 1;
 
 export const CONTROL_CAPABILITIES = [
+  "android-app-updates",
   "foreground-websocket-probe",
+  "thread-side-chat",
+  "thread-fork",
+  "codex-background-terminals",
+  "codex-review",
+  "desktop-browser",
   "focused-thread-stream",
   "mobile-live-activity-details",
   "agent-health",
@@ -46,6 +52,7 @@ export const CONTROL_CAPABILITIES = [
   "local-task-receipts",
   "harness-durable-submissions",
   "local-thread-output-files",
+  "local-thread-output-directories",
   "new-thread-goals",
 ] as const;
 

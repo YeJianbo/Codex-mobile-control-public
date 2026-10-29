@@ -26,7 +26,9 @@ export function attachResponsesWebSocket(server,{authorize,request,onRequest,onF
     const errorEvent=(message,code='local_stream_error',streamId,status)=>({type:'error',...(streamId?{stream_id:streamId}:{}),...(status?{status}:{}),error:{type:'server_error',code,message}});
     async function run(message){
       const started=performance.now(),streamId=message.stream_id;
-      let controller,status=0,model,errorCode;
+      const startedAt=Date.now();let accountKey=null,controller,status=0,model,errorCode,usage=null,tier=null,provider='openai';
+      const timings={firstByteMs:null,firstOutputMs:null,firstTextMs:null,completedMs:null};
+      const elapsed=()=>Math.max(0,performance.now()-started);
       try{
         if(message.type!=='response.create')throw Error('Only response.create is supported');
         const {type,stream_id,generate,...body}=message;
@@ -48,7 +50,7 @@ export function attachResponsesWebSocket(server,{authorize,request,onRequest,onF
         const timer=setTimeout(()=>controller.abort(Error('Upstream timeout')),300000);
         onRequest?.(model);
         try{
-          const response=await request(body,controller.signal,req.headers);
+          const response=await request(body,controller.signal,req.headers,route=>{provider=route.provider?.id||'openai';accountKey=route.accountKey;});
           status=response.status;
           if(!response.ok){
             let failure;try{failure=await response.json();}catch{failure={};}
@@ -59,6 +61,7 @@ export function attachResponsesWebSocket(server,{authorize,request,onRequest,onF
           const decoder=new TextDecoder();let buffer='',terminal=false;
           const completedItems=new Map();
           for await(const chunk of response.body){
+            if(chunk.byteLength)timings.firstByteMs??=elapsed();
             buffer+=decoder.decode(chunk,{stream:true});
             if(Buffer.byteLength(buffer)>64*1024*1024)throw Error('Upstream event exceeds limit');
             let delimiter;
@@ -67,6 +70,11 @@ export function attachResponsesWebSocket(server,{authorize,request,onRequest,onF
               const data=block.split(/\r?\n/).filter(line=>line.startsWith('data:')).map(line=>line.slice(5).trimStart()).join('\n');
               if(!data||data==='[DONE]')continue;
               const event=JSON.parse(data);
+              if(Object.hasOwn(event.response||{},'service_tier'))tier=event.response.service_tier;
+              if(typeof event.delta==='string'&&event.delta.length&&event.type?.endsWith('.delta')){
+                timings.firstOutputMs??=elapsed();
+                if(event.type==='response.output_text.delta')timings.firstTextMs??=elapsed();
+              }
               if(streamId)event.stream_id=streamId;
               // Codex can emit the complete items only in output_item.done and
               // leave response.completed.output empty. Keep those items for replay.
@@ -74,6 +82,7 @@ export function attachResponsesWebSocket(server,{authorize,request,onRequest,onF
                 completedItems.set(event.output_index??event.item.id??completedItems.size,event.item);
               }
               if(event.type==='response.completed'){
+                usage=event.response?.usage||null;timings.completedMs=elapsed();
                 const input=Array.isArray(body.input)?body.input:body.input?[{type:'message',role:'user',content:body.input}]:[];
                 const output=[...completedItems.entries()].sort(([a],[b])=>typeof a==='number'&&typeof b==='number'?a-b:0).map(([,item])=>item);
                 for(const item of event.response.output||[]){
@@ -91,7 +100,8 @@ export function attachResponsesWebSocket(server,{authorize,request,onRequest,onF
           }
           if(!terminal)throw Error('Upstream stream ended before completion');
         }catch(error){errorCode||='local_stream_error';throw error;}
-        finally{clearTimeout(timer);controller.abort();controllers.delete(controller);onFinish?.({model,status,errorCode,durationMs:performance.now()-started});}
+        finally{clearTimeout(timer);controller.abort();controllers.delete(controller);onFinish?.({accountKey,startedAt,model,provider,status,errorCode,usage,tier,timings,
+          effort:body.reasoning?.effort,requestedTier:body.service_tier,sessionId:req.headers['session-id']||req.headers['thread-id']||req.headers['conversation-id'],durationMs:elapsed()});}
       }catch(error){
         if(peer.readyState===WebSocket.OPEN)await send(errorEvent(error.message,'local_stream_error',streamId)).catch(()=>{});
       }

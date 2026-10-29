@@ -1,6 +1,7 @@
 import type {FastifyInstance, FastifyReply} from 'fastify';
 import {z} from 'zod';
 import {LocalConsoleClient, consoleStatistics} from './localConsole.js';
+import {creditBalance} from './usage.js';
 
 type Data=Record<string,any>;
 const sourceIds=['codex','agy','claude','zcode','grok','hermes','deepseek','opencode'] as const;
@@ -63,7 +64,7 @@ const referenceRates:[RegExp,[number,number,number|null,number,('USD'|'CNY')?]][
   [/gemini-3\.[678][-\w.]*flash(?!-lite)/,[.75,.075,null,3.75]],[/gemini-3\.5[-\w.]*flash(?!-lite)/,[1.5,.15,null,9]],
   [/gemini-3\.1[-\w.]*pro/,[2,.2,null,12]],[/gemini-3[-\w.]*flash(?!-lite)/,[.5,.05,null,3]],
   [/gemini-2\.5[-\w.]*flash-lite/,[.1,.01,null,.4]],[/gemini-2\.5[-\w.]*flash(?!-lite)/,[.3,.03,null,2.5]],[/gemini-2\.5[-\w.]*pro/,[1.25,.125,null,10]],
-  [/glm-5\.3-flashx/,[2,.57,0,7,'CNY']],[/glm-5\.3-flash(?!x)/,[.8,.23,0,2.8,'CNY']],[/glm-5\.3(?!-flash)/,[8,2,0,28,'CNY']],
+  [/glm-5\.3-flashx/,[.37,.075,0,1.25]],[/glm-5\.3-flash(?!x)/,[.15,.03,0,.5]],[/glm-5\.3(?!-flash)/,[1.4,.26,0,4.4]],
   [/glm-5\.2/,[8,2,0,28,'CNY']],[/glm-5\.1/,[6,1.3,0,24,'CNY']],[/glm-5-turbo/,[5,1.2,0,22,'CNY']],[/glm-5(?!\.|\d|-)/,[4,1,0,18,'CNY']],
   [/glm-4\.7-flashx/,[.5,.1,0,3,'CNY']],[/glm-4\.7-flash(?!x)/,[0,0,0,0,'CNY']],[/glm-4\.7(?!-flash)/,[2,.4,0,8,'CNY']],
   [/glm-4\.6v-flash/,[0,0,0,0,'CNY']],[/glm-4\.6v(?!-flash)/,[1,.2,0,3,'CNY']],[/glm-4\.5-air/,[.8,.16,0,2,'CNY']],
@@ -84,7 +85,7 @@ function tokenResult(raw:Data,source:Source,query:z.infer<typeof tokenQuery>){
     return {...row,usd:row.usd??(quote?.currency==='USD'?quote.value:null),cny:quote?.currency==='CNY'?quote.value:null};
   });
   const reference=!['codex','agy','hermes','deepseek','opencode'].includes(source),usd=models.filter(row=>row.usd!==null),cny=models.filter(row=>row.cny!==null);
-  const cost=reference?{...result.cost,usd:usd.length?usd.reduce((sum,row)=>sum+count(row.usd),0):null,cny:cny.length?cny.reduce((sum,row)=>sum+count(row.cny),0):null,basis:'api-reference',priceDate:'2026-09-24',unpricedRecords:models.filter(row=>row.usd===null&&row.cny===null).reduce((sum,row)=>sum+row.records,0)}:result.cost;
+  const cost=reference?{...result.cost,usd:usd.length?usd.reduce((sum,row)=>sum+count(row.usd),0):null,cny:cny.length?cny.reduce((sum,row)=>sum+count(row.cny),0):null,basis:'api-reference',priceDate:models.some(row=>/glm-5[.]3/i.test(row.id))?'2026-10-24':result.cost.priceDate||'2026-09-24',unpricedRecords:models.filter(row=>row.usd===null&&row.cny===null).reduce((sum,row)=>sum+row.records,0)}:result.cost;
   return {...result,
     models,cost,
     costDetail:source==='codex'?{...scalar(object(tokens.cost),['basis','date','inputUsd','cachedUsd','outputUsd','pricedSamples','unpricedSamples','longContextSamples','unpricedTokens','astraExemptSamples','solExemptSamples','assumedStandardSamples']),rates:rows(object(tokens.cost).rates,500).map(row=>({model:text(row.model),...scalar(row,['input','cached','output'])}))}:null,
@@ -125,15 +126,15 @@ async function tokens(client:LocalConsoleClient,query:z.infer<typeof tokenQuery>
   };
 }
 
-const speedFields=['samples','outputTokens','durationMs','averageTPS','p50TPS','p95TPS','p50DurationMs','p95DurationMs','firstOutputSamples','p50FirstOutputMs','p95FirstOutputMs'] as const;
+const speedFields=['samples','outputTokens','durationMs','averageTPS','p50TPS','p95TPS','p50DurationMs','p95DurationMs','firstOutputSamples','p50FirstOutputMs','p95FirstOutputMs','firstTextSamples','p50FirstTextMs','p95FirstTextMs'] as const;
 function speedResult(raw:Data,query:z.infer<typeof speedQuery>){
   return {source:query.source,range:query.range,definition:query.source==='native'?'visible-text-estimate':'end-to-end',encoding:text(raw.encoding),
     filters:{source:query.source,model:query.model,provider:query.provider},options:{model:options(object(raw.options).model),provider:query.source==='router'?options(object(raw.options).provider):[]},
     totals:scalar(object(raw.totals),speedFields),coverage:scalar(object(raw.coverage),['available','requests','failed','unmeasured','excludedTests','excludedCompact']),progress:indexState(raw.progress),
-    groups:rows(raw.groups,500).map(row=>({model:text(row.model),tier:text(row.tier),provider:text(row.provider),providerName:text(row.providerName),sessionCount:number(row.sessionCount),...scalar(row,speedFields),
+    groups:rows(raw.groups,500).map(row=>({model:text(row.model),tier:text(row.tier),effort:text(row.effort),phase:text(row.phase),provider:text(row.provider),providerName:text(row.providerName),sessionCount:number(row.sessionCount),...scalar(row,speedFields),
       sessions:rows(row.sessions,5000).map(session=>({id:text(session.id),title:text(session.title,200),lastAt:number(session.lastAt),...scalar(session,speedFields)})),
     })),
-    recent:rows(raw.recent,30).map(row=>({model:text(row.model),tier:text(row.tier),provider:text(row.provider),providerName:text(row.providerName),...scalar(row,['timestamp','outputTokens','durationMs','firstOutputMs','endToEndTPS'])})),updatedAt:new Date().toISOString(),
+    recent:rows(raw.recent,30).map(row=>({model:text(row.model),tier:text(row.tier),effort:text(row.effort),phase:text(row.phase),provider:text(row.provider),providerName:text(row.providerName),...scalar(row,['timestamp','outputTokens','durationMs','firstOutputMs','firstTextMs','endToEndTPS'])})),updatedAt:new Date().toISOString(),
   };
 }
 
@@ -169,8 +170,8 @@ function quotaResult(raw:Data,query:z.infer<typeof quotaQuery>){
   const latest=object(raw.latest),routing=object(raw.routing);
   return {range:query.range??'rolling',account:text(raw.accountKey),days:number(raw.days),autoSample:raw.autoSample!==false,lastError:raw.lastError?'上次额度采样失败，请检查电脑上的账号授权':null,
     sampleCount:number(raw.sampleCount),displayedCount:number(raw.displayedCount),rawCount:number(raw.rawCount),
-    points:rows(raw.points,2000).map(row=>scalar(row,['timestamp','primary','secondary'])),
-    latest:{at:text(latest.at),plan:text(latest.plan),primary:quotaWindow(latest.primary),secondary:quotaWindow(latest.secondary)},
+    points:rows(raw.points,2000).map(row=>({...scalar(row,['timestamp','primary','secondary']),credits:creditBalance(row.credits)})),
+    latest:{at:text(latest.at),plan:text(latest.plan),credits:creditBalance(latest.credits),primary:quotaWindow(latest.primary),secondary:quotaWindow(latest.secondary)},
     routing:{...scalar(routing,['requests','failed','measuredRequests','inputTokens','outputTokens']),recent:rows(routing.recent,30).map(row=>{
       const error=object(row.errorSummary),category=typeof error.category==='string'&&error.category in errorLabels?error.category:'request';
       return {model:text(row.model),provider:text(row.provider),resource:text(row.resource),...scalar(row,['timestamp','status','durationMs','inputTokens','outputTokens','cachedTokens','firstOutputMs']),
@@ -182,6 +183,25 @@ function quotaResult(raw:Data,query:z.infer<typeof quotaQuery>){
 
 /** Fixed paired-device statistics surface. The local process token and arbitrary routes stay server-side. */
 export function registerMobileStatistics(app:FastifyInstance,client=new LocalConsoleClient()){
+  app.get('/api/mobile-management/statistics/quotas',(request,reply)=>respond(reply,async()=>{
+    const {source,catalog}=z.object({source:z.enum(['all',...sourceIds]).default('all'),catalog:z.literal('1').optional()}).strict().parse(request.query);
+    return client.managementRequest('/api/quota-overview?'+new URLSearchParams(catalog?{catalog}:{source}));
+  }));
+  app.post('/api/mobile-management/statistics/quotas/refresh',(request,reply)=>respond(reply,async()=>{
+    const body=z.object({source:z.enum(['all',...sourceIds]).default('all')}).strict().parse(request.body);
+    return client.managementRequest('/api/quota-overview/refresh',body);
+  }));
+  app.get('/api/mobile-management/statistics/quota/warmup',(request,reply)=>respond(reply,async()=>{
+    z.object({}).strict().parse(request.query);
+    return client.managementRequest('/api/usage/warmup');
+  }));
+  app.post('/api/mobile-management/statistics/quota/warmup',(request,reply)=>respond(reply,async()=>{
+    z.object({}).strict().parse(request.query);
+    const body=z.object({enabled:z.boolean(),windows:z.array(z.enum(['fiveHour','weekly'])).min(1).max(2),model:z.string().max(200).optional(),
+      fiveHourSchedule:z.object({enabled:z.boolean(),times:z.array(z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/)).min(1).max(24),timeZone:z.string().min(1).max(100)}).strict().optional(),
+      activeHours:z.object({enabled:z.boolean(),start:z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),end:z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),timeZone:z.string().min(1).max(100)}).strict().optional()}).strict().parse(request.body);
+    return client.managementRequest('/api/usage/warmup',body);
+  }));
   const respond=async(reply:FastifyReply,operation:()=>Promise<unknown>)=>{
     try{return await operation();}catch(error){
       if(error instanceof z.ZodError)return reply.code(400).send({error:'统计参数无效，请检查时间段或筛选条件'});
@@ -190,6 +210,15 @@ export function registerMobileStatistics(app:FastifyInstance,client=new LocalCon
     }
   };
   app.get('/api/mobile-management/statistics/tokens',(request,reply)=>respond(reply,()=>tokens(client,tokenQuery.parse(request.query))));
+  app.get('/api/mobile-management/statistics/requests',(request,reply)=>respond(reply,async()=>{
+    const query=z.object({...rangeFields,source:z.enum(['all','router',...sourceIds]).default('all'),model:z.string().max(300).default('all'),
+      pricing:z.enum(['codex','api']).default('codex'),purpose:z.enum(['all','normal','warmup','test']).default('all'),cursor:z.string().max(8192).default(''),limit:z.coerce.number().int().min(1).max(100).default(50)}).strict().superRefine(validateBounds).parse(request.query);
+    const params=new URLSearchParams();for(const [key,value] of Object.entries(query))if(value!==undefined)params.set(key,String(value));
+    const raw=await client.managementRequest('/api/usage/requests?'+params);
+    return {...scalar(raw,['range','source','model','pricing','purpose','refreshing','updatedAt']),hasMore:raw.hasMore===true,nextCursor:text(raw.nextCursor,8192),
+      coverage:rows(raw.coverage,20).map(row=>({source:text(row.source),available:row.available===true})),
+      rows:rows(raw.rows,100).map(row=>({...scalar(row,['id','source','time','model','provider','tier','requestedTier','tierBasis','effort','purpose','kind','requestCount','sessionId','status','failed','errorCode','inputTokens','cachedTokens','cacheWriteTokens','outputTokens','reasoningTokens','totalTokens','durationMs','firstByteMs','firstTextMs','firstOutputMs','afterFirstOutputMs','speedTokens','cacheHitRate','averageTPS','timingBasis']),cost:row.cost?scalar(object(row.cost),['usd','basis','pricing']):null}))};
+  }));
   app.get('/api/mobile-management/statistics/activity',(request,reply)=>respond(reply,()=>activity(client,activityQuery.parse(request.query))));
   app.get('/api/mobile-management/statistics/speed',(request,reply)=>respond(reply,async()=>{
     const query=speedQuery.parse(request.query);

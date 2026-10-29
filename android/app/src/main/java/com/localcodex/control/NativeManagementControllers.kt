@@ -91,17 +91,22 @@ internal class NativeNetworkController(
     private val scope:CoroutineScope,
     private val connection:()->NativeManagementConnection?,
     private val errorText:(Exception)->String,
+    private val onNodeSelected:()->Unit,
 ){
     var state by mutableStateOf(NativeNetworkState());private set
     private var job:Job?=null
     private var revision=0L
 
-    fun load()=request("GET","/api/network/openai")
-    fun selectNode(group:String,node:String){if(!state.busy)request("PUT","/api/network/openai/node",JSONObject().put("group",group).put("node",node))}
-    fun testNode(group:String,node:String){if(!state.busy)request("POST","/api/network/openai/test",JSONObject().put("group",group).put("node",node),group to node)}
+    fun load(provider:String=state.provider){
+        val target=if(provider=="google")"google" else "openai"
+        if(target!=state.provider)state=NativeNetworkState(provider=target)
+        request("GET","/api/network/$target")
+    }
+    fun selectNode(group:String,node:String){if(!state.busy)request("PUT","/api/network/${state.provider}/node",JSONObject().put("group",group).put("node",node))}
+    fun testNode(group:String,node:String){if(!state.busy)request("POST","/api/network/${state.provider}/test",JSONObject().put("group",group).put("node",node),group to node)}
 
     private fun request(method:String,route:String,body:JSONObject?=null,test:Pair<String,String>?=null){
-        val owner=connection()?:run{state=NativeNetworkState(error="连接电脑后可管理 Clash 节点");return}
+        val owner=connection()?:run{state=NativeNetworkState(provider=state.provider,error="连接电脑后可管理 Clash 节点");return}
         val ticket=++revision
         fun current()=ticket==revision&&owner.current()
         job?.cancel();state=state.copy(loading=method=="GET",busy=true,error="",message="")
@@ -111,6 +116,7 @@ internal class NativeNetworkController(
                 if(current()){
                     state=if(test==null)state.copy(groups=result.toNativeProxyGroups(),message=if(method=="PUT")"节点已切换" else "")
                     else state.copy(groups=state.groups.map{group->if(group.name==test.first)group.copy(nodes=group.nodes.map{node->if(node.name==test.second)node.copy(delay=result.optInt("delay").takeIf{it>0})else node})else group},message="延迟测试完成")
+                    if(method=="PUT")onNodeSelected()
                 }
             }catch(e:CancellationException){throw e}
             catch(e:Exception){if(current())state=state.copy(error=errorText(e))}

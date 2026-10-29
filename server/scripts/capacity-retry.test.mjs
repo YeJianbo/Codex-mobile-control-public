@@ -8,7 +8,7 @@ function fixture(t,withGoal=false){
   const codex=new EventEmitter(),events=[],calls=[],threads=[{id:'t',status:'running'}];let backend='active';
   codex.connectionState=()=>({initialized:false,shared:true,generation:0});
   const goal=withGoal?{objective:'继续原目标',status:'active',goalId:'goal-1',tokensUsed:123,timeUsedSeconds:42}:null;
-  const store={threads,approvals:[],eventsForThread:()=>events,async upsertThread(row){Object.assign(threads[0],row);return threads[0];}};
+  const store={threads,approvals:[],recentEventsForThread:()=>events,async upsertThread(row){Object.assign(threads[0],row);return threads[0];}};
   codex.request=async(method,p)=>{
     calls.push({method,p});
     if(method==='thread/read')return {thread:{status:{type:backend}}};
@@ -39,6 +39,33 @@ test('ordinary retries supply a real capacity observation instead of duplicating
   const start=f.calls.find(c=>c.method==='turn/start');assert.deepEqual(start.p.input,[]);assert.equal(start.p.toolOutput.name,'gateway_capacity_retry');
   assert.equal(JSON.parse(start.p.toolOutput.output).failedTurnId,'first');assert.equal(f.events.filter(e=>e.type==='user.message').length,0);
   assert.equal(f.events.filter(e=>e.type==='turn.completed').length,0);assert.equal(f.threads[0].status,'running');
+});
+
+test('an unloaded or temporarily unavailable desktop session stays in recovery instead of stopping retry',async t=>{
+ const f=fixture(t);f.manager.setCapacityAutoRetry(true);f.started('unloaded');f.failed('unloaded');f.setBackend('notLoaded');
+ await f.fire();assert(f.calls.some(call=>call.method==='thread/resume'));assert(f.manager.isCapacityRetryPending('t'));
+ assert(!f.events.some(event=>event.title==='自动重试已停止'));assert(f.events.some(event=>event.title==='等待会话恢复'));
+ assert(f.manager.capacityRetries.get('t').timer._idleTimeout<=8800);
+ assert.equal(f.calls.filter(call=>call.method==='turn/start').length,0);
+ f.setBackend('idle');await f.fire();assert.equal(f.calls.filter(call=>call.method==='turn/start').length,1);
+});
+
+test('a failed systemError session accepts retry without waiting for idle',async t=>{
+ for(const withGoal of [false,true]){
+  const f=fixture(t,withGoal);f.manager.setCapacityAutoRetry(true);f.started('failed');f.failed('failed');f.setBackend('systemError');
+  await f.fire();assert.equal(f.calls.filter(call=>call.method===(withGoal?'thread/goal/set':'turn/start')).length,1);
+  assert.equal(f.calls.filter(call=>call.method==='thread/resume').length,0);
+  assert(!f.events.some(event=>event.title==='等待会话恢复'));
+ }
+});
+
+test('reattaching an unloaded session may retain the previous systemError',async t=>{
+ const f=fixture(t);f.manager.setCapacityAutoRetry(true);f.started('failed');f.failed('failed');f.setBackend('notLoaded');
+ const request=f.codex.request;
+ f.codex.request=async(method,p)=>{if(method==='thread/resume')f.setBackend('systemError');return request(method,p);};
+ await f.fire();assert.equal(f.calls.filter(call=>call.method==='thread/resume').length,1);
+ assert.equal(f.calls.filter(call=>call.method==='turn/start').length,1);
+ assert(!f.events.some(event=>event.title==='等待会话恢复'));
 });
 
 test('capacity-aborted turns and blocked goals retry without reviving a manual stop',async t=>{

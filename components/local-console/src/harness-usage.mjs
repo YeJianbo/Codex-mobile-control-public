@@ -6,6 +6,15 @@ import {zstdDecompressSync} from 'node:zlib';
 export const HARNESS_PRICE_DATE='2026-10-13';
 export const DEEPSEEK_PRICE_SOURCE='https://api-docs.deepseek.com/quick_start/pricing/';
 export const QWEN_PRICE_SOURCE='https://www.qwencloud.com/models/qwen3.8-flash';
+export const GLM_PRICE_SOURCE='https://docs.z.ai/guides/overview/pricing';
+export const GLM_PRICE_DATE='2026-10-24';
+const glmRates={'glm-5.3':{input:1.4,cached:.26,output:4.4},'glm-5.3-flash':{input:.15,cached:.03,output:.5},'glm-5.3-flashx':{input:.37,cached:.075,output:1.25}};
+// USD / million tokens. Cache reads are part of input, not additional input.
+export function glmQuote(row){
+  const model=String(row.model||'').split('::').at(-1).split('/').at(-1).toLowerCase(),rate=glmRates[model];
+  if(!rate||row.partialUsage||![row.input,row.cacheRead??0,row.output].every(value=>typeof value==='number'&&Number.isFinite(value)&&value>=0)||(row.cacheRead??0)>row.input)return null;
+  return {usd:((row.input-(row.cacheRead??0))*rate.input+(row.cacheRead??0)*rate.cached+row.output*rate.output)/1e6,basis:'official_reference',date:GLM_PRICE_DATE,priceModel:model};
+}
 const holidaySource='https://www.beijing.gov.cn/zhengce/zhengcefagui/202511/t20251104_4258873.html';
 const holidays2026=[['01-01','01-03'],['02-15','02-23'],['04-04','04-06'],['05-01','05-05'],['06-19','06-21'],['09-25','09-27'],['10-01','10-07']];
 const validCount=value=>typeof value==='number'&&Number.isSafeInteger(value)&&value>=0;
@@ -171,7 +180,7 @@ export function harnessSummary(source,rows,{since,until},coverage){
     if(basis==='provider_reported'){target.actualUsd+=usd;target.actualRecords+=n;}else{target.estimatedUsd+=usd;target.estimatedRecords+=n;}
   };
   for(const original of rows){
-    const reference=source==='opencode'?null:ecnuQuote(original);
+    const reference=source==='opencode'?null:ecnuQuote(original)||(!original.cost||original.cost.usd==null||original.cost.basis==='official_reference'?glmQuote(original):null);
     const row=reference&&!['provider_reported','subscription_included'].includes(original.cost?.basis)?{...original,cost:reference}:original;
     if(row.time<since||row.time>until)continue;
     const key=JSON.stringify([row.model,row.provider,row.billingMode]),group=groups.get(key)||{model:row.model,provider:row.provider,billingMode:row.billingMode,...empty(),cost:costEmpty()};
@@ -184,6 +193,7 @@ export function harnessSummary(source,rows,{since,until},coverage){
   totals.sessions=new Set(rows.filter(row=>row.time>=since&&row.time<=until).map(row=>row.sessionId)).size;
   const finishCost=c=>({...c,usd:c.pricedRecords?c.usd:null,actualUsd:c.actualRecords?c.actualUsd:null,estimatedUsd:c.estimatedRecords?c.estimatedUsd:null});
   const aliases=new Set(rows.filter(row=>row.time>=since&&row.time<=until).map(row=>String(row.model||'').split('::').at(-1).toLowerCase()));
-  const priceSources=source==='opencode'?[]:[...(source==='deepseek'||aliases.has('ecnu-max')?[DEEPSEEK_PRICE_SOURCE,holidaySource]:[]),...(aliases.has('ecnu-plus')?[QWEN_PRICE_SOURCE]:[])];
-  return {source,since,until,totals,groups:[...groups.values()].map(group=>({...group,cost:finishCost(group.cost),usd:group.cost.pricedRecords?group.cost.usd:null})).sort((a,b)=>b.input+b.output-a.input-a.output),modelSeries:[...daily.values()],cost:{...finishCost(cost),basis:source==='opencode'?'native_recorded':'native_and_reference',date:priceSources.length?HARNESS_PRICE_DATE:null,currency:'USD',sources:priceSources},coverage};
+  const hasGlm=rows.some(row=>row.time>=since&&row.time<=until&&glmQuote(row));
+  const priceSources=source==='opencode'?[]:[...(source==='deepseek'||aliases.has('ecnu-max')?[DEEPSEEK_PRICE_SOURCE,holidaySource]:[]),...(aliases.has('ecnu-plus')?[QWEN_PRICE_SOURCE]:[]),...(hasGlm?[GLM_PRICE_SOURCE]:[])];
+  return {source,since,until,totals,groups:[...groups.values()].map(group=>({...group,cost:finishCost(group.cost),usd:group.cost.pricedRecords?group.cost.usd:null})).sort((a,b)=>b.input+b.output-a.input-a.output),modelSeries:[...daily.values()],cost:{...finishCost(cost),basis:source==='opencode'?'native_recorded':'native_and_reference',date:hasGlm?GLM_PRICE_DATE:priceSources.length?HARNESS_PRICE_DATE:null,currency:'USD',sources:priceSources},coverage};
 }

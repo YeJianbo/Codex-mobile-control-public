@@ -30,10 +30,19 @@ function staleDesktopFixture(read){
  const codex=new EventEmitter(),stored=[],threads=[{id:'t',status:'running'}],published=[];
  const history=[{type:'turn.started',threadId:'t',turnId:'before-crash',createdAt:'2026-10-02T05:00:00Z'}];
  codex.request=read;
- const store={threads,approvals:[],eventsForThread:()=>stored,upsertThread:async value=>{Object.assign(threads[0],value);return threads[0]}};
+ const store={threads,approvals:[],recentEventsForThread:()=>stored,upsertThread:async value=>{Object.assign(threads[0],value);return threads[0]}};
  const sessions=new SessionManager(codex,{publish:e=>{const event={...e,createdAt:new Date().toISOString()};stored.push(event);published.push(event);}},store);
  return {codex,sessions,history,stored,threads,published};
 }
+
+test('an owned harness turn stays running even when the gateway cache is idle or terminal',async()=>{
+  const f=staleDesktopFixture(async()=>{throw Error('Harness status must not query Codex');});
+  f.sessions.agents.owns=id=>id==='antigravity-fixture';
+  for(const status of ['idle','completed','error']){
+    f.threads[0]={id:'antigravity-fixture',status};
+    assert.equal(await f.sessions.currentThreadStatus('antigravity-fixture',[],false),'running');
+  }
+});
 
 test('history status snapshot never waits for backend and does not end a running turn',async()=>{
  let calls=0;
@@ -73,10 +82,17 @@ test('slow status checks share the real RPC and return the local running state w
 });
 
 test('failed or unrecognized status reads do not end a running turn',async()=>{
- for(const read of [async()=>{throw Error('disconnected')},async()=>({thread:{status:{type:'systemError'}}})]){
+ for(const read of [async()=>{throw Error('disconnected')},async()=>({thread:{status:{type:'futureStatus'}}})]){
   const f=staleDesktopFixture(read);
   assert.equal(await f.sessions.currentThreadStatus('t',f.history),'running');assert.equal(f.published.length,0);
  }
+});
+test('a backend system error clears a stale running turn and publishes its terminal state',async()=>{
+ const f=staleDesktopFixture(async()=>({thread:{status:{type:'systemError'}}}));
+ f.codex.emit('notification',{method:'turn/started',params:{threadId:'t',turn:{id:'failed'}}});
+ assert.equal(await f.sessions.currentThreadStatus('t',f.history),'error');
+ assert.equal(f.sessions.canSteer('t'),false);assert.equal(f.threads[0].status,'error');
+ assert.equal(f.published.at(-1).status,'error');assert.equal(f.published.at(-1).turnId,'failed');
 });
 
 test('new turn notification during recovery prevents ending the new turn',async()=>{
@@ -181,4 +197,25 @@ test('queue order survives reload and failed persistence leaves memory unchanged
   assert.deepEqual(q.list('t').map(e=>e.id),['a','c','b']);
   assert.throws(()=>q.move('c','other','up'),/消息已发送或取消/);
  }finally{q.close();}
+});
+
+
+test('cold desktop status and stop use lightweight metadata without reading transcript bodies',async()=>{
+ const calls=[],codex=new EventEmitter(),threads=[{id:'t',status:'running'}];
+ codex.request=async(method,params)=>{
+   calls.push({method,params});
+   if(method==='thread/read')return {thread:{status:{type:'active'}}};
+   if(method==='thread/turns/list')return {data:[{id:'desktop-live',status:'inProgress'}]};
+   return {};
+ };
+ const store={threads,approvals:[],recentEventsForThread:()=>[],
+   eventsForThread:()=>{throw Error('full history must not be read');},
+   readThreadEvents:()=>{throw Error('history worker must not be awaited');},
+   upsertThread:async row=>Object.assign(threads[0],row)};
+ const sessions=new SessionManager(codex,{publish:()=>{}},store);
+ assert.equal(await sessions.currentThreadStatus('t',[]),'running');
+ const id=await sessions.currentTurnId('t');assert.equal(id,'desktop-live');
+ await sessions.interrupt('t',id);
+ assert.deepEqual(calls.find(call=>call.method==='thread/turns/list').params,{threadId:'t',limit:1,sortDirection:'desc',itemsView:'notLoaded'});
+ assert.equal(calls.find(call=>call.method==='turn/interrupt').params.turnId,'desktop-live');
 });

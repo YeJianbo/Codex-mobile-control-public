@@ -35,7 +35,7 @@ import java.net.URLEncoder
 
 internal data class ManagedChannelAccount(
     val id:String,val channel:String,val label:String,val projectPath:String,val state:String,val configured:Boolean,
-    val appId:String,val ownerId:String,val transport:String,val lastError:String,val bindingCount:Int
+    val appId:String,val ownerId:String,val transport:String,val lastError:String,val bindingCount:Int,val authorizedCount:Int=0
 )
 internal data class ManagedChannelLogin(val accountId:String,val generation:Long,val status:String,val qrImage:String,val expiresAt:Long?){
     val active:Boolean get()=status in listOf("wait","scaned","scaned_but_redirect","need_verifycode")
@@ -43,17 +43,18 @@ internal data class ManagedChannelLogin(val accountId:String,val generation:Long
 internal data class ManagedChannelOperation(
     val kind:String,val action:String,val accountId:String="",val projectPath:String="",val appId:String="",val appSecret:String=""
 )
+internal data class ManagedChannelPairing(val accountId:String,val code:String,val expiresAt:Long)
 internal data class ChannelManagementState(
     val accounts:List<ManagedChannelAccount> = emptyList(),val available:Set<String> = emptySet(),val selected:Map<String,String> = emptyMap(),
     val loaded:Boolean=false,val loading:Boolean=false,val busy:String="",val error:String="",val message:String="",
-    val login:ManagedChannelLogin?=null,val loginWorking:Boolean=false,val confirmation:ManagedChannelOperation?=null
+    val login:ManagedChannelLogin?=null,val loginWorking:Boolean=false,val confirmation:ManagedChannelOperation?=null,val pairing:ManagedChannelPairing?=null
 )
 private fun JSONObject.channelText(key:String)=if(isNull(key))"" else optString(key)
 private fun JSONObject.channelRows(key:String):List<JSONObject>{val array=optJSONArray(key)?:return emptyList();return (0 until array.length()).mapNotNull{array.optJSONObject(it)}}
 private fun channelAccount(row:JSONObject):ManagedChannelAccount{
     val details=row.optJSONObject("details")?:JSONObject()
     return ManagedChannelAccount(row.channelText("id"),row.channelText("channel"),row.channelText("label"),row.channelText("projectPath"),row.channelText("state"),
-        details.optBoolean("configured"),details.channelText("appId"),details.channelText("ownerId"),details.channelText("transport"),details.channelText("lastError"),row.optInt("bindingCount"))
+        details.optBoolean("configured"),details.channelText("appId"),details.channelText("ownerId"),details.channelText("transport"),details.channelText("lastError"),row.optInt("bindingCount"),details.optInt("authorizedCount"))
 }
 private fun channelEndpoint(id:String,action:String)="/api/mobile-management/channels/accounts/"+URLEncoder.encode(id,"UTF-8")+"/"+action
 
@@ -85,7 +86,7 @@ private class ChannelManagementController(private val scope:CoroutineScope,priva
     fun action(operation:ManagedChannelOperation){
         if(state.busy.isNotBlank())return
         state=state.copy(error="",message="")
-        if(operation.action=="save-project")perform(operation) else state=state.copy(confirmation=operation)
+        if(operation.action in listOf("save-project","pair"))perform(operation) else state=state.copy(confirmation=operation)
     }
     private suspend fun ensure(operation:ManagedChannelOperation):String{
         if(operation.accountId.isNotBlank())return operation.accountId
@@ -103,11 +104,12 @@ private class ChannelManagementController(private val scope:CoroutineScope,priva
             try{
                 val id=ensure(operation)
                 if(operation.action in listOf("save-project","connect-qq","connect","login")){
-                    if(operation.projectPath.isBlank())throw IllegalStateException("请选择新会话的工作目录")
                     request(channelEndpoint(id,"settings"),JSONObject().put("projectPath",operation.projectPath))
                 }
                 when(operation.action){
-                    "save-project"->state=state.copy(message="工作目录已保存")
+                    "pair"->{val result=request(channelEndpoint(id,"pair"),JSONObject());state=state.copy(pairing=ManagedChannelPairing(id,result.getString("code"),result.getLong("expiresAt")))}
+                    "revoke-access"->{request(channelEndpoint(id,"revoke-access"),JSONObject().put("confirm",true));state=state.copy(pairing=null,message="QQ 授权已清除，原会话保留")}
+                    "save-project"->state=state.copy(message=if(operation.projectPath.isBlank())"已切换为通用助理" else "工作目录已保存")
                     "connect-qq"->{
                         if(operation.appSecret.isNotBlank())request(channelEndpoint(id,"credentials"),JSONObject().put("appId",operation.appId.trim()).put("appSecret",operation.appSecret.trim()))
                         request(channelEndpoint(id,"disconnect"),JSONObject())
@@ -183,8 +185,8 @@ private class ChannelManagementController(private val scope:CoroutineScope,priva
     select:(String,String)->Unit,action:(ManagedChannelOperation)->Unit,dismiss:()->Unit,confirm:()->Unit,verify:(String)->Unit,cancelLogin:()->Unit
 ){
     val enabled=connected&&!state.loading&&state.busy.isBlank()
-    NativeManagementPage("QQ / 微信","",back,modifier=Modifier.testTag("channelManagement"),actions={TextButton(onClick=refresh,enabled=enabled){Text("刷新")}}){
-        Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp),verticalArrangement=Arrangement.spacedBy(14.dp)){
+    NativeManagementPage("QQ / 微信","",back,modifier=Modifier.testTag("channelManagement"),actions={ChromeButton(R.drawable.ic_lucide_rotate_cw,"刷新",refresh,enabled=enabled)}){
+        Column(Modifier.weight(1f).fillMaxWidth().nativeManagementScroll(rememberScrollState()).padding(16.dp),verticalArrangement=Arrangement.spacedBy(14.dp)){
             if(!connected)Text("连接电脑后管理消息通道")
             if(state.loading||state.busy.isNotBlank())LinearProgressIndicator(Modifier.fillMaxWidth())
             if(state.error.isNotBlank())Text(state.error,color=MaterialTheme.colors.error,modifier=Modifier.testTag("channelManagementError"))
@@ -192,7 +194,7 @@ private class ChannelManagementController(private val scope:CoroutineScope,priva
             for(kind in listOf("qq","weixin")){
                 val accounts=state.accounts.filter{it.channel==kind}
                 val account=accounts.firstOrNull{it.id==state.selected[kind]}?:accounts.firstOrNull()
-                NativeChannelPlatformCard(kind,account,accounts,kind in state.available,state.loaded,enabled,projects,state.login,state.loginWorking,
+                NativeChannelPlatformCard(kind,account,accounts,kind in state.available,state.loaded,enabled,projects,state.login,state.loginWorking,state.pairing,
                     {select(kind,it)},action,verify,cancelLogin)
             }
             Text("发送文字开始任务。支持 /状态、/结果、/停止、/新会话；审批在手机或电脑控制台处理。",fontSize=12.sp,color=MaterialTheme.colors.onSurface.copy(alpha=.65f))
@@ -201,25 +203,26 @@ private class ChannelManagementController(private val scope:CoroutineScope,priva
     state.confirmation?.let{operation->
         val account=state.accounts.firstOrNull{it.id==operation.accountId}
         val name=if(operation.kind=="qq")"QQ" else "微信"
-        val title=when(operation.action){"remove"->"清除${name}登录";"disconnect"->"断开$name";"login"->"微信扫码连接";"connect-qq"->"保存并连接 QQ";else->"重新连接$name"}
-        AlertDialog(onDismissRequest=dismiss,title={Text(title)},text={Column(verticalArrangement=Arrangement.spacedBy(10.dp)){
+        val title=when(operation.action){"revoke-access"->"清除 QQ 授权";"remove"->"清除${name}登录";"disconnect"->"断开$name";"login"->"微信扫码连接";"connect-qq"->"保存并连接 QQ";else->"重新连接$name"}
+        NativeAlertDialog(onDismissRequest=dismiss,title={Text(title)},text={Column(verticalArrangement=Arrangement.spacedBy(10.dp)){
             Text(when(operation.action){
+                "revoke-access"->"所有 QQ 账号将失去任务和结果访问权限，需要重新用绑定码授权。原会话记录保留。"
                 "remove"->"将移除此通道账号、电脑上保存的登录凭据和 ${account?.bindingCount?:0} 个会话绑定。已有会话保留；再次使用需要重新登录。"
                 "disconnect"->"断开后将停止从${name}接收任务和回传结果。已启动的任务继续在电脑上运行。"
-                "login"->"将断开微信通道并生成登录二维码。扫码确认后，登录凭据保存到电脑；微信新消息可以在所选目录启动任务。"
-                "connect-qq"->"将保存机器人配置并连接 QQ。连接后，QQ 新消息可以在所选目录启动任务，已绑定会话可接收任务结果。"
-                else->"将重新连接$name。连接后，平台新消息可以在所选目录启动任务并接收已绑定会话的结果。"
+                "login"->"将断开微信通道并生成登录二维码。扫码确认后，可从微信与助理对话。"
+                "connect-qq"->"将保存机器人配置并连接 QQ，可从 QQ 与助理对话并接收任务结果。"
+                else->"将重新连接$name，并接收已绑定会话的任务结果。"
             })
             if(operation.action=="connect-qq"&&account?.configured==true&&operation.appId!=account.appId)Text("AppID 已改变，原有平台身份和会话绑定会清除。",fontSize=13.sp)
             if(operation.action=="login"&&account?.configured==true)Text("扫码确认后将替换此通道保存的微信登录；更换微信身份会清除原绑定。",fontSize=13.sp)
             if(operation.projectPath.isNotBlank())Text("工作目录：${nativeDisplayPath(operation.projectPath)}",fontSize=13.sp)
-        }},confirmButton={TextButton(onClick=confirm,modifier=Modifier.testTag("confirmChannelOperation")){Text(when(operation.action){"remove"->"清除登录";"disconnect"->"断开";"login"->"生成二维码";else->"连接"},color=if(operation.action=="remove")MaterialTheme.colors.error else MaterialTheme.colors.primary)}},dismissButton={TextButton(onClick=dismiss){Text("取消")}})
+        }},confirmButton={TextButton(onClick=confirm,modifier=Modifier.testTag("confirmChannelOperation")){Text(when(operation.action){"revoke-access"->"清除授权";"remove"->"清除登录";"disconnect"->"断开";"login"->"生成二维码";else->"连接"},color=if(operation.action in listOf("remove","revoke-access"))MaterialTheme.colors.error else MaterialTheme.colors.primary)}},dismissButton={TextButton(onClick=dismiss){Text("取消")}})
     }
 }
 
 @Composable private fun NativeChannelPlatformCard(
     kind:String,account:ManagedChannelAccount?,accounts:List<ManagedChannelAccount>,available:Boolean,loaded:Boolean,enabled:Boolean,
-    projects:List<Project>,login:ManagedChannelLogin?,loginWorking:Boolean,select:(String)->Unit,action:(ManagedChannelOperation)->Unit,
+    projects:List<Project>,login:ManagedChannelLogin?,loginWorking:Boolean,pairing:ManagedChannelPairing?,select:(String)->Unit,action:(ManagedChannelOperation)->Unit,
     verify:(String)->Unit,cancelLogin:()->Unit
 ){
     var projectPath by remember(account?.id){mutableStateOf(account?.projectPath.orEmpty())}
@@ -238,7 +241,7 @@ private class ChannelManagementController(private val scope:CoroutineScope,priva
         }
         if(accounts.size>1)Box{
             OutlinedButton(onClick={accountMenu=true},enabled=ready){Text(account?.label?:"选择通道账号")}
-            DropdownMenu(accountMenu,{accountMenu=false}){accounts.forEach{item->DropdownMenuItem(onClick={select(item.id);accountMenu=false}){Text(item.label)}}}
+            NativeDropdownMenu(accountMenu,{accountMenu=false}){accounts.forEach{item->DropdownMenuItem(onClick={select(item.id);accountMenu=false}){Text(item.label)}}}
         }
         if(account?.lastError?.isNotBlank()==true)Text(account.lastError,color=MaterialTheme.colors.error,fontSize=13.sp)
         if(account!=null){
@@ -246,20 +249,21 @@ private class ChannelManagementController(private val scope:CoroutineScope,priva
             if(kind=="weixin"&&account.ownerId.isNotBlank())Text("微信身份：${account.ownerId}",fontSize=12.sp,color=MaterialTheme.colors.onSurface.copy(alpha=.65f))
         }
         ChannelProjectChoice(projectPath,projects,ready){projectPath=it}
-        OutlinedButton(onClick={action(operation("save-project"))},enabled=ready&&projectPath.isNotBlank()&&projectPath!=account?.projectPath){Text("保存工作目录")}
+        OutlinedButton(onClick={action(operation("save-project"))},enabled=ready&&projectPath!=account?.projectPath.orEmpty()){Text("保存会话设置")}
         if(kind=="qq"){
+            if(account!=null)NativeQqAuthorization(account.id,account.authorizedCount,pairing,ready,{action(operation("pair"))},{action(operation("revoke-access"))})
             OutlinedTextField(appId,{appId=it.take(30)},label={Text("QQ AppID")},singleLine=true,enabled=ready,modifier=Modifier.fillMaxWidth().testTag("channelQqAppId"))
             OutlinedTextField(appSecret,{appSecret=it.take(512)},label={Text(if(account?.configured==true)"AppSecret（留空保留）" else "QQ AppSecret")},visualTransformation=PasswordVisualTransformation(),singleLine=true,enabled=ready,modifier=Modifier.fillMaxWidth().testTag("channelQqSecret"))
             val credentialsReady=appId.trim().matches(Regex("^\\d{4,30}$"))&&(appSecret.trim().length>=8||appSecret.isBlank()&&account?.configured==true&&appId==account.appId)
-            Button(onClick={val next=operation("connect-qq");appSecret="";action(next)},enabled=ready&&projectPath.isNotBlank()&&credentialsReady,modifier=Modifier.fillMaxWidth()){Text("保存并连接")}
+            Button(onClick={val next=operation("connect-qq");appSecret="";action(next)},enabled=ready&&credentialsReady,modifier=Modifier.fillMaxWidth()){Text("保存并连接")}
             TextButton(onClick={uri.openUri("https://q.qq.com/")}){Text("打开 QQ 机器人开放平台")}
         }else{
-            Button(onClick={action(operation("login"))},enabled=ready&&projectPath.isNotBlank(),modifier=Modifier.fillMaxWidth().testTag("channelWeixinLogin")){Text("微信扫码连接")}
+            Button(onClick={action(operation("login"))},enabled=ready,modifier=Modifier.fillMaxWidth().testTag("channelWeixinLogin")){Text("微信扫码连接")}
             if(login!=null&&login.accountId==account?.id)NativeChannelLoginContent(login,loginWorking,ready,verify,cancelLogin)
         }
         if(account!=null){
             Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
-                TextButton(onClick={action(operation("connect"))},enabled=ready&&account.configured&&projectPath.isNotBlank()){Text("重新连接")}
+                TextButton(onClick={action(operation("connect"))},enabled=ready&&account.configured){Text("重新连接")}
                 TextButton(onClick={action(operation("disconnect"))},enabled=ready&&account.state in listOf("connected","connecting","error")){Text("断开")}
                 TextButton(onClick={action(operation("remove"))},enabled=ready){Text("清除登录",color=MaterialTheme.colors.error)}
             }
@@ -270,15 +274,18 @@ private class ChannelManagementController(private val scope:CoroutineScope,priva
 @Composable private fun ChannelProjectChoice(value:String,projects:List<Project>,enabled:Boolean,onSelect:(String)->Unit){
     var open by remember{mutableStateOf(false)}
     Column(verticalArrangement=Arrangement.spacedBy(5.dp)){
-        Text("新会话的工作目录",fontSize=13.sp)
+        Text("新会话",fontSize=13.sp)
         Box{
-            OutlinedButton(onClick={open=true},enabled=enabled&&projects.isNotEmpty(),modifier=Modifier.fillMaxWidth()){
-                Text(projects.firstOrNull{it.path==value}?.name?:nativeDisplayPath(value).ifBlank{"选择工作目录"},maxLines=2)
+            OutlinedButton(onClick={open=true},enabled=enabled,modifier=Modifier.fillMaxWidth()){
+                Text(projects.firstOrNull{it.path==value}?.name?:nativeDisplayPath(value).ifBlank{"通用助理 · 不绑定项目"},maxLines=2)
             }
-            DropdownMenu(open,{open=false}){projects.forEach{project->DropdownMenuItem(onClick={onSelect(project.path);open=false}){Column{Text(project.name);Text(nativeDisplayPath(project.path),fontSize=11.sp,maxLines=2,overflow=TextOverflow.Ellipsis,color=MaterialTheme.colors.onSurface.copy(alpha=.6f))}}}}
+            NativeDropdownMenu(open,{open=false}){
+                DropdownMenuItem(onClick={onSelect("");open=false}){Text("通用助理 · 不绑定项目")}
+                projects.forEach{project->DropdownMenuItem(onClick={onSelect(project.path);open=false}){Column{Text(project.name);Text(nativeDisplayPath(project.path),fontSize=11.sp,maxLines=2,overflow=TextOverflow.Ellipsis,color=MaterialTheme.colors.onSurface.copy(alpha=.6f))}}}
+            }
         }
         if(value.isNotBlank())Text(value,fontSize=11.sp,color=MaterialTheme.colors.onSurface.copy(alpha=.6f))
-        if(projects.isEmpty())Text("请先在项目列表添加工作目录。",fontSize=12.sp,color=MaterialTheme.colors.onSurface.copy(alpha=.65f))
+        if(value.isBlank())Text("普通聊天使用独立助理空间，需要处理项目时再指定目录。",fontSize=12.sp,color=MaterialTheme.colors.onSurface.copy(alpha=.65f))
     }
 }
 

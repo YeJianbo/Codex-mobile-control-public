@@ -12,14 +12,19 @@ import androidx.compose.ui.unit.sp
 
 internal data class NativeProxyNode(val name:String,val delay:Int?=null)
 internal data class NativeProxyGroup(val name:String,val selected:String,val nodes:List<NativeProxyNode>)
-internal data class NativeNetworkState(val groups:List<NativeProxyGroup> = emptyList(),val loading:Boolean=false,val busy:Boolean=false,val error:String="",val message:String="")
+internal data class NativeNetworkState(val provider:String="openai",val groups:List<NativeProxyGroup> = emptyList(),val loading:Boolean=false,val busy:Boolean=false,val error:String="",val message:String="")
 internal fun org.json.JSONObject.toNativeProxyGroups():List<NativeProxyGroup>{
     val rows=optJSONArray("groups")?:return emptyList()
     return (0 until rows.length()).map{index->val group=rows.getJSONObject(index);val nodes=group.getJSONArray("nodes")
         NativeProxyGroup(group.getString("name"),group.optString("selected"),(0 until nodes.length()).map{at->val node=nodes.getJSONObject(at);NativeProxyNode(node.getString("name"),if(node.isNull("delay"))null else node.optInt("delay").takeIf{it>0})})
     }
 }
-@Composable internal fun NativeNetworkPanel(state:NativeNetworkState,connected:Boolean,refresh:()->Unit,select:(String,String)->Unit,test:(String,String)->Unit){
+@Composable internal fun NativeNetworkPanel(state:NativeNetworkState,connected:Boolean,refresh:()->Unit,chooseProvider:(String)->Unit,select:(String,String)->Unit,test:(String,String)->Unit){
+    Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){
+        listOf("openai" to "OpenAI", "google" to "Google").forEach{(provider,label)->
+            TextButton(onClick={chooseProvider(provider)},enabled=connected&&!state.busy&&state.provider!=provider){Text(if(state.provider==provider)"✓ $label" else label)}
+        }
+    }
     if(state.loading)Row(verticalAlignment=Alignment.CenterVertically){CircularProgressIndicator(Modifier.size(18.dp),strokeWidth=2.dp);Text("正在连接电脑端 Clash…",Modifier.padding(start=10.dp),fontSize=14.sp)}
     if(state.error.isNotBlank())Text(state.error,color=MaterialTheme.colors.error,fontSize=14.sp)
     if(state.message.isNotBlank())Text(state.message,fontSize=13.sp)

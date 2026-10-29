@@ -8,11 +8,13 @@ import path from "node:path";
 import type { GatewayEvent, PendingApproval, ThreadRecord } from "../types.js";
 import {desktopSidebar} from './desktopSidebar.js';
 import {subagentMetadata} from './subagentThreads.js';
-import {delegatedMessage} from './messageSource.js';
-import {summarizeFileChanges} from './fileChanges.js';
+import {delegatedMessage,subagentNotificationEvent} from './messageSource.js';
+import {summarizeFileChanges,confirmedToolChanges} from './fileChanges.js';
+import {deferMobileActivityDetails,isVisibleMobileThreadEvent} from './mobileActivityDetails.js';
 import {readTokenSnapshot} from './codexTokenUsage.js';
 import {canonicalRollout,rolloutChunks,compressedRolloutTail} from './rolloutReader.js';
 import {deepseekNativeSessions} from './deepseekNativeSessions.js';
+import {zcodeNativeSessions} from './zcodeNativeSessions.js';
 import {compactionSummary,foldCompactionSummaries} from './contextCompaction.js';
 import {resolveHistoryImage,isHistoryClipboardImage} from './historyImages.js';
 
@@ -34,14 +36,17 @@ type CodexSessionMeta = {
 
 const MAX_INDEXED_THREADS = 300;
 
-export async function listThreadsWithCodexHistory(storedThreads: ThreadRecord[], refresh = false, activeIds:string[]=[],includeDeepSeek=true): Promise<ThreadRecord[]> {
+export async function listThreadsWithCodexHistory(storedThreads: ThreadRecord[], refresh = false, activeIds:string[]=[],nativeAgents:readonly ('deepseek'|'zcode')[]=['deepseek','zcode']): Promise<ThreadRecord[]> {
+  storedThreads=storedThreads.filter(thread=>!thread.ephemeral);
   if (refresh) fileInventories.delete(path.join(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), 'sessions'));
   const desktop=await desktopSidebar();
-  const [indexedThreads,nativeDeepSeek]=await Promise.all([
+  const [indexedThreads,nativeDeepSeek,nativeZcode]=await Promise.all([
     listCodexIndexedThreads(desktop.threads,new Set(desktop.archived)),
-    includeDeepSeek?deepseekNativeSessions.list():Promise.resolve([]),
+    nativeAgents.includes('deepseek')?deepseekNativeSessions.list():Promise.resolve([]),
+    nativeAgents.includes('zcode')?zcodeNativeSessions.list():Promise.resolve([]),
   ]);
   indexedThreads.push(...nativeDeepSeek.map(session=>session.thread));
+  indexedThreads.push(...nativeZcode.map(session=>session.thread));
   const active=new Set(activeIds);
   const pinned=new Map<string,number>();
   desktop.pinned.forEach((id,index)=>{if(!pinned.has(id))pinned.set(id,index+1);});
@@ -57,14 +62,15 @@ export async function listThreadsWithCodexHistory(storedThreads: ThreadRecord[],
   for (const thread of storedThreads) {
     const indexed = merged.get(thread.id);
     if(thread.id.startsWith('deepseek-')&&!indexed&&!active.has(thread.id)&&deepseekNativeSessions.isAliasedThread(thread.id))continue;
+    if(thread.id.startsWith('zcode-')&&!indexed&&!active.has(thread.id)&&zcodeNativeSessions.isAliasedThread(thread.id))continue;
     merged.set(thread.id, {
       ...thread,
-      ...(thread.id.startsWith('deepseek-')&&indexed?{status:active.has(thread.id)?thread.status:indexed.status}:{}),
+      ...(/^(deepseek|zcode)-/.test(thread.id)&&indexed?{status:active.has(thread.id)?thread.status:indexed.status}:{}),
       subagent:thread.subagent??indexed?.subagent,
       projectPath: thread.projectPath || indexed?.projectPath,
-      title: thread.id.startsWith('deepseek-')&&indexed?indexed.title:meaningfulStoredTitle(thread.title) ? thread.title : indexed?.title ?? thread.title,
-      createdAt: thread.createdAt || indexed?.createdAt || thread.updatedAt,
-      updatedAt: latestIso(thread.updatedAt, indexed?.updatedAt),
+      title: /^(deepseek|zcode)-/.test(thread.id)&&indexed?indexed.title:meaningfulStoredTitle(thread.title) ? thread.title : indexed?.title ?? thread.title,
+      createdAt: thread.id.startsWith('zcode-')&&indexed?indexed.createdAt:thread.createdAt || indexed?.createdAt || thread.updatedAt,
+      updatedAt: thread.id.startsWith('zcode-')&&indexed&&!active.has(thread.id)?indexed.updatedAt:latestIso(thread.updatedAt, indexed?.updatedAt),
     });
   }
   for(const row of desktop.threads) {
@@ -88,7 +94,7 @@ export async function listThreadsWithCodexHistory(storedThreads: ThreadRecord[],
   }
   for(const [id,thread] of merged){
     if(pinned.has(id))thread.pinnedIndex=pinned.get(id);
-    else if(desktop.pinsAuthoritative&&!/^(claude|antigravity|grok|deepseek|hermes|opencode)-/.test(id))delete thread.pinnedIndex;
+    else if(desktop.pinsAuthoritative&&!/^(claude|antigravity|grok|deepseek|hermes|opencode|zcode)-/.test(id))delete thread.pinnedIndex;
   }
   for(const id of desktop.archived)merged.delete(id);
   if(desktop.threadsLoaded){
@@ -115,6 +121,7 @@ export function visibleThreadTitle(input:string):string {
 export async function listCodexSessionProjectPaths(): Promise<string[]> {
   const threads = await listCodexIndexedThreads();
   threads.push(...(await deepseekNativeSessions.list()).map(session=>session.thread));
+  threads.push(...(await zcodeNativeSessions.list()).map(session=>session.thread));
   const seen = new Set<string>();
   const result: string[] = [];
   for (const thread of threads) {
@@ -143,6 +150,9 @@ export async function invalidateCodexHistory(threadId:string):Promise<void>{
 }
 // Completion identity comes from lifecycle timestamps, never title/sidebar updates.
 export async function readCodexThreadCompletion(threadId:string):Promise<number> {
+  if(threadId.startsWith('zcode-')){
+    return (await zcodeNativeSessions.list()).find(session=>session.thread.id===threadId)?.completedAt||0;
+  }
   if(threadId.startsWith('deepseek-')){
     const session=await deepseekNativeSessions.read(threadId);
     const latest=session?.events.slice().reverse().find(event=>event.type==='turn.started'||event.type==='turn.completed');
@@ -201,6 +211,7 @@ async function readLatestCompletion(file:string,size:number):Promise<number|unde
 }
 // Search only recent text; a cold search must not parse entire multi-gigabyte rollouts.
 export async function readRecentSearchEvents(threadId:string,signal?:AbortSignal):Promise<GatewayEvent[]> {
+  if(threadId.startsWith('zcode-'))return (await zcodeNativeSessions.read(threadId))?.events.filter(event=>event.type==='user.message'||event.type==='message.delta').slice(-200)||[];
   if(isMainThread&&!threadId.startsWith('deepseek-'))return historyWorkerCall('readRecentSearchEvents',[threadId],'interactive',signal);
   if(threadId.startsWith('deepseek-'))return (await deepseekNativeSessions.read(threadId))?.events.filter(event=>event.type==='user.message'||event.type==='message.delta').slice(-200)||[];
   const files=await findSessionFiles(process.env.CODEX_HOME||path.join(os.homedir(),'.codex'),threadId);
@@ -232,11 +243,13 @@ export async function readRecentSearchEvents(threadId:string,signal?:AbortSignal
 }
 export async function readCodexThreadUsage(threadId:string){
   const home=process.env.CODEX_HOME||path.join(os.homedir(),'.codex');
-  const files=await findSessionFiles(home,threadId);
+  const files=[...await findSessionFiles(home,threadId),
+    ...(await listSessionFiles(path.join(home,'archived_sessions'))).filter(file=>path.basename(file).includes(threadId))];
   const snapshots=await Promise.all(files.map(file=>readTokenSnapshot(file).catch(()=>null)));
   return snapshots.filter(value=>value!==null).sort((a,b)=>Date.parse(b.observedAt||b.updatedAt)-Date.parse(a.observedAt||a.updatedAt))[0]??null;
 }
 export function readCodexThreadEvents(threadId:string, count?:number,priority:'interactive'|'background'='interactive',signal?:AbortSignal):Promise<GatewayEvent[]> {
+  if(threadId.startsWith('zcode-'))return zcodeNativeSessions.read(threadId).then(session=>count?session?.events.slice(-count)||[]:session?.events||[]);
   if(isMainThread&&!threadId.startsWith('deepseek-'))return historyWorkerCall('readCodexThreadEvents',[threadId,count],priority,signal);
   if(threadId.startsWith('deepseek-'))return deepseekNativeSessions.read(threadId).then(session=>count?session?.events.slice(-count)||[]:session?.events||[]);
   const key=threadId+':'+(count??'default');
@@ -248,7 +261,13 @@ export function selectConversationTurns(events:GatewayEvent[],turns:number):Gate
   for(let i=events.length-1;i>=0;i--)if(events[i].type==='user.message'&&--remaining===0)return events.slice(i);
   return events;
 }
+export async function readCodexConversationPreview(threadId:string,turns:number,signal?:AbortSignal):Promise<GatewayEvent[]>{
+  if(isMainThread)return historyWorkerCall('readCodexConversationPreview',[threadId,turns],'interactive',signal);
+  return confirmedToolChanges((await readCodexConversationEvents(threadId,turns)).filter(isVisibleMobileThreadEvent)).map(event=>deferMobileActivityDetails(event) as GatewayEvent);
+}
+
 export function readCodexConversationEvents(threadId:string,turns:number,signal?:AbortSignal):Promise<GatewayEvent[]> {
+  if(threadId.startsWith('zcode-'))return zcodeNativeSessions.read(threadId).then(session=>selectConversationTurns(session?.events||[],turns+1));
   if(isMainThread&&!threadId.startsWith('deepseek-'))return historyWorkerCall('readCodexConversationEvents',[threadId,turns],'interactive',signal);
   if(threadId.startsWith('deepseek-'))return deepseekNativeSessions.read(threadId).then(session=>selectConversationTurns(session?.events||[],turns+1));
   const key=threadId+':turns:'+turns;
@@ -288,6 +307,7 @@ async function readCodexThreadLineById(threadId:string,eventId:string):Promise<s
   return (await readHistoryLines(file,[lineNumber])).get(lineNumber)??null;
 }
 export async function readCodexThreadEventById(threadId:string,eventId:string,signal?:AbortSignal):Promise<GatewayEvent|null> {
+  if(threadId.startsWith('zcode-'))return (await zcodeNativeSessions.read(threadId))?.events.find(event=>event.eventId===eventId&&event.type==='user.message')??null;
   if(signal?.aborted)throw new DOMException('历史读取已取消','AbortError');
   if(isMainThread)return historyWorkerCall('readCodexThreadEventById',[threadId,eventId],'interactive',signal);
   const line=await readCodexThreadLineById(threadId,eventId);
@@ -295,6 +315,7 @@ export async function readCodexThreadEventById(threadId:string,eventId:string,si
   return event?.type==='user.message'?{...event,eventId}:null;
 }
 export async function readCodexOutputEventById(threadId:string,eventId:string,signal?:AbortSignal):Promise<GatewayEvent|null> {
+  if(threadId.startsWith('zcode-'))return (await zcodeNativeSessions.read(threadId))?.events.find(event=>event.eventId===eventId&&event.type==='message.delta')??null;
   if(signal?.aborted)throw new DOMException('历史读取已取消','AbortError');
   if(isMainThread)return historyWorkerCall('readCodexOutputEventById',[threadId,eventId],'interactive',signal);
   const line=await readCodexThreadLineById(threadId,eventId);
@@ -302,6 +323,7 @@ export async function readCodexOutputEventById(threadId:string,eventId:string,si
   return event?.type==='message.delta'?{...event,eventId}:null;
 }
 export async function readCodexOutputSourceEventById(threadId:string,eventId:string,signal?:AbortSignal):Promise<GatewayEvent|null>{
+  if(threadId.startsWith('zcode-'))return (await zcodeNativeSessions.read(threadId))?.events.find(event=>event.eventId===eventId)??null;
   if(signal?.aborted)throw new DOMException('历史读取已取消','AbortError');
   if(isMainThread)return historyWorkerCall('readCodexOutputSourceEventById',[threadId,eventId],'interactive',signal);
   for(const cached of historyCache.values()){
@@ -319,6 +341,7 @@ export async function readCodexActivityEventById(threadId:string,eventId:string)
   return (await readCodexActivityEventsByIds(threadId,[eventId]))[0]??null;
 }
 export async function readCodexActivityEventsByIds(threadId:string,eventIds:string[],signal?:AbortSignal):Promise<(GatewayEvent|null)[]> {
+  if(threadId.startsWith('zcode-')){const events=new Map((await zcodeNativeSessions.read(threadId))?.events.map(event=>[event.eventId,event]));return eventIds.map(id=>events.get(id)??null);}
   if(signal?.aborted)throw new DOMException('历史读取已取消','AbortError');
   if(!eventIds.length)return [];
   if(isMainThread)return historyWorkerCall('readCodexActivityEventsByIds',[threadId,eventIds],'interactive',signal);
@@ -832,6 +855,7 @@ function eventFromCodexSessionLine(line: string, threadId: string, parsedRow?:un
   if(type==='compacted')return {type:'context.compaction',threadId,title:'上下文已自动压缩',text:compactionSummary(payload.message),status:'ok'};
 
   if (type === "event_msg" && readString(payload.type) === "user_message") {
+    const notification=subagentNotificationEvent(payload.message,threadId);if(notification)return notification;
     const delegated=delegatedMessage(payload.message);
     if(delegated)return {type:'user.message',threadId,...delegated,userVisible:true};
     const reply=desktopQuestionReply(readString(payload.message)??'');
@@ -863,16 +887,13 @@ function eventFromCodexSessionLine(line: string, threadId: string, parsedRow?:un
   }
   if(['function_call','custom_tool_call'].includes(String(payload.type))){
     const name=readString(payload.name)||'执行工具';
-    if(name==='request_user_input_async'){
-      const callId=readString(payload.call_id);
-      const detail=desktopQuestionDetail(readString(payload.arguments)||readString(payload.input)||'');
-      return callId&&detail?{type:'approval.requested',threadId,approvalId:`desktop-question:${callId}`,approvalType:'question',title:'需要你的回答',detail}:null;
-    }
+    if(name.split(/[.:/]/).at(-1)==='request_user_input_async')return desktopAsyncQuestionEvent(threadId,payload)??null;
     const raw=readString(payload.arguments)||readString(payload.input)||'';
     const activity=historyToolPresentation(name,raw);
     return {type:'tool.started',threadId,itemId:readString(payload.call_id),...activity};
   }
   if(['function_call_output','custom_tool_call_output'].includes(String(payload.type))){
+    const notification=subagentNotificationEvent(payload.output,threadId);if(notification)return notification;
     const delegated=delegatedMessage(payload.output);
     if(delegated)return {type:'user.message',threadId,...delegated,userVisible:true};
     return {type:'tool.completed',threadId,itemId:readString(payload.call_id),status:'ok',detail:(readString(payload.output)||'').slice(-12000)};
@@ -887,6 +908,8 @@ function eventFromCodexSessionLine(line: string, threadId: string, parsedRow?:un
   const role = readString(payload.role);
   if (role !== 'user' && role !== 'assistant') return null;
   if(readString(payload.channel)==='analysis' || readString(payload.phase)==='analysis')return null;
+  const notification=role==='user'?subagentNotificationEvent(contentText(payload.content),threadId):undefined;
+  if(notification)return notification;
   const delegated=role==='user'?delegatedMessage(contentText(payload.content)):undefined;
   if(delegated)return {type:'user.message',threadId,...delegated,userVisible:true};
   const reply=role==='user'?desktopQuestionReply(contentText(payload.content)):null;
@@ -949,6 +972,17 @@ export function historyToolPresentation(name:string,raw:string):{title:string;de
   const previews=[...new Set(imagePaths)].filter(p=>!/[<>\r\n]/.test(p)).map(p=>`![查看图片](<${p.replaceAll('\\','/')}>)`).join('\n');
   const visiblePatch=patch.length>200000?patch.slice(0,200000)+'\n…（补丁过长，仅显示前 20 万字符）':patch;
   return {title,detail:[visiblePatch||command.slice(0,12000)||(!previews?raw.slice(0,12000):''),previews].filter(Boolean).join('\n\n')};
+}
+
+export function desktopAsyncQuestionEvent(threadId:string,item:Record<string,unknown>|undefined):Extract<GatewayEvent,{type:'approval.requested'}>|undefined {
+  if(!item)return;
+  const name=readString(item.tool)||readString(item.name)||'';
+  if(name.split(/[.:/]/).at(-1)!=='request_user_input_async')return;
+  const callId=readString(item.call_id)||readString(item.callId)||readString(item.id);
+  const input=item.arguments??item.input;
+  const detail=desktopQuestionDetail(typeof input==='string'?input:JSON.stringify(input??{}));
+  if(callId&&detail)return {type:'approval.requested',threadId,approvalId:`desktop-question:${callId}`,approvalType:'question',
+    eventId:`desktop-question:${callId}`,title:'需要你的回答',detail};
 }
 
 function desktopQuestionDetail(input:string):string|null {
@@ -1093,7 +1127,7 @@ function visibleEmbeddedImages(payload:Record<string,unknown>):Array<{url:string
 }
 
 function visibleDesktopUserText(input: string): string {
-  const text = input.trim();
+  const text = input.trim().replace(/^<cmc-session-instructions>\s*[\s\S]*?<\/cmc-session-instructions>\s*/i,'');
   // Desktop records an interruption notice as a user-role item. It is a
   // control marker, not a message composed by the user.
   if (/^<turn_aborted>\s*The user interrupted the previous turn on purpose\.[\s\S]*?<\/turn_aborted>\s*$/i.test(text)) return '';

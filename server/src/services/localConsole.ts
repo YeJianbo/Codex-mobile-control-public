@@ -173,7 +173,7 @@ export function consoleState(raw:Data){
 }
 
 export function consoleStatistics(raw:Data,source:Source,range:string,pricing='codex'){
-  const codex=source==='codex',agy=source==='agy',harness=source==='hermes'||source==='deepseek'||source==='opencode',separate=agy||source==='claude';
+  const codex=source==='codex',agy=source==='agy',harness=source==='hermes'||source==='deepseek'||source==='opencode'||source==='zcode',separate=agy||source==='claude';
   const token=object(raw.tokens),totals=object(codex?token.totals:raw.totals),activity=object(raw.totals),cost=object(harness?raw.cost:token.cost),coverage=object(raw.coverage),progress=object(raw.progress);
   const tokenRow=(row:Data)=>{
     const cached=count(codex||agy?row.cached:row.cacheRead),cacheWrite=count(row.cacheWrite);

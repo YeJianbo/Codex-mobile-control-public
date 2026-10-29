@@ -8,7 +8,9 @@ internal data class NativeLegacySubmission(val id:String,val address:String,val 
 
 data class NativeQueued(val id:String,val text:String,val status:String,val error:String,val canSteer:Boolean,val images:List<NativeImage> = emptyList(),val uploads:List<NativeUploadedFile> = emptyList())
 data class NativePdf(val path:String,val name:String,val revision:Long=0)
-data class NativeReadableFile(val name:String,val sourcePath:String,val content:String,val eventId:String="",val threadId:String="",val mime:String="text/markdown",val encoding:NativeTextEncoding=NativeTextEncoding.UTF8,val hasBom:Boolean=false)
+data class NativeOutputDirectory(val href:String,val eventId:String,val threadId:String,val path:String="",val files:List<FileEntry> = emptyList())
+data class NativeReadableFile(val name:String,val sourcePath:String,val content:String,val eventId:String="",val threadId:String="",val mime:String="text/markdown",val encoding:NativeTextEncoding=NativeTextEncoding.UTF8,val hasBom:Boolean=false,
+    val originalPath:String="",val pages:List<NativeDocumentPage> = emptyList())
 data class NativeProjectThreads(val rows:List<ThreadRecord> = emptyList(),val limit:Int=10,val hasMore:Boolean=false,val loading:Boolean=false,val loaded:Boolean=false,val loadedAtMs:Long=0L)
 data class NativeOpenedImage(val endpoint:String,val bitmap:android.graphics.Bitmap,
     val endpoints:List<String> = listOf(endpoint),val thumbnails:Map<String,Pair<android.graphics.Bitmap,String>> = emptyMap())
@@ -31,11 +33,11 @@ data class NativeState(
     val nextMode:String="default",val fastMode:Boolean?=null,val sessionFast:Boolean?=null,val fastBusy:Boolean=false,
     val threadId:String="",val projectId:String="",val events:List<ChatEvent> = emptyList(),
     val draft:String="",val images:List<NativeImage> = emptyList(),val uploads:List<NativeUploadedFile> = emptyList(),val uploading:Boolean=false,val uploadMessage:String="",val uploadProgress:NativeUploadProgress?=null,val uploadError:String="",
-    val editingMessage:ChatEvent?=null,val messageEditText:String="",
+    val editingMessage:ChatEvent?=null,val messageEditText:String="",val messageEditImages:List<NativeImage> = emptyList(),val messageEditUploads:List<NativeUploadedFile> = emptyList(),val messageEditAttachments:List<NativeAttachment> = emptyList(),
     val sending:Boolean=false,val running:Boolean=false,val stopping:Boolean=false,val stopError:String="",val loadingHistory:Boolean=false,val loadingOlderHistory:Boolean=false,val hasMoreHistory:Boolean=false,
     val historySyncing:Boolean=false,val historyErrors:Map<String,String> = emptyMap(),
     val queue:List<NativeQueued> = emptyList(),val queueDrafts:List<NativeQueued> = emptyList(),val canSteer:Boolean=false,val files:List<FileEntry> = emptyList(),val filePath:String="",
-    val file:FileContent?=null,val fileDraft:String="",val fileProjectId:String="",val fileRootPath:String="",val diff:String="",val terminal:String="",val terminalSession:String="",val terminalDraft:String="",val terminalError:String="",val terminalBusy:Boolean=false,
+    val file:FileContent?=null,val fileDraft:String="",val fileProjectId:String="",val fileRootPath:String="",val outputDirectory:NativeOutputDirectory?=null,val diff:String="",val terminal:String="",val terminalSession:String="",val terminalDraft:String="",val terminalError:String="",val terminalBusy:Boolean=false,
     val fileBusy:Boolean=false,val fileMessage:String="",val fileError:String="",val fileFeedbackVisible:Boolean=false,val openedImage:NativeOpenedImage?=null,
     val approvalResults:Map<String,String> = emptyMap(),
     val approvals:Set<String> = emptySet(),val workBusy:Boolean=false,val pdf:NativePdf?=null,val markdown:NativeReadableFile?=null,val storagePermissionRequired:Boolean=false,

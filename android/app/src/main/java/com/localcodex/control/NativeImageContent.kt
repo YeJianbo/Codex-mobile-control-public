@@ -158,7 +158,7 @@ internal data class NativeImageState(
         }
     }else imageFrame(modifier)
 }
-@Composable internal fun NativeImagePreview(initialBitmap:android.graphics.Bitmap,vm:NativeViewModel,endpoint:String,close:()->Unit,endpoints:List<String> = listOf(endpoint),startIndex:Int=0,thumbnails:Map<String,Pair<android.graphics.Bitmap,String>> = emptyMap()){
+@Composable internal fun NativeImagePreview(initialBitmap:android.graphics.Bitmap,vm:NativeViewModel,endpoint:String,close:()->Unit,endpoints:List<String> = listOf(endpoint),startIndex:Int=0,thumbnails:Map<String,Pair<android.graphics.Bitmap,String>> = emptyMap(),overlay:(@Composable ()->Unit)?=null){
     val context=LocalContext.current
     var currentIndex by remember(endpoints,endpoint){mutableIntStateOf(startIndex)}
     val currentEndpoint=endpoints[currentIndex]
@@ -187,7 +187,7 @@ internal data class NativeImageState(
             endpoints.getOrNull(currentIndex-1)?.let{fullImages[it]?.first?:thumbnails[it]?.first},
             endpoints.getOrNull(currentIndex+1)?.let{fullImages[it]?.first?:thumbnails[it]?.first},
             fullFailure,save.saving),
-        onSelect={currentIndex=it},onRetry={fullAttempt++},onSave=save.save,close=close,
+        onSelect={currentIndex=it},onRetry={fullAttempt++},onSave=save.save,close=close,overlay=overlay,
     )
 }
 
@@ -198,7 +198,7 @@ internal data class NativeImagePreviewState(
 )
 
 @Composable internal fun NativeImagePreviewContent(
-    state:NativeImagePreviewState,onSelect:(Int)->Unit,onRetry:()->Unit,onSave:()->Unit,close:()->Unit,
+    state:NativeImagePreviewState,onSelect:(Int)->Unit,onRetry:()->Unit,onSave:()->Unit,close:()->Unit,overlay:(@Composable ()->Unit)?=null,
 ){
     val scope=rememberCoroutineScope()
     val currentIndex by rememberUpdatedState(state.currentIndex)
@@ -217,7 +217,11 @@ internal data class NativeImagePreviewState(
     // excludes the bars. Use native window constraints and size that window in
     // NativeDialogSystemBars instead of accepting that shorter measurement.
     Dialog(onDismissRequest=close,properties=DialogProperties(dismissOnClickOutside=false,usePlatformDefaultWidth=true,decorFitsSystemWindows=false)){
+        val imageBackdrop=rememberNativeGlassBackdrop(LocalNativeGlassMode.current)
         NativeDialogSystemBars(Color.Black,lightIcons=true,immersive=true)
+        CompositionLocalProvider(LocalNativeGlassBackdrop provides imageBackdrop,LocalNativeOverlayBackdrop provides imageBackdrop,LocalNativeScrollBackdrop provides imageBackdrop){
+        // Refresh the sampled scene when only the image's drawing layer moves.
+        NativeBackdropScrollMotion{(scale*1000+pan.x+pan.y+dismissY+swipeX+resolutionAlpha.value*1000).toInt()}
         BoxWithConstraints(Modifier.fillMaxSize()){
                 val density=LocalDensity.current
                 val width=with(density){maxWidth.toPx()};val height=with(density){maxHeight.toPx()}
@@ -238,7 +242,7 @@ internal data class NativeImagePreviewState(
                     };if(target==1f)pan=Offset.Zero}
                 }
                 val showToolbar by remember{derivedStateOf{abs(dismissY)<20f}}
-                Box(Modifier.fillMaxSize().clipToBounds().testTag("imagePreviewGestureSurface").drawBehind{
+                Box(Modifier.fillMaxSize().nativeGlassSource(imageBackdrop).clipToBounds().testTag("imagePreviewGestureSurface").drawBehind{
                     val fade=(1f-abs(dismissY)/(size.height*.7f)).coerceIn(.25f,1f)
                     drawRect(AppColor.PreviewBackdrop.copy(alpha=fade))
                 }
@@ -344,17 +348,23 @@ internal data class NativeImagePreviewState(
                         if(full!=null)Image(full.asImageBitmap(),null,Modifier.fillMaxSize().testTag("fullImageLayer").graphicsLayer{alpha=resolutionAlpha.value},contentScale=ContentScale.Fit)
                     } else CircularProgressIndicator(Modifier.size(28.dp),color=Color.White,strokeWidth=2.dp)
                 }
-            if(state.fullImageFailed)TextButton(onClick=onRetry,modifier=Modifier.align(Alignment.BottomCenter).padding(bottom=24.dp).background(AppColor.PreviewToolbarScrim,Radius.Button).testTag("imagePreviewRetry")){
-                Text("原图加载失败，点击重试",color=Color.White)
+            if(state.fullImageFailed)NativeLiquidSurface(Modifier.align(Alignment.BottomCenter).padding(bottom=24.dp),shape=Radius.Button,color=AppColor.PreviewToolbarScrim,kind=NativeGlassKind.MENU){
+                TextButton(onClick=onRetry,modifier=Modifier.testTag("imagePreviewRetry")){
+                    Text("原图加载失败，点击重试",color=Color.White)
+                }
             }
             AnimatedVisibility(toolbarVisible&&showToolbar,Modifier.align(Alignment.TopEnd).windowInsetsPadding(WindowInsets.displayCutout).padding(8.dp)){
-                Row(Modifier.background(AppColor.PreviewToolbarScrim,Radius.Panel)){
+                NativeLiquidSurface(shape=Radius.Panel,color=AppColor.PreviewToolbarScrim,kind=NativeGlassKind.MENU){
+                Row{
                 IconButton(enabled=!state.saving,onClick=onSave){ModernIcon(R.drawable.ic_lucide_arrow_down_to_line,if(state.saving)"正在保存图片" else "保存图片",Modifier.size(22.dp),Color.White)}
                 IconButton(onClick={animateZoom((scale+1f).coerceAtMost(5f))}){ModernIcon(R.drawable.ic_lucide_zoom_in,"放大图片",Modifier.size(22.dp),Color.White)}
                 IconButton(onClick={animateZoom(1f)}){ModernIcon(R.drawable.ic_lucide_scan,"复位图片",Modifier.size(22.dp),Color.White)}
                 IconButton(onClick=close){ModernIcon(R.drawable.ic_lucide_x,"关闭图片预览",Modifier.size(22.dp),Color.White)}
                 }
+                }
             }
+        }
+        overlay?.invoke()
         }
     }
 }

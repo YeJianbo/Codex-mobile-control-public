@@ -14,6 +14,92 @@ function setup(){
  const sessions=new SessionManager(codex,{publish:e=>events.push(e)},store);
  return {codex,responses,events,store,sessions};
 }
+
+test('automatic review lifecycle notifications never become manual approval prompts',()=>{
+ const {codex,responses,events,store}=setup();
+ for(const method of ['item/autoApprovalReview/started','item/autoApprovalReview/completed','autoApprovalReview/strictReviewRequired']){
+  codex.emit('notification',{method,params:{threadId:'t',turnId:'turn',reviewId:'review',review:{status:method.endsWith('completed')?'approved':'inProgress'}}});
+ }
+ assert.equal(events.length,0);assert.equal(responses.length,0);assert.equal(store.approvals.length,0);
+ codex.emit('notification',{method:'item/autoApprovalReview/completed',params:{threadId:'t',reviewId:'denied-review',review:{status:'denied',rationale:'fixture denial'}}});
+ assert.deepEqual(events,[{type:'tool.completed',threadId:'t',itemId:'approval-review:denied-review',status:'error',detail:'fixture denial'}]);
+});
+
+test('MCP Computer Use confirmation follows auto approval with action/content, not command decision',async()=>{
+ const home=await fs.mkdtemp(path.join(os.tmpdir(),'cmc-mcp-auto-')),previous=process.env.CODEX_MOBILE_CONTROL_HOME;
+ process.env.CODEX_MOBILE_CONTROL_HOME=home;
+ try{
+  await writeRemoteAutoApproval(true);
+  const {codex,responses,events,store,sessions}=setup();
+  codex.emit('serverRequest',{id:600,method:'mcpServer/elicitation/request',params:{threadId:'t',serverName:'computer',mode:'form',message:'Allow computer control?',requestedSchema:{type:'object',properties:{}}}});
+  for(let n=0;n<100&&!responses.length;n++)await new Promise(r=>setTimeout(r,10));
+  assert.deepEqual(responses,[{id:600,result:{action:'accept',content:{}}}]);
+  assert.equal(store.approvals[0].status,'accepted');
+  assert.equal(events.some(event=>event.type==='approval.requested'),false);
+  assert.equal(sessions.compatibilityStats().unsupportedServerRequests.length,0);
+  await writeRemoteAutoApproval(false);
+  codex.emit('serverRequest',{id:'desktop:1:601',method:'mcpServer/elicitation/request',params:{threadId:'t',serverName:'computer',mode:'form',message:'Allow?',requestedSchema:{type:'object',properties:{}}}});
+  for(let n=0;n<100&&!events.some(e=>e.approvalId==='mcp-desktop:1:601');n++)await new Promise(r=>setTimeout(r,10));
+  assert.equal(responses.length,1);
+  await sessions.resolveApproval('mcp-desktop:1:601','decline');
+  assert.deepEqual(responses[1],{id:'desktop:1:601',result:{action:'decline',content:null}});
+ }finally{if(previous===undefined)delete process.env.CODEX_MOBILE_CONTROL_HOME;else process.env.CODEX_MOBILE_CONTROL_HOME=previous;await fs.rm(home,{recursive:true,force:true});}
+});
+
+test('MCP form input stays manual under auto approval and validates typed content',async()=>{
+ const home=await fs.mkdtemp(path.join(os.tmpdir(),'cmc-mcp-form-')),previous=process.env.CODEX_MOBILE_CONTROL_HOME;
+ process.env.CODEX_MOBILE_CONTROL_HOME=home;
+ try{
+  await writeRemoteAutoApproval(true);
+  const {codex,responses,store,sessions,events}=setup();
+  codex.emit('serverRequest',{id:602,method:'mcpServer/elicitation/request',params:{threadId:'other',serverName:'computer',mode:'form',message:'Choose a screen',requestedSchema:{type:'object',properties:{screen:{type:'integer',minimum:1},allowed:{type:'boolean',default:true},note:{type:'string'}},required:['screen','allowed'],additionalProperties:false}}});
+  await new Promise(r=>setImmediate(r));
+  assert.equal(responses.length,0);assert.equal(events[0].approvalType,'question');
+  assert.deepEqual(await sessions.approvePendingAutomatically(),{accepted:0,failed:0});
+  await assert.rejects(()=>sessions.answerQuestions('question-mcp-602',{screen:{answers:['0']},allowed:{answers:['true']},note:{answers:['null']}}),/不符合要求/);
+  assert.equal(store.approvals[0].status,'pending');assert.equal(responses.length,0);
+  await sessions.answerQuestions('question-mcp-602',{screen:{answers:['2']},allowed:{answers:['true']},note:{answers:['null']}});
+  assert.deepEqual(responses,[{id:602,result:{action:'accept',content:{screen:2,allowed:true}}}]);
+ }finally{if(previous===undefined)delete process.env.CODEX_MOBILE_CONTROL_HOME;else process.env.CODEX_MOBILE_CONTROL_HOME=previous;await fs.rm(home,{recursive:true,force:true});}
+});
+
+test('MCP URL and device verification are not faked by automatic approval; user can decline',async()=>{
+ const home=await fs.mkdtemp(path.join(os.tmpdir(),'cmc-mcp-device-')),previous=process.env.CODEX_MOBILE_CONTROL_HOME;
+ process.env.CODEX_MOBILE_CONTROL_HOME=home;
+ try{
+  await writeRemoteAutoApproval(true);
+  const {codex,responses,sessions}=setup();
+  for(const [id,extra] of [[603,{mode:'url',message:'Authenticate',url:'https://example.org/authorize',elicitationId:'e'}],[604,{mode:'openai/userVerification',title:'Verify',description:'Verify device',challenge:'fixture'}]])codex.emit('serverRequest',{id,method:'mcpServer/elicitation/request',params:{threadId:'t',serverName:'computer',...extra}});
+  await new Promise(r=>setImmediate(r));
+  assert.equal(responses.length,0);
+  assert.deepEqual(await sessions.approvePendingAutomatically(),{accepted:0,failed:0});
+  await assert.rejects(()=>sessions.resolveApproval('mcp-604','accept'),/电脑完成/);
+  await sessions.resolveApproval('mcp-603','decline');await sessions.resolveApproval('mcp-604','decline');
+  assert.deepEqual(responses,[{id:603,result:{action:'decline',content:null}},{id:604,result:{action:'decline',content:null}}]);
+ }finally{if(previous===undefined)delete process.env.CODEX_MOBILE_CONTROL_HOME;else process.env.CODEX_MOBILE_CONTROL_HOME=previous;await fs.rm(home,{recursive:true,force:true});}
+});
+
+test('desktop asynchronous prompts publish actionable questions across conversations',()=>{
+ const {codex,events}=setup();
+ const item={id:'call-desktop',type:'dynamicToolCall',tool:'functions.request_user_input_async',arguments:{questions:[{title:'切换后如何继续？',options:['继续','停止']}]}};
+ codex.emit('notification',{method:'item/started',params:{threadId:'other-thread',item}});
+ const question=events.find(event=>event.type==='approval.requested');
+ assert.equal(question.threadId,'other-thread');assert.equal(question.approvalId,'desktop-question:call-desktop');
+ assert.equal(JSON.parse(question.detail).questions[0].question,'切换后如何继续？');
+ assert.equal(events.some(event=>event.type==='tool.started'),false);
+ codex.emit('notification',{method:'item/completed',params:{threadId:'other-thread',item:{...item,status:'completed'}}});
+ assert.equal(events.some(event=>event.type==='approval.resolved'),false);
+ assert.equal(events.at(-1).eventId,question.eventId);
+});
+
+test('ordinary tools and malformed asynchronous arguments do not become questions',()=>{
+ const {codex,events}=setup();
+ for(const item of [{id:'a',type:'dynamicToolCall',tool:'functions.exec',arguments:{questions:[{title:'literal'}]}},
+  {id:'b',type:'dynamicToolCall',tool:'request_user_input_async',arguments:'not-json'}])
+  codex.emit('notification',{method:'item/started',params:{threadId:'other-thread',item}});
+ assert.equal(events.some(event=>event.type==='approval.requested'),false);
+ assert.equal(events.filter(event=>event.type==='tool.started').length,2);
+});
 test('a queued message can steer a desktop-owned turn through its observed turn ID',async()=>{
  const {codex,events,sessions}=setup();
  const calls=[];codex.request=async(method,params)=>{calls.push({method,params});return {};};

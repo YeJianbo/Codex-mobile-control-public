@@ -24,7 +24,7 @@ export class CodexLiveHistory {
     for(const event of events)if('threadId' in event&&!existing.has(event.threadId??''))this.append(event);
   }
   append(event:GatewayEvent,encoded?:string):void {
-    if(!('threadId' in event)||!event.threadId||/^(antigravity-|claude-|grok-|deepseek-|hermes-|opencode-|terminal:|cloud[:\-])/.test(event.threadId))return;
+    if(!('threadId' in event)||!event.threadId||/^(antigravity-|claude-|grok-|deepseek-|hermes-|opencode-|zcode-|terminal:|cloud[:\-])/.test(event.threadId))return;
     const payload=encoded??JSON.stringify(event),id=event.threadId;
     const inserted=this.insertEvent.run(event.eventId||payload,id,event.type,payload);
     if(!inserted.changes)return;

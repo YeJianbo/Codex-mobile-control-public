@@ -47,7 +47,7 @@ private val DashboardEase=CubicBezierEasing(.22f,1f,.36f,1f)
     color:Color=MaterialTheme.colors.surface,
     content:@Composable ColumnScope.()->Unit
 ) {
-    NativeLiquidSurface(modifier.fillMaxWidth(),shape=Radius.Section,color=color,kind=NativeGlassKind.INSET,border=BorderStroke(0.5.dp,MaterialTheme.colors.onSurface.copy(alpha=if(MaterialTheme.colors.isLight).055f else .09f))){
+    NativeSettingsGroup(modifier,color){
         Column(Modifier.padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp),content=content)
     }
 }
@@ -67,7 +67,7 @@ private val DashboardEase=CubicBezierEasing(.22f,1f,.36f,1f)
     val shape=if(liquid)Radius.Chip else Radius.Control
     val selectedFill=if(liquid)androidx.compose.ui.graphics.lerp(surface,primary,if(light).08f else .16f).copy(alpha=.92f) else surface
     val rtl=LocalLayoutDirection.current==LayoutDirection.Rtl
-    NativeLiquidSurface(modifier.fillMaxWidth(),shape=shape,color=if(liquid)surface else ink.copy(alpha=0.055f),kind=NativeGlassKind.INSET){
+    NativeLiquidSurface(modifier.fillMaxWidth(),shape=shape,color=if(liquid)surface else ink.copy(alpha=0.055f),kind=if(LocalNativeFloatingChrome.current)NativeGlassKind.PANEL else NativeGlassKind.INSET){
     Box(Modifier.padding(4.dp).selectableGroup()){
         // One moving indicator keeps rapid taps from leaving overlapping fills.
         Box(Modifier.matchParentSize().testTag("dashboardTabIndicator").drawWithCache{

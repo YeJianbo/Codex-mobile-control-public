@@ -100,6 +100,7 @@ export function createAttachmentsController({
     const append=(kind,rows)=>{for(const row of rows||[])if(row?.id)items.push({kind,id:row.id});};
     Object.values(state.imageDrafts).forEach(rows=>append('image',rows));
     Object.values(state.fileDrafts).forEach(rows=>append('file',rows));
+    if(state.messageEditDraft){append('image',state.messageEditDraft.images);append('file',state.messageEditDraft.files);}
     for(const record of [state.pending,readPendingSubmission()])if(record){append('image',record.images);append('file',record.files);}
     return {owner:uploadStorageOwner(),items:[...new Map(items.map(item=>[`${item.kind}:${item.id}`,item])).values()]};
   }
@@ -318,7 +319,7 @@ export function createAttachmentsController({
       uploadMessage(owner,file,'正在准备');
       const dataUrl=await readUploadImage(file,owner);requireUpload(owner);uploadMessage(owner,file,'正在上传');
       const image=await uploadRequest(file,owner,{dataUrl});requireUpload(owner);
-      state.imageDrafts[owner.key]=[...(state.imageDrafts[owner.key]||[]),image];owner.done++;saveImageDrafts();renderImageDrafts();
+      if(owner.editor){owner.editor.images.push(image);owner.editor.changed();scheduleUploadDraftSync();}else{state.imageDrafts[owner.key]=[...(state.imageDrafts[owner.key]||[]),image];saveImageDrafts();renderImageDrafts();}owner.done++;
     }
   }
   async function uploadAttachments(files){
@@ -331,10 +332,10 @@ export function createAttachmentsController({
     if(!owner)return withUploadBatch(files,batch=>uploadFiles(files,batch));
     for(const file of files){
       requireUpload(owner);
-      if((state.fileDrafts[owner.key]||[]).length>=8)throw new Error('每条消息最多 8 个文件');
+      if((owner.editor?.files||state.fileDrafts[owner.key]||[]).length>=8)throw new Error('每条消息最多 8 个文件');
       if(!file.size||file.size>100*1024*1024)throw new Error('文件大小需在 100 MB 以内');
       uploadMessage(owner,file,'正在上传');const result=await uploadRequest(file,owner);requireUpload(owner);
-      state.fileDrafts[owner.key]=[...(state.fileDrafts[owner.key]||[]),result];owner.done++;saveFileDrafts();renderFileDrafts();
+      if(owner.editor){owner.editor.files.push(result);owner.editor.changed();scheduleUploadDraftSync();}else{state.fileDrafts[owner.key]=[...(state.fileDrafts[owner.key]||[]),result];saveFileDrafts();renderFileDrafts();}owner.done++;
     }
   }
   $('fileInput').onchange=()=>{const files=[...$('fileInput').files];$('fileInput').value='';run(()=>uploadFiles(files))};
@@ -349,5 +350,13 @@ export function createAttachmentsController({
     event.preventDefault();run(()=>uploadAttachments(files));
   });
 
-  return {trackFilePreview, closeFilePreviews, readPreviewText, fileCards, scheduleUploadDraftSync, saveFileDrafts, renderFileDrafts, openImageViewer, imageGallery, saveImageDrafts, renderImageDrafts, enableImageZoom, cancelUpload};
+  async function uploadEditorAttachments(files,editor){
+    return withUploadBatch(files,async owner=>{
+      owner.editor=editor;editor.changed();
+      const inline=files.filter(file=>/^image\/(png|jpeg|gif|webp)$/.test(file.type)&&file.size<=5*1024*1024);
+      try{await uploadImages(inline,owner);requireUpload(owner);await uploadFiles(files.filter(file=>!inline.includes(file)),owner);}
+      finally{queueMicrotask(()=>editor.changed());}
+    });
+  }
+  return {uploadEditorAttachments,trackFilePreview, closeFilePreviews, readPreviewText, fileCards, scheduleUploadDraftSync, saveFileDrafts, renderFileDrafts, openImageViewer, imageGallery, saveImageDrafts, renderImageDrafts, enableImageZoom, cancelUpload};
 }

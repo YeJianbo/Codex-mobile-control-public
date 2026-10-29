@@ -34,7 +34,7 @@ export class ReadonlyModelAccounts{
       row.configured=true;row.status='额度可读取';row.updatedAt=new Date().toISOString();
       row.windows=value.command.data.groups.flatMap(group=>(Array.isArray(group.buckets)?group.buckets:[]).flatMap(bucket=>{
         const fraction=bucket.remaining_fraction;if(typeof fraction!=='number'||!Number.isFinite(fraction)||fraction<0||fraction>1)return [];
-        return [{name:text(group.name)||'AGY',window:text(bucket.window),remainingPercent:fraction*100,resetsAt:Number.isFinite(Date.parse(bucket.reset_time))?new Date(bucket.reset_time).toISOString():null}];
+        return [{name:text(group.name)||'AGY',poolId:text(bucket.id),group:text(group.name),description:text(group.description),window:text(bucket.window),remainingPercent:fraction*100,resetsAt:Number.isFinite(Date.parse(bucket.reset_time))?new Date(bucket.reset_time).toISOString():null}];
       }));row.note='额度由当前 AGY 登录读取；此接口未提供账号身份。';this.agySnapshot={...row};
     }catch(error){
       const reason=error.message==='读取超时'?'AGY 额度查询超过 60 秒，请稍后刷新。':error.message==='无法启动工具'?'无法启动 AGY，请检查安装后刷新。':error.message==='无有效额度'?'AGY 未返回有效的只读额度结果，请稍后刷新。':'AGY 状态响应暂不可读取，请稍后刷新。';

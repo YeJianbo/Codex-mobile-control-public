@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.focusProperties
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.invisibleToUser
 import androidx.compose.ui.semantics.semantics
@@ -33,14 +34,21 @@ internal val LocalNativeSheetHost=staticCompositionLocalOf<NativeSheetHost?>{nul
     }
 }
 
-@Composable internal fun NativeSheetPortal(host:NativeSheetHost){
-    NativeSheetWindowPolicy(host.visible)
+@Composable internal fun NativeSheetPortal(host:NativeSheetHost,suspended:Boolean=false){
+    NativeSheetWindowPolicy(host.visible&&!suspended)
     val top=host.entries.lastOrNull()
+    // Keep directory position and editor state while a full-screen reader owns the UI.
+    // Unplaced sheets neither draw nor receive pointer events behind the reader.
+    Box(Modifier.fillMaxSize().semantics{if(suspended)invisibleToUser()}.layout{measurable,constraints->
+        val content=measurable.measure(constraints)
+        layout(content.width,content.height){if(!suspended)content.place(0,0)}
+    }){
     host.entries.forEach{entry->key(entry){
         Box(Modifier.fillMaxSize().focusProperties{canFocus=entry===top}.semantics{if(entry!==top)invisibleToUser()}){
             entry.content()
         }
     }}
+    }
 }
 
 /** One window policy spans the whole stack; closing a child must not restore the parent's IME mode. */

@@ -17,7 +17,9 @@ test('Grok ACP retains every reply chunk, configured executable and saved effort
    else if(m.method==='session/new'||m.method==='session/load')line({id:m.id,result:{sessionId:'fixture-session'}});
    else if(m.method==='session/set_config_option')line({id:m.id,result:{}});
    else if(m.method==='session/prompt'){
-    for(const text of ['**','VERIFY_','complete','**'])line({method:'session/update',params:{update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text}}}});
+    line({method:'session/update',params:{sessionId:'child-session',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'子代理内容'}}}});
+    line({method:'session/update',params:{sessionId:'fixture-session',update:{sessionUpdate:'agent_message_chunk',_meta:{isReplay:true},content:{type:'text',text:'历史回放'}}}});
+    for(const text of ['**','VERIFY_','complete','**'])line({method:'session/update',params:{sessionId:'fixture-session',update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text}}}});
     line({id:m.id,result:{stopReason:'end_turn'}});
    }
   });}});

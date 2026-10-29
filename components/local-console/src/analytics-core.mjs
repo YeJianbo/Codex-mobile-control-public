@@ -32,7 +32,7 @@ export const ANALYTICS_DIMENSION_VERSION=3;
 export function initialAnalyticsState(){return {id:null,created:null,turn:null,previous:null,fork:false,skipped:0,resets:0,legacyTokens:0,dimensionVersion:ANALYTICS_DIMENSION_VERSION,skillVersion:1,model:null,effort:null,tier:null,threadTier:null};}
 export function parseAnalyticsRecord(record,state,position){
   const p=record.payload||{},time=Date.parse(record.timestamp);const events=[];
-  if(record.type==='session_meta'){state.id=p.id||state.id;state.created=Date.parse(p.timestamp||record.timestamp)||state.created;state.fork=!!(p.forked_from_id||p.forkedFromId||p.forked_from);return events;}
+  if(record.type==='session_meta'){state.id=p.id||state.id;state.creditAccount=typeof p.creator_account_id==='string'?p.creator_account_id:null;state.creditProvider=p.model_provider||null;state.created=Date.parse(p.timestamp||record.timestamp)||state.created;state.fork=!!(p.forked_from_id||p.forkedFromId||p.forked_from);return events;}
   // Applied thread settings persist until the next explicit update; turn-only tiers do not.
   if(record.type==='event_msg'&&p.type==='thread_settings_applied'){const settings=p.thread_settings||p.threadSettings||{};if(!p.thread_id||!state.id||p.thread_id===state.id){if(Object.hasOwn(settings,'service_tier')||Object.hasOwn(settings,'serviceTier')){state.threadTier=normalizeAnalyticsTier(settings.service_tier??settings.serviceTier);state.tier=state.threadTier;}}return events;}
   if(record.type==='turn_context'){state.turn=p.turn_id||p.turnId||state.turn;const settings=p.collaboration_mode?.settings||{};state.model=typeof p.model==='string'?p.model:typeof settings.model==='string'?settings.model:null;state.effort=p.effort||p.reasoning_effort||settings.reasoning_effort||null;state.tier=normalizeAnalyticsTier(p.service_tier??p.serviceTier??settings.service_tier??state.threadTier);return events;}
@@ -52,7 +52,7 @@ export function parseAnalyticsRecord(record,state,position){
     else delta=values(last);
     if(historicalFork||!delta||!delta.some(v=>v>0))return events;
     if(!state.turn)state.legacyTokens++;
-    events.push({key:`token:${state.turn||state.id}:${record.timestamp}:${(current||delta).join(':')}`,kind:'token',time,session:state.id,input:delta[0],cached:delta[1],output:delta[2],reasoning:delta[3],model:state.model,effort:typeof state.effort==='string'?state.effort:null,tier:state.tier});
+    events.push({key:`token:${state.turn||state.id}:${record.timestamp}:${(current||delta).join(':')}`,kind:'token',time,session:state.id,input:delta[0],cached:delta[1],output:delta[2],reasoning:delta[3],model:state.model,effort:typeof state.effort==='string'?state.effort:null,tier:state.tier,...(state.creditAccount&&p.rate_limits?{creditMeter:{account:state.creditAccount,provider:state.creditProvider,primaryReset:p.rate_limits.primary?.resets_at??null,secondaryReset:p.rate_limits.secondary?.resets_at??null,balance:p.rate_limits.credits?.balance??null}}:{})});
   }
   return events;
 }

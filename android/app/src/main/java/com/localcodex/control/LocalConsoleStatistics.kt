@@ -39,56 +39,42 @@ private fun periodDate(value:Long?)=value?.let{
     DashboardCard(modifier){Column(content=content)}
 }
 
-@Composable private fun StatisticsFilter(options:List<Pair<String,String>>,selected:String,onSelect:(String)->Unit,modifier:Modifier=Modifier,enabled:Boolean=true){
-    val ink=MaterialTheme.colors.onSurface
-    BoxWithConstraints(modifier.fillMaxWidth().clip(Radius.Control).background(ink.copy(alpha=0.045f)).padding(4.dp).selectableGroup()){
-        val columns=if(maxWidth>=600.dp)8 else 4
-        Column(verticalArrangement=Arrangement.spacedBy(3.dp)){options.chunked(columns).forEach{row->Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(3.dp)){
-        row.forEach{(value,label)->
-            val active=selected==value
-            val interaction=remember{MutableInteractionSource()}
-            val pressed by interaction.collectIsPressedAsState()
-            Surface(modifier=Modifier.weight(1f),shape=Radius.Control,color=if(active)MaterialTheme.colors.surface else Color.Transparent){
-                Text(label,Modifier.clip(Radius.Control).drawBehind{if(pressed)drawRect(ink.copy(alpha=.055f))}.selectable(selected=active,enabled=enabled,role=Role.Tab,interactionSource=interaction,indication=null){if(!active)onSelect(value)}.heightIn(min=48.dp).wrapContentHeight().padding(horizontal=5.dp,vertical=9.dp),fontSize=12.sp,fontWeight=FontWeight.Medium,color=if(active)ink else secondary,maxLines=1,overflow=TextOverflow.Ellipsis,textAlign=androidx.compose.ui.text.style.TextAlign.Center)
-            }
-        }
-        repeat(columns-row.size){Spacer(Modifier.weight(1f))}
-        }}}
-    }
-}
-
 @Composable private fun StatisticsMetric(label:String,value:String,modifier:Modifier=Modifier,color:Color=MaterialTheme.colors.onSurface){
     Column(modifier){
         Text(label,fontSize=11.sp,color=secondary)
-        Text(value,Modifier.padding(top=3.dp),fontSize=20.sp,fontWeight=FontWeight.Medium,color=color)
+        Text(value,Modifier.padding(top=3.dp),fontSize=18.sp,lineHeight=25.sp,fontWeight=FontWeight.Medium,color=color,maxLines=1,overflow=TextOverflow.Ellipsis)
     }
 }
 
 @Composable internal fun ConsoleStatisticsContent(state:LocalConsoleUiState,connected:Boolean,onFilter:(String,String,String)->Unit,onAction:(String,String?,Boolean?)->Unit){
-    StatisticsFilter(sources,state.source,{onFilter(it,state.range,state.pricing)},enabled=connected,modifier=Modifier.fillMaxWidth())
-    Row(Modifier.fillMaxWidth().padding(top=12.dp,bottom=16.dp),verticalAlignment=Alignment.CenterVertically){
-        DashboardTabs(ranges,state.range,{onFilter(state.source,it,state.pricing)},enabled=connected)
+    Row(Modifier.fillMaxWidth().padding(bottom=12.dp),horizontalArrangement=Arrangement.spacedBy(8.dp)){
+        StatisticsPicker("来源",state.source,sources,{onFilter(it,state.range,state.pricing)},Modifier.weight(1f),connected)
+        StatisticsPicker("时间",state.range,ranges,{onFilter(state.source,it,state.pricing)},Modifier.weight(1f),connected)
     }
     val snapshot=state.statistics?.takeIf{it.source==state.source&&it.range==state.range}
     val pricingPending=state.source=="codex"&&snapshot!=null&&snapshot.cost.basis!=state.pricing
     val data=snapshot?.takeIf{it.available}
     Column(verticalArrangement=Arrangement.spacedBy(12.dp)){
         StatisticsCard(Modifier.testTag("consoleOverview")){
-            Row(Modifier.fillMaxWidth().height(18.dp),verticalAlignment=Alignment.CenterVertically){
-                Text(if(data==null)"Token 总量" else "Token 总量 · ${consoleCount(data.tokens.records)} 条计量记录",Modifier.weight(1f),fontSize=12.sp,color=secondary,maxLines=1,overflow=TextOverflow.Ellipsis)
+            Row(Modifier.fillMaxWidth().heightIn(min=20.dp),verticalAlignment=Alignment.CenterVertically){
+                Text("Token 总量",Modifier.weight(1f),fontSize=13.sp,fontWeight=FontWeight.Medium,color=secondary)
                 if(state.statisticsLoading)NativeRunningTitle("正在读取…",rememberNativeRunningPulse(true),Modifier.padding(start=8.dp),fontSize=11.sp)
             }
-            Text(consoleCount(data?.tokens?.total),Modifier.padding(top=5.dp,bottom=3.dp),fontSize=34.sp,fontWeight=FontWeight.SemiBold,letterSpacing=(-0.7).sp)
-            Text("${periodDate(snapshot?.since)} — ${periodDate(snapshot?.until)}",fontSize=11.sp,color=secondary)
-            Divider(Modifier.padding(vertical=16.dp),color=hairline)
-            Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(16.dp)){
+            Row(Modifier.fillMaxWidth().padding(top=6.dp,bottom=8.dp),verticalAlignment=Alignment.Bottom){
+                Text(consoleCount(data?.tokens?.total),Modifier.weight(1f),fontSize=30.sp,lineHeight=38.sp,fontWeight=FontWeight.SemiBold,letterSpacing=(-0.5).sp)
+                Column(horizontalAlignment=Alignment.End){
+                    Text(nativeCacheHitRate(data?.tokens?.input?.toDouble(),data?.tokens?.cached?.toDouble()),fontSize=23.sp,fontWeight=FontWeight.Medium,color=AppColor.ChartPurple)
+                    Text("缓存命中率",fontSize=11.sp,color=secondary)
+                }
+            }
+            Text("${periodDate(snapshot?.since)} — ${periodDate(snapshot?.until)}",fontSize=12.sp,color=secondary)
+            Divider(Modifier.padding(vertical=10.dp),color=hairline)
+            Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(10.dp)){
                 StatisticsMetric("输入",consoleCount(data?.tokens?.input),Modifier.weight(1f))
                 StatisticsMetric("输出",consoleCount(data?.tokens?.output),Modifier.weight(1f))
+                StatisticsMetric("缓存读取",consoleCount(data?.tokens?.cached),Modifier.weight(1f),AppColor.ChartPurple)
             }
-            Row(Modifier.fillMaxWidth().padding(top=14.dp),horizontalArrangement=Arrangement.spacedBy(16.dp)){
-                StatisticsMetric("其中缓存",consoleCount(data?.tokens?.cached),Modifier.weight(1f),AppColor.ChartPurple)
-                StatisticsMetric("其中推理",consoleCount(data?.tokens?.reasoning),Modifier.weight(1f))
-            }
+            if(data!=null)Text("${consoleCount(data.tokens.records)} 条计量记录",Modifier.padding(top=16.dp),fontSize=11.sp,color=secondary)
             if(state.statisticsError.isNotBlank())ConsoleErrorText(state.statisticsError)
             if(state.actionMessage.contains("统计索引"))Text(state.actionMessage,Modifier.padding(top=8.dp),fontSize=12.sp,color=MaterialTheme.colors.primary)
             if(snapshot?.available==false)Text("本机尚未发现此来源的用量记录",Modifier.padding(top=8.dp),fontSize=13.sp,color=secondary)
@@ -133,14 +119,14 @@ private fun periodDate(value:Long?)=value?.let{
                 if(index>0)Divider(Modifier.padding(top=14.dp),color=hairline)
                 Column(Modifier.padding(top=14.dp)){
                     Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.Top){
-                        Text(nativeCompactModelName(model.id),Modifier.weight(1f).padding(end=12.dp),fontSize=13.sp,fontWeight=FontWeight.Medium,maxLines=2,overflow=TextOverflow.Ellipsis)
+                        Text(nativeCompactModelName(model.id,if(state.source=="agy")"antigravity" else state.source),Modifier.weight(1f).padding(end=12.dp),fontSize=13.sp,fontWeight=FontWeight.Medium,maxLines=2,overflow=TextOverflow.Ellipsis)
                         Text(consoleCount(model.tokens.total),fontSize=14.sp,fontWeight=FontWeight.SemiBold)
                     }
                     val fraction=((model.tokens.total?:0).toDouble()/total).coerceIn(0.0,1.0).toFloat()
                     LinearProgressIndicator(fraction,Modifier.fillMaxWidth().padding(top=9.dp,bottom=7.dp).height(3.dp).clip(RoundedCornerShape(2.dp)),color=AppColor.ChartPurple,backgroundColor=hairline)
                     Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(10.dp)){
                         Text("输入 ${consoleCount(model.tokens.input)} · 输出 ${consoleCount(model.tokens.output)}",Modifier.weight(1f),fontSize=12.sp,color=secondary)
-                        Text(String.format(Locale.US,"%.1f%%",fraction*100),fontSize=12.sp,color=secondary)
+                        Text("命中 "+nativeCacheHitRate(model.tokens.input?.toDouble(),model.tokens.cached?.toDouble()),fontSize=12.sp,color=secondary)
                     }
                     Text(listOfNotNull("${consoleCount(model.tokens.records)} 条记录",if(pricingPending)"金额待读取" else model.usd?.let{consoleMoney(it)},model.includedRecords?.takeIf{it>0&&!pricingPending}?.let{"订阅已包含"},model.unpricedRecords?.takeIf{it>0&&!pricingPending}?.let{"${consoleCount(it)} 条未计价"},model.provider.takeIf{it.isNotBlank()}).joinToString(" · "),Modifier.padding(top=3.dp),fontSize=12.sp,color=secondary)
                 }
@@ -165,4 +151,7 @@ private fun periodDate(value:Long?)=value?.let{
         }
     }
 }
+
+internal fun nativeCacheHitRate(input:Double?,cached:Double?):String=
+    if(input!=null&&cached!=null&&input>0&&cached>=0&&cached<=input)String.format(Locale.ROOT,"%.1f%%",cached/input*100) else "—"
 

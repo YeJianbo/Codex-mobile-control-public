@@ -7,6 +7,12 @@ import androidx.activity.compose.setContent
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.ViewModelProvider
 
+internal fun consumeNativeNotificationThread(intent:Intent?):String {
+    val id=intent?.getStringExtra("notificationThreadId").orEmpty()
+    intent?.removeExtra("notificationThreadId")
+    return id
+}
+
 class MainActivity : ComponentActivity() {
     private lateinit var model:NativeViewModel
     override fun onCreate(savedInstanceState:Bundle?) {
@@ -16,7 +22,7 @@ class MainActivity : ComponentActivity() {
         window.navigationBarColor=android.graphics.Color.TRANSPARENT
         model=ViewModelProvider(this).get(NativeViewModel::class.java)
         if(!model.state.connected&&!model.state.connecting) {if(!pair(intent))model.autoConnect()}
-        model.openNotificationThread(intent?.getStringExtra("notificationThreadId").orEmpty())
+        model.openNotificationThread(consumeNativeNotificationThread(intent))
         setContent { NativeApp(model) }
     }
     private fun pair(intent:Intent?):Boolean {
@@ -25,9 +31,9 @@ class MainActivity : ComponentActivity() {
         model.connect(link.address,code=link.code,publicUrl=link.publicUrl,certificateSha256=link.certificateSha256)
         return true
     }
-    override fun onNewIntent(intent:Intent?){super.onNewIntent(intent);setIntent(intent);pair(intent);model.openNotificationThread(intent?.getStringExtra("notificationThreadId").orEmpty())}
-    override fun onStart(){super.onStart();NotificationHelper.setAppForeground(this,true);model.setForeground(true)}
-    override fun onStop(){NotificationHelper.setAppForeground(this,false);model.setForeground(false);super.onStop()}
+    override fun onNewIntent(intent:Intent?){super.onNewIntent(intent);setIntent(intent);pair(intent);model.openNotificationThread(consumeNativeNotificationThread(intent))}
+    override fun onStart(){super.onStart();NativePerformanceRecorder.attach(window);NotificationHelper.setAppForeground(this,true);model.setForeground(true)}
+    override fun onStop(){NativePerformanceRecorder.detach(window);NotificationHelper.setAppForeground(this,false);model.setForeground(false);super.onStop()}
     override fun onResume(){
         super.onResume()
         val screen=window.decorView.display

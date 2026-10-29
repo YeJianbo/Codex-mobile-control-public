@@ -19,6 +19,77 @@ import java.util.concurrent.atomic.AtomicInteger
 @RunWith(AndroidJUnit4::class)
 class NativeHarnessSwitchTest {
     @get:Rule val ui=createAndroidComposeRule<ComponentActivity>()
+    @Test fun pendingReceiptDoesNotBlockHarnessSwitchOrMoveItsMessage(){
+        val app=ApplicationProvider.getApplicationContext<Application>()
+        check(app.packageName.endsWith(".remotecheck"))
+        app.getSharedPreferences("native",0).edit().clear().commit()
+        app.getSharedPreferences("connection",0).edit().clear().commit()
+        val commands=java.util.concurrent.CopyOnWriteArrayList<JSONObject>()
+        val sockets=java.util.concurrent.CopyOnWriteArrayList<WebSocket>()
+        val slowListStarted=java.util.concurrent.CountDownLatch(1)
+        val releaseOldList=java.util.concurrent.CountDownLatch(1)
+        val slowCodexList=java.util.concurrent.atomic.AtomicBoolean(false)
+        val agyLists=AtomicInteger()
+        val server=MockWebServer()
+        server.dispatcher=object:okhttp3.mockwebserver.Dispatcher(){override fun dispatch(request:RecordedRequest):MockResponse{
+            fun json(value:String)=MockResponse().setHeader("Content-Type","application/json").setBody(value)
+            return when(request.requestUrl!!.encodedPath){
+                "/health"->json("""{"ok":true,"protocolVersion":1,"minAndroidProtocolVersion":1}""")
+                "/ws"->MockResponse().withWebSocketUpgrade(object:WebSocketListener(){
+                    override fun onOpen(socket:WebSocket,response:Response){sockets.add(socket);socket.send("""{"type":"connected"}""")}
+                    override fun onMessage(socket:WebSocket,text:String){commands.add(JSONObject(text))}
+                    override fun onClosing(socket:WebSocket,code:Int,reason:String){socket.close(code,reason)}
+                })
+                "/api/models"->json("""{"models":[{"model":"gpt-6.1-sol","displayName":"Sol"},{"model":"antigravity::default","displayName":"Antigravity"}],"backends":[{"agent":"codex","available":true},{"agent":"antigravity","available":true}]}""")
+                "/api/sidebar"->json("""{"projects":[],"allowedProjects":[]}""")
+                "/api/threads"->{
+                    if(request.requestUrl!!.queryParameter("agent")=="antigravity"){
+                        agyLists.incrementAndGet();json("""{"threads":[]}""")
+                    }else{
+                        if(slowCodexList.get()){slowListStarted.countDown();releaseOldList.await(60,java.util.concurrent.TimeUnit.SECONDS)}
+                        json("""{"threads":[{"id":"fixture-codex","title":"原会话","status":"completed"}]}""")
+                    }
+                }
+                "/api/threads/fixture-codex/events"->json("""{"events":[],"status":"completed"}""")
+                "/api/threads/fixture-codex/submission"->json("""{"submission":{"state":"pending"}}""")
+                else->json("{}")
+            }
+        }}
+        server.start();val vm=NativeViewModel(app)
+        try{
+            ui.setContent{NativeApp(vm)}
+            ui.runOnUiThread{vm.connect(server.url("/").toString().trimEnd('/'),"fixture")}
+            ui.waitUntil(10000){vm.state.connected&&vm.state.models.size==2&&vm.state.threads.isNotEmpty()}
+            slowCodexList.set(true)
+            ui.runOnUiThread{vm.openThread(ThreadRecord("fixture-codex",title="原会话"))}
+            ui.waitUntil(10000){slowListStarted.count==0L&&!vm.state.loadingHistory}
+            ui.runOnUiThread{vm.draft("仅发给原会话");vm.send()}
+            ui.waitUntil(5000){commands.any{it.optString("text")=="仅发给原会话"}}
+            ui.onNodeWithContentDescription("展开侧栏").performClick()
+            ui.onNodeWithContentDescription("切换助手").performTouchInput{click()}
+            Assert.assertTrue("切换时原消息仍在等待回执",vm.state.sending)
+            ui.onNodeWithText("Antigravity").performTouchInput{click()}
+            Assert.assertEquals("等待旧回执时仍应立即切换","antigravity",vm.state.harness)
+            Assert.assertTrue("新助手不应继承旧会话或消息",vm.state.threadId.isBlank()&&vm.state.draft.isBlank())
+            ui.waitUntil(10000){agyLists.get()>0}
+            val sent=commands.single{it.optString("text")=="仅发给原会话"}
+            sockets.last().send(JSONObject().put("type","user.message").put("threadId","fixture-codex")
+                .put("eventId","late-receipt").put("requestId",sent.optString("requestId")).put("text","仅发给原会话").toString())
+            releaseOldList.countDown()
+            ui.waitUntil(5000){app.getSharedPreferences("native",0).all.keys.none{it.startsWith("send:")}}
+            Assert.assertEquals("antigravity",vm.state.harness)
+            Assert.assertTrue(vm.state.threadId.isBlank()&&vm.state.draft.isBlank())
+            Assert.assertEquals(1,commands.count{it.optString("text")=="仅发给原会话"})
+            repeat(3){
+                ui.onNodeWithContentDescription("切换助手").performTouchInput{click()}
+                ui.onNode(hasText("Codex") and hasAnyAncestor(hasTestTag("modernDropdown"))).performTouchInput{click()}
+                Assert.assertEquals("codex",vm.state.harness)
+                ui.onNodeWithContentDescription("切换助手").performTouchInput{click()}
+                ui.onNodeWithText("Antigravity").performTouchInput{click()}
+                Assert.assertEquals("antigravity",vm.state.harness)
+            }
+        }finally{releaseOldList.countDown();ui.runOnUiThread{vm.disconnect()};server.shutdown()}
+    }
     @Test fun menuRendersOfficialIconsAndConnectionFollowsSelectedHarness(){
         val app=ApplicationProvider.getApplicationContext<Application>()
         check(app.packageName.endsWith(".remotecheck"))

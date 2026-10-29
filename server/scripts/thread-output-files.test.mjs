@@ -3,9 +3,21 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {activityOutputImageText,localOutputPath,resolvePublicOutputImage,resolveThreadOutputFile,storedOutputMessage} from '../src/services/threadOutputFiles.ts';
+import {activityOutputImageText,listThreadOutputDirectory,localOutputPath,resolvePublicOutputImage,resolveThreadDirectoryFile,resolveThreadOutputFile,storedOutputMessage} from '../src/services/threadOutputFiles.ts';
 import {pathToFileURL} from 'node:url';
 import {permittedPublicRequest} from './public-routes.mjs';
+
+test('a visible Codex file citation authorizes only that exact LAN output file',async()=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'cmc-file-citation-'));
+  try{
+    const file=path.join(root,'航班 %20#最终.xlsx');await fs.writeFile(file,'workbook fixture');
+    const citation=`:codex-file-citation{path="${file.replaceAll('\\','/')}" artifact_kind="workbook" purpose="output"}`;
+    assert.equal((await resolveThreadOutputFile(citation,encodeURIComponent(file),root)).absolutePath,await fs.realpath(file));
+    await assert.rejects(resolveThreadOutputFile('`'+citation+'`',encodeURIComponent(file),root),/不是这条/);
+    await assert.rejects(resolveThreadOutputFile('```\n'+citation+'\n```',encodeURIComponent(file),root),/不是这条/);
+    await assert.rejects(resolveThreadOutputFile(citation,path.join(root,'other.xlsx'),root),/不是这条/);
+  }finally{await fs.rm(root,{recursive:true,force:true});}
+});
 
 test('image operations expose only real preview links from that operation',async()=>{
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'cmc-operation-image-'));
@@ -55,6 +67,27 @@ test('output link cannot substitute an unreferenced or unrelated file',async()=>
 test('output link rejects remote URLs and directories',async()=>{
   await assert.rejects(resolveThreadOutputFile('[网站](https://example.com/a)','https://example.com/a',''),/不是本地/);
   await assert.rejects(resolveThreadOutputFile(`[目录](<${os.tmpdir()}>)`,os.tmpdir(),''),/指向目录/);
+});
+
+test('visible folders list and read descendants but exclude traversal and outside junctions',async()=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'cmc-output-folder-'));
+  try{
+    const directory=path.join(root,'成片'),outside=path.join(root,'outside');
+    await fs.mkdir(path.join(directory,'预览'),{recursive:true});await fs.mkdir(outside);
+    await fs.writeFile(path.join(directory,'预览','图 #20%.png'),'image fixture');
+    await fs.writeFile(path.join(outside,'secret.txt'),'private');
+    await fs.symlink(outside,path.join(directory,'escape'),process.platform==='win32'?'junction':'dir');
+    const href=directory.replaceAll('\\','/'),text=`[全部成片](<${href}>)`;
+    const listed=await listThreadOutputDirectory(text,href,root,'');
+    assert.deepEqual(listed.files.map(file=>file.name),['预览']);
+    const child=(await listThreadOutputDirectory(text,href,root,'预览')).files[0];
+    assert.equal(child.path,'预览/图 #20%.png');
+    const file=await resolveThreadDirectoryFile(text,href,root,child.path);
+    assert.equal(await fs.readFile(file.absolutePath,'utf8'),'image fixture');
+    for(const relative of ['../outside/secret.txt','escape/secret.txt',outside])await assert.rejects(resolveThreadDirectoryFile(text,href,root,relative),/超出链接目录/);
+    await assert.rejects(listThreadOutputDirectory('[其他](other)',href,root,''),/不是这条/);
+    await assert.rejects(resolveThreadOutputFile(text,href,root),/指向目录/);
+  }finally{await fs.rm(root,{recursive:true,force:true});}
 });
 test('public proxy admits image GET but keeps general output files and writes private',()=>{
   assert.equal(permittedPublicRequest('GET','/api/threads/thread/output-file/preview.jpg?eventId=one&path=preview.jpg'),true);

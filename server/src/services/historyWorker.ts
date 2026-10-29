@@ -1,7 +1,13 @@
 import {parentPort} from 'node:worker_threads';
 import * as history from './codexSessions.js';
+import {readZcodeNativeEvents,readZcodeNativeIndex} from './zcodeNativeSessions.js';
+import {readStoredThreadEvents} from './storedThreadHistory.js';
 
 const methods={
+  readStoredThreadEvents,
+  readCodexConversationPreview:history.readCodexConversationPreview,
+  readZcodeNativeEvents,
+  readZcodeNativeIndex,
   invalidateCodexHistory:history.invalidateCodexHistory,
   readRecentSearchEvents:history.readRecentSearchEvents,
   readCodexThreadEvents:history.readCodexThreadEvents,

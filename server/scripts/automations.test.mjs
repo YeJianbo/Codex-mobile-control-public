@@ -8,6 +8,16 @@ import TOML from '@iarna/toml';
 import {listAutomations,listAutomationTargets,saveAutomation} from '../src/services/automations.ts';
 import {scheduledMessage} from '../src/services/messageSource.ts';
 import {permittedPublicRequest} from './public-routes.mjs';
+import {automationRule} from '../src/services/automationSchedule.ts';
+
+test('calendar times and weekdays serialize to native rules while intervals stay elapsed time',()=>{
+ assert.equal(automationRule({frequency:'DAILY',interval:1,hour:9,minute:30}),'FREQ=DAILY;INTERVAL=1;BYHOUR=9;BYMINUTE=30;BYSECOND=0');
+ assert.equal(automationRule({frequency:'WEEKLY',interval:2,hour:8,minute:0,days:['FR','MO','MO']}),'FREQ=WEEKLY;INTERVAL=2;BYDAY=MO,FR;BYHOUR=8;BYMINUTE=0;BYSECOND=0');
+ assert.equal(automationRule({frequency:'MINUTELY',interval:15}),'FREQ=MINUTELY;INTERVAL=15');
+ assert.throws(()=>automationRule({frequency:'WEEKLY',interval:1,hour:9,minute:0}));
+ assert.throws(()=>automationRule({frequency:'HOURLY',interval:1,hour:9,minute:0}));
+ assert.throws(()=>automationRule({frequency:'DAILY',interval:1,hour:24,minute:0}));
+});
 
 test('create, edit and pause retain Codex heartbeat target and unrelated settings',async()=>{
  const home=await fs.mkdtemp(path.join(os.tmpdir(),'cmc-schedule-'));

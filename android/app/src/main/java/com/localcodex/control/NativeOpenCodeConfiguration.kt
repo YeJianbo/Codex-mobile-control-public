@@ -65,7 +65,7 @@ private class OpenCodeRequests(private val scope:CoroutineScope,private val requ
         {if(editor!=null)editor=null else if(modelsEditor)modelsEditor=false else back()},requests::load,{editor=it},{modelsEditor=it}){kind,body->if(connected&&active)requests.preview(kind,body)}
     requests.state.preview?.let{preview->
         val allowed=preview.optBoolean("canSwitch",false)&&preview.accountText("planId").isNotBlank()&&preview.optInt("blockingCount")==0
-        AlertDialog(onDismissRequest=requests::dismiss,title={Text("确认更新 OpenCode 配置")},text={Column(verticalArrangement=Arrangement.spacedBy(8.dp)){
+        NativeAlertDialog(onDismissRequest=requests::dismiss,title={Text("确认更新 OpenCode 配置")},text={Column(verticalArrangement=Arrangement.spacedBy(8.dp)){
             Text(preview.accountText("message").ifBlank{if(allowed)"确认后保存到电脑，新建会话使用更新后的配置。" else "当前配置不能更新，请检查运行任务。"})
             preview.accountRows("changes").forEach{change->Text(change.accountText("title"),fontWeight=FontWeight.Medium);change.accountText("detail").takeIf{it.isNotBlank()}?.let{Text(it,fontSize=13.sp)}}
         }},confirmButton={if(allowed)TextButton(onClick=requests::apply,enabled=!requests.state.busy,modifier=Modifier.testTag("applyOpenCodeConfiguration")){Text(if(requests.state.busy)"正在保存…" else "确认保存")}},dismissButton={TextButton(onClick=requests::dismiss,enabled=!requests.state.busy){Text("取消")}})
@@ -77,9 +77,9 @@ private class OpenCodeRequests(private val scope:CoroutineScope,private val requ
     val providers=data?.accountRows("providers").orEmpty()
     val enabled=connected&&!state.busy&&data?.optBoolean("writable",true)!=false
     NativeManagementPage(if(editor!=null)if(editor.originalId.isBlank())"添加 OpenCode 供应商" else "编辑 OpenCode 供应商" else if(modelsEditor)"OpenCode 默认模型" else "OpenCode","",back,modifier=Modifier.testTag("openCodeConfiguration"),actions={
-        if(editor==null&&!modelsEditor)TextButton(onClick=refresh,enabled=connected&&!state.busy){Text("刷新")}
+        if(editor==null&&!modelsEditor)ChromeButton(R.drawable.ic_lucide_rotate_cw,"刷新",refresh,enabled=connected&&!state.busy)
     }){
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(),contentPadding=PaddingValues(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
+        LazyColumn(Modifier.weight(1f).fillMaxWidth(),state=rememberNativeManagementListState(),contentPadding=nativeManagementPadding(PaddingValues(16.dp)),verticalArrangement=Arrangement.spacedBy(12.dp)){
             if(!connected)item{Text("连接电脑后管理 OpenCode 配置")}
             if(state.busy)item{LinearProgressIndicator(Modifier.fillMaxWidth())}
             if(state.error.isNotBlank())item{Text(state.error,color=MaterialTheme.colors.error)}
@@ -120,7 +120,7 @@ private class OpenCodeRequests(private val scope:CoroutineScope,private val requ
     Column(verticalArrangement=Arrangement.spacedBy(12.dp)){
         OutlinedTextField(draft.id,{edit(draft.copy(id=it))},label={Text("供应商 ID")},singleLine=true,enabled=enabled&&draft.originalId.isBlank(),modifier=Modifier.fillMaxWidth())
         OutlinedTextField(draft.name,{edit(draft.copy(name=it))},label={Text("显示名称")},singleLine=true,enabled=enabled,modifier=Modifier.fillMaxWidth())
-        Box{OutlinedButton(onClick={packagesOpen=true},enabled=enabled){Text(packageName(draft.npm))};DropdownMenu(packagesOpen,{packagesOpen=false}){packages.forEach{npm->DropdownMenuItem(onClick={edit(draft.copy(npm=npm));packagesOpen=false}){Text(packageName(npm))}}}}
+        Box{OutlinedButton(onClick={packagesOpen=true},enabled=enabled){Text(packageName(draft.npm))};NativeDropdownMenu(packagesOpen,{packagesOpen=false}){packages.forEach{npm->DropdownMenuItem(onClick={edit(draft.copy(npm=npm));packagesOpen=false}){Text(packageName(npm))}}}}
         OutlinedTextField(draft.baseUrl,{edit(draft.copy(baseUrl=it))},label={Text("服务地址（留空使用默认地址）")},singleLine=true,enabled=enabled,modifier=Modifier.fillMaxWidth())
         OutlinedTextField(draft.apiKey,{edit(draft.copy(apiKey=it))},label={Text(if(draft.hasKey)"API Key（留空保留）" else "API Key")},visualTransformation=PasswordVisualTransformation(),singleLine=true,enabled=enabled,modifier=Modifier.fillMaxWidth())
         Row(verticalAlignment=Alignment.CenterVertically){Checkbox(draft.enabled,{edit(draft.copy(enabled=it))},enabled=enabled);Text("启用此供应商")}
@@ -178,7 +178,7 @@ private class OpenCodeRequests(private val scope:CoroutineScope,private val requ
 @Composable private fun OpenCodeModelField(label:String,value:String,change:(String)->Unit,choices:List<String>,enabled:Boolean){
     var expanded by remember{mutableStateOf(false)}
     OutlinedTextField(value,change,label={Text(label)},singleLine=true,enabled=enabled,modifier=Modifier.fillMaxWidth())
-    if(choices.isNotEmpty())Box{TextButton(onClick={expanded=true},enabled=enabled){Text("从已配置模型选择")};DropdownMenu(expanded,{expanded=false}){choices.forEach{model->DropdownMenuItem(onClick={change(model);expanded=false}){Text(model)}}}}
+    if(choices.isNotEmpty())Box{TextButton(onClick={expanded=true},enabled=enabled){Text("从已配置模型选择")};NativeDropdownMenu(expanded,{expanded=false}){choices.forEach{model->DropdownMenuItem(onClick={change(model);expanded=false}){Text(model)}}}}
 }
 
 private fun openCodeDraft(row:JSONObject):OpenCodeProviderDraft{

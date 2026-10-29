@@ -5,22 +5,27 @@ export function nativeSpeedDb(file){const db=new DatabaseSync(file);db.exec(`PRA
 CREATE TABLE IF NOT EXISTS items(session TEXT,item TEXT,turn_id TEXT,model TEXT,start_ms INTEGER,end_ms INTEGER,tokens INTEGER,characters INTEGER,reason TEXT,PRIMARY KEY(session,item));
 CREATE INDEX IF NOT EXISTS items_end ON items(end_ms);
 CREATE TABLE IF NOT EXISTS cursors(session TEXT PRIMARY KEY,ordinal INTEGER);
+CREATE TABLE IF NOT EXISTS reasoning_cursors(session TEXT PRIMARY KEY,ordinal INTEGER);
 CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,title TEXT,cwd TEXT,provider TEXT);`);
-if(!db.prepare('PRAGMA table_info(items)').all().some(c=>c.name==='tier'))db.exec('ALTER TABLE items ADD COLUMN tier TEXT');
+const columns=new Set(db.prepare('PRAGMA table_info(items)').all().map(c=>c.name));let reindex=false;
+for(const name of ['tier','effort','phase'])if(!columns.has(name)){db.exec('ALTER TABLE items ADD COLUMN '+name+' TEXT');if(name!=='tier')reindex=true;}
+if(reindex)db.exec('DELETE FROM cursors');
 db.exec('CREATE INDEX IF NOT EXISTS items_timestamp ON items(COALESCE(end_ms,start_ms))');
+db.exec('CREATE INDEX IF NOT EXISTS items_request ON items(session,turn_id,model,end_ms)');
 return db;}
-export function nativeSpeedRow(row,model,encode,tier=null){
-  const start=row.started_at_ms,end=row.completed_at_ms;let reason=null,tokens=null,characters=null;
+export function nativeSpeedRow(row,model,encode,tier=null,effort=null){
+  const start=row.started_at_ms,end=row.completed_at_ms;let reason=null,tokens=null,characters=null,phase=row.item_type==='reasoning'?'reasoning':null;
   if(!Number.isFinite(start)||!Number.isFinite(end)||end<=start)reason='missing-stream-time';
-  else {try{const text=JSON.parse(row.item_json).text;if(typeof text!=='string'||!text.length)reason='empty-text';else if(text.length>262144)reason='oversized-text';else{tokens=encode(text);characters=Array.from(text).length;}}catch{reason='invalid-item';}}
-  return {session:row.thread_id,item:row.item_id,turn:row.turn_id,model,tier:normalizeAnalyticsTier(tier),start,end,tokens,characters,reason};
+  else if(row.item_type==='reasoning'){reason='reasoning-timing';phase='reasoning';}
+  else {try{const item=JSON.parse(row.item_json),text=item.text;phase=typeof item.phase==='string'?item.phase:null;if(typeof text!=='string'||!text.length)reason='empty-text';else if(text.length>262144)reason='oversized-text';else{tokens=encode(text);characters=Array.from(text).length;}}catch{reason='invalid-item';}}
+  return {session:row.thread_id,item:row.item_id,turn:row.turn_id,model,tier:normalizeAnalyticsTier(tier),effort:typeof effort==='string'?effort:null,phase,start,end,tokens,characters,reason};
 }
 export function nativeDimensionsAt(events,turn,end){
   const rows=events.get(turn)||[];
   // A short final message can finish after the turn's last token-count event.
   // Stay within this turn; never infer its model or tier from current settings.
   const row=rows.find(r=>r.time>=end-1000)??rows.at(-1);
-  return {model:row?.model||null,tier:normalizeAnalyticsTier(row?.tier)};
+  return {model:row?.model||null,tier:normalizeAnalyticsTier(row?.tier),effort:row?.effort||null};
 }
 export function nativeModelAt(events,turn,end){return nativeDimensionsAt(events,turn,end).model;}
 export function nativeSessionTitle(thread){
@@ -53,11 +58,11 @@ export class NativeSpeedService{
     const version=this.db.prepare('PRAGMA data_version').get().data_version,changes=this.db.prepare('SELECT total_changes() n').get().n;
     const key=JSON.stringify([range,bounds,since,filters.model||'all',version,changes]),cached=this.summaryCache.get(key);
     if(cached&&now-cached.at<5000)return {...cached.result,coverage:{...cached.result.coverage,available:this.progress.available!==false},progress:this.progress};
-    const rows=this.db.prepare('SELECT * FROM items WHERE COALESCE(end_ms,start_ms)>=? AND COALESCE(end_ms,start_ms)<=?').all(since,until);
-    const stats=tokenSpeedStats(rows.map(r=>({timestamp:(r.end_ms||r.start_ms)/1000,model:r.model,tier:r.tier,provider:null,status:200,outputTokens:r.reason?null:r.tokens,durationMs:r.reason?null:r.end_ms-r.start_ms,session:r.session})),{model:filters.model||'all'});
+    const rows=this.db.prepare("SELECT * FROM items WHERE COALESCE(end_ms,start_ms)>=? AND COALESCE(end_ms,start_ms)<=? AND COALESCE(phase,'')<>'reasoning'").all(since,until);
+    const stats=tokenSpeedStats(rows.map(r=>({timestamp:(r.end_ms||r.start_ms)/1000,model:r.model,tier:r.tier,effort:r.effort,phase:r.phase,provider:null,status:200,outputTokens:r.reason?null:r.tokens,durationMs:r.reason?null:r.end_ms-r.start_ms,session:r.session})),{model:filters.model||'all'});
     const titles=new Map(this.db.prepare('SELECT * FROM sessions').all().map(r=>[r.id,r]));
     const measured=rows.filter(r=>!r.reason&&r.tokens>0&&r.end_ms>r.start_ms&&(!filters.model||filters.model==='all'||filters.model==='v:'+r.model||filters.model==='missing'&&r.model==null));
-    for(const group of stats.groups){const sessions=new Map();for(const row of measured.filter(r=>r.model===group.model&&r.tier===group.tier)){if(!sessions.has(row.session))sessions.set(row.session,[]);sessions.get(row.session).push({timestamp:row.end_ms/1000,status:200,outputTokens:row.tokens,durationMs:row.end_ms-row.start_ms});}group.sessions=[...sessions].map(([id,items])=>({id,title:titles.get(id)?.title||'会话 '+id.slice(0,8),cwd:titles.get(id)?.cwd||'',lastAt:Math.max(...items.map(r=>r.timestamp)),...tokenSpeedStats(items).totals})).sort((a,b)=>b.lastAt-a.lastAt);group.sessionCount=group.sessions.length;}
+    for(const group of stats.groups){const sessions=new Map();for(const row of measured.filter(r=>r.model===group.model&&r.tier===group.tier&&r.effort===group.effort&&r.phase===group.phase)){if(!sessions.has(row.session))sessions.set(row.session,[]);sessions.get(row.session).push({timestamp:row.end_ms/1000,status:200,outputTokens:row.tokens,durationMs:row.end_ms-row.start_ms});}group.sessions=[...sessions].map(([id,items])=>({id,title:titles.get(id)?.title||'会话 '+id.slice(0,8),cwd:titles.get(id)?.cwd||'',lastAt:Math.max(...items.map(r=>r.timestamp)),...tokenSpeedStats(items).totals})).sort((a,b)=>b.lastAt-a.lastAt);group.sessionCount=group.sessions.length;}
     const result={...stats,scope:'codex-native-history',definition:'visible-text-estimate',encoding:'o200k_base',source:'native',coverage:{...stats.coverage,available:this.progress.available!==false},progress:this.progress,filters:{...stats.filters,source:'native'}};
     if(this.summaryCache.size>=16)this.summaryCache.clear();
     this.summaryCache.set(key,{at:now,result});return result;

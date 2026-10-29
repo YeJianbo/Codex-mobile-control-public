@@ -11,6 +11,8 @@ const safeText=value=>typeof value==='string'?value.slice(0,200):'';
 function read(file,fallback=null){try{return JSON.parse(fs.readFileSync(file,'utf8'));}catch(error){if(error.code==='ENOENT')return fallback;throw new Error('无法读取 AGY 本机账号文件');}}
 function write(file,value){fs.mkdirSync(path.dirname(file),{recursive:true});const temp=file+'.'+randomUUID()+'.tmp';try{fs.writeFileSync(temp,JSON.stringify(value,null,2),{mode:0o600});fs.renameSync(temp,file);}finally{if(fs.existsSync(temp))fs.unlinkSync(temp);}}
 function claims(token){try{return JSON.parse(Buffer.from(token.split('.')[1],'base64url'));}catch{return {};}}
+function quotaIdentity(active,accounts){return accounts.find(account=>account.credential.token.refresh_token===active?.token.refresh_token)?.id||
+  (safeText(claims(active?.id_token||'').sub)?'google:'+safeText(claims(active.id_token).sub):null);}
 function credential(value){
   const token=value?.token;
   if(!token||typeof token.refresh_token!=='string'||!token.refresh_token||typeof token.access_token!=='string'||!token.access_token||!Number.isFinite(Date.parse(token.expiry)))throw new Error('账号凭据格式不受支持，请在 AGY 中重新登录');
@@ -64,7 +66,8 @@ export class AgyAccountManager {
     const acpMatch=acp?vault.accounts.find(account=>account.credential.token.refresh_token===acp.token?.refresh_token):null;
     const items=vault.accounts.map(account=>({id:account.id,email:account.email,name:account.name,source:account.source,importedAt:account.importedAt,expiresAt:account.credential.token.expiry,active:match?.id===account.id,acpActive:acpMatch?.id===account.id,disabled:!!account.disabled}));
     const email=claims(active?.id_token||'').email;
-    return {items,current:{accountId:match?.id||null,email:match?.email||safeText(email)||null,configured:!!active,error:currentError},targets:[{id:'cli',name:'AGY CLI',available:!currentError},{id:'acp',name:'AGY ACP',available:!!this.acpCredentialFile}],sources:sources.map(source=>({id:source.sourceId,email:source.email,name:source.name,disabled:source.disabled,imported:vault.accounts.some(account=>account.sourceId===source.sourceId),quotaUpdatedAt:Number.isFinite(source.quota?.last_updated)&&Number.isFinite(new Date(source.quota.last_updated*1000).valueOf())?new Date(source.quota.last_updated*1000).toISOString():null})),reference:'https://github.com/lbjlaq/Antigravity-Manager'};
+    const quotaAccountId=quotaIdentity(active,vault.accounts);
+    return {items,current:{accountId:match?.id||null,quotaAccountId,email:match?.email||safeText(email)||null,configured:!!active,error:currentError},targets:[{id:'cli',name:'AGY CLI',available:!currentError},{id:'acp',name:'AGY ACP',available:!!this.acpCredentialFile}],sources:sources.map(source=>({id:source.sourceId,email:source.email,name:source.name,disabled:source.disabled,imported:vault.accounts.some(account=>account.sourceId===source.sourceId),quotaUpdatedAt:Number.isFinite(source.quota?.last_updated)&&Number.isFinite(new Date(source.quota.last_updated*1000).valueOf())?new Date(source.quota.last_updated*1000).toISOString():null})),reference:'https://github.com/lbjlaq/Antigravity-Manager'};
   }
   import(input={}){return this.serialize(async()=>{
     const vault=await this.vault();let incoming=[];
@@ -104,7 +107,7 @@ export class AgyAccountManager {
   recordQuota(row,{accountId=null,source='cli-live'}={}){
     if(row?.stale||!Array.isArray(row?.windows)||!row.windows.length)return null;
     const time=Date.parse(row.updatedAt);if(!Number.isFinite(time))return null;
-    const windows=row.windows.flatMap(window=>typeof window.remainingPercent==='number'&&Number.isFinite(window.remainingPercent)&&window.remainingPercent>=0&&window.remainingPercent<=100?[{name:safeText(window.name)||'AGY',window:safeText(window.window),remainingPercent:window.remainingPercent,resetsAt:Number.isFinite(Date.parse(window.resetsAt))?new Date(window.resetsAt).toISOString():null}]:[]);if(!windows.length)return null;
+    const windows=row.windows.flatMap(window=>typeof window.remainingPercent==='number'&&Number.isFinite(window.remainingPercent)&&window.remainingPercent>=0&&window.remainingPercent<=100?[{name:safeText(window.name)||'AGY',poolId:safeText(window.poolId),group:safeText(window.group),description:safeText(window.description),window:safeText(window.window),remainingPercent:window.remainingPercent,resetsAt:Number.isFinite(Date.parse(window.resetsAt))?new Date(window.resetsAt).toISOString():null}]:[]);if(!windows.length)return null;
     const history=read(this.historyFile,{points:[]}),point={at:new Date(time).toISOString(),accountId,source,windows};
     if(history.points.some(prior=>prior.at===point.at&&prior.accountId===accountId&&prior.source===source))return point;
     const previous=history.points.findLast(prior=>prior.accountId===accountId&&prior.source===source);
@@ -117,7 +120,7 @@ export class AgyAccountManager {
     let before=null,beforeReadFailed=false;try{before=await this.current();}catch{beforeReadFailed=true;await invalidateCache();}
     const beforeOwner=before?.token.refresh_token||null;
     if(this.#quotaOwner!==beforeOwner)await invalidateCache();
-    const vault=await this.vault(),accountId=vault.accounts.find(account=>account.credential.token.refresh_token===beforeOwner)?.id||null;
+    const vault=await this.vault(),accountId=quotaIdentity(before,vault.accounts);
     const result=await loadAccounts();
     let after=null,readFailed=false;try{after=await this.current();}catch{readFailed=true;}
     const afterOwner=after?.token.refresh_token||null;
