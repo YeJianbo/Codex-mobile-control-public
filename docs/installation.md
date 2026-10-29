@@ -2,7 +2,7 @@
 
 支持 Windows 10 / 11 x64、.NET Framework 4.6.2 或更新版本，以及 Android 8.0 及以上。
 
-从 [GitHub Releases](https://github.com/YeJianbo/Codex-mobile-control/releases) 下载最新版本。新电脑使用 Setup，或下载包含 Setup、APK 和说明的 Windows 整包；更新时请安装同一发行版的手机和电脑组件。
+从 [GitHub Releases](https://github.com/YeJianbo/Codex-mobile-control-public/releases) 下载最新版本。新电脑使用 Setup，或下载包含 Setup、APK 和说明的 Windows 整包；更新时请安装同一发行版的手机和电脑组件。
 
 ## 组件与入口
 

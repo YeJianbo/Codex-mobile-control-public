@@ -4,7 +4,7 @@
 
 ## 下载与安装
 
-在 [GitHub Releases](https://github.com/YeJianbo/Codex-mobile-control/releases) 下载 Android APK 和 Windows 安装包。手机也可从应用内更新，或使用电脑控制台提供的下载地址。
+在 [GitHub Releases](https://github.com/YeJianbo/Codex-mobile-control-public/releases) 下载 Android APK 和 Windows 安装包。手机也可从应用内更新，或使用电脑控制台提供的下载地址。
 
 Windows 安装后打开 Web 控制台，在「接入 → 网关与手机」设置连接和密码，再用手机扫码绑定。已有用户可以覆盖安装 APK。详细步骤见 [安装与绑定](docs/installation.md) 和 [手机使用](docs/mobile-usage.md)。
 

@@ -18,7 +18,7 @@
 - APK：`Codex-Control-0.6.446.apk`。
 - 元数据：`archive.json`、`windows-release-manifest-0.6.446.json`。
 - Windows 对照包保留原位：`D:/codex/deliverables/Codex-mobile-control/Codex-Control-0.6.446-Windows-x64-Release.zip`。
-- 已有发布：<https://github.com/YeJianbo/Codex-mobile-control/releases/tag/v0.6.446>。
+- 已有发布：<https://github.com/YeJianbo/Codex-mobile-control-public/releases/tag/v0.6.446>。
 
 没有复制运行中的账号、密钥或数据库。原有未跟踪 `%SystemDrive%/`、`.zcodeignore`、`Microsoft/` 保留，不作为本次修改或归档源码。封存标签是本地标签，本轮未推送。
 
