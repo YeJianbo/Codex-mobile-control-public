@@ -441,7 +441,7 @@ npm run build退出0。sidebar-status.test.mjs4/4通过：原两项来源变化�
 
 首轮构建和3项检查通过后，校正生产计时从nanoTime为包含休眠的elapsedRealtime；最终assembleRelease/testReleaseUnitTest退出0（2m6s），NativeEventConnectionActivityTest3/3通过，覆盖无消息/20秒边界/超时及再次接收，新旧owner隔离，关闭后迟到消息无效及异常时间不作为新消息。首轮跨F/D盘Kotlin增量失败由同次构建全量回退成功，没有根据观察超时重启。没有扩大到整仓或重复执行前轮队列检查。
 
-Android0.6.418/versionCode390，APK3133748字节。active-connection418-delivery.mjs退出0，签名有效且与0.6.417身份一致，aapt包名/版本核对通过；交付目录、仓库下载、安装下载及CA校验HTTPS字节一致。实际公网PUBLIC_DOWNLOAD_ENDPOINT返回200且与交付APK字节一致。源码备份固定latest-ui/active-connection418-before-*，同名不覆盖；核实绝对目录及当前/回退版本存在后，仅删除旧0.6.416交付APK，保留0.6.418/0.6.417。构建均已结束，Gradle48248状态IDLE，无临时验证服务。
+Android0.6.418/versionCode390，APK3133748字节。active-connection418-delivery.mjs退出0，签名有效且与0.6.417身份一致，aapt包名/版本核对通过；交付目录、仓库下载、安装下载及CA校验HTTPS字节一致。实际公网公网下载接口返回200且与交付APK字节一致。源码备份固定latest-ui/active-connection418-before-*，同名不覆盖；核实绝对目录及当前/回退版本存在后，仅删除旧0.6.416交付APK，保留0.6.418/0.6.417。构建均已结束，Gradle48248状态IDLE，无临时验证服务。
 
 没有设备操作、真实消息、手工resume或网关/共享Codex重启。待覆盖安装后最小确认：有持续回复时切后台超过20秒再回来，不应因后台时长主动断开，草稿/历史保持；长时间无入站消息的连接仍可按原路径恢复。未实测手机帧率、实际恢复耗时、偶发断线根因及玻璃观感，整体体验优化继续。
 # 2026-10-17 Android 0.6.417 / 正常关闭后的聊天积压不再拖延恢复
@@ -450,7 +450,7 @@ Android0.6.418/versionCode390，APK3133748字节。active-connection418-delivery
 
 首轮Release构建及8项检查通过后，依据通知服务共用接收器的实际调用补上按调用者选择的策略，重新构建最终代码。最终assembleRelease/testReleaseUnitTest退出0（2m49s），SocketEventsTest6项、NativeNotificationWorkTest3项，共9/9通过。新增检查在消费者暂停时填入256条，正常关闭后聊天只保留已处理的第0条并完成，socket清理恰好一次；默认通知消费模式仍按序交付0..128。原异常断开、溢出、socket reader不阻塞及通知任务上限/取消检查保持通过。首轮Kotlin跨F/D盘增量缓存触发自动全量回退，同一构建成功，没有据观察等待重启构建。
 
-Android0.6.417/versionCode389，APK3133748字节。socket-close417-delivery.mjs退出0，apksigner验证签名且与0.6.416身份相同；aapt核对包名/版本，交付目录、仓库下载、安装网关下载与本地CA校验HTTPS一致。随后实际公网PUBLIC_DOWNLOAD_ENDPOINT返回200，字节与0.6.417交付APK一致。源码备份固定latest-ui/socket-close417-before-*，同名不覆盖。核实绝对目录及当前/回退文件后，仅删除旧0.6.415交付APK，保留0.6.417和0.6.416。确认本轮Gradle41344为IDLE后执行stop，未新增清理任务。
+Android0.6.417/versionCode389，APK3133748字节。socket-close417-delivery.mjs退出0，apksigner验证签名且与0.6.416身份相同；aapt核对包名/版本，交付目录、仓库下载、安装网关下载与本地CA校验HTTPS一致。随后实际公网公网下载接口返回200，字节与0.6.417交付APK一致。源码备份固定latest-ui/socket-close417-before-*，同名不覆盖。核实绝对目录及当前/回退文件后，仅删除旧0.6.415交付APK，保留0.6.417和0.6.416。确认本轮Gradle41344为IDLE后执行stop，未新增清理任务。
 
 没有实体手机/模拟器操作、真实消息、手工resume或网关/共享后端重启。代码与隔离队列证据说明消除了正常关闭后逐条处理聊天旧积压的路径，不代表实际手机恢复耗时、偶发断线根因或FPS已完成验证。最小手动确认：覆盖安装0.6.417，在已有会话切后台后返回，草稿和历史保持，若发生断连应恢复发送；后台通知保持原行为。整体体验优化继续。
 # 2026-10-17 Web聊天 / 后台会话开始状态同步
@@ -1412,7 +1412,7 @@ assembleRelease及现有NativeInteractionTest退出0，2m40s完成；27项交互
 
 用户询问下载位置后核实发现，公网/downloads/android.apk被public-routes明确拒绝，初次实际GET返回404/0字节；此前只验证过本机HTTPS下载，不能据此给出可用公网直链。现增加唯一安装包路径的GET/HEAD读取，公网入口仅对此静态安装包免密码；会话、健康和其他API仍走原密码与设备验证，其余下载路径及写方法仍拒绝。入口、网关、APK路径及已有下载链接保持一致。
 
-public-entry语法检查通过，public-routes专项5/5通过。仅部署public-entry.mjs/public-routes.mjs并重启公网入口42676→48096；网关PID2220保持，未重启共享Codex。真实PUBLIC_DOWNLOAD_ENDPOINT返回200/3100980字节，与已验签0.6.382 APK逐字节一致；公网入口无密码/health及/api/threads仍401。修改前源码及安装脚本备份保存在既有latest-ui目录，无新历史包。
+public-entry语法检查通过，public-routes专项5/5通过。仅部署public-entry.mjs/public-routes.mjs并重启公网入口42676→48096；网关PID2220保持，未重启共享Codex。真实公网下载接口返回200/3100980字节，与已验签0.6.382 APK逐字节一致；公网入口无密码/health及/api/threads仍401。修改前源码及安装脚本备份保存在既有latest-ui目录，无新历史包。
 
 本轮此前仅建立了顶部压缩状态函数的JVM基线，没有修改NativeTimeline或生成新APK：5000条记录的10个固定场景通过，单次函数中位数约0.79–2.19ms；尚未改算法或作优化后比较。固定工具与结果位于D:/codex/build/Codex-mobile-control/compaction-profile。Java探针首次javac退出1，原因默认GBK无法编码中文；明确-encoding UTF-8后编译及探针退出0。该函数级结果不是Compose重组或手机帧率证据，后续继续从此基线评估，不宣称压缩状态性能已改善。
 
