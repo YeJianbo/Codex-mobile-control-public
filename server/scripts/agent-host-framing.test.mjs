@@ -5,6 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {AgentHostServer,AgentHostClient} from '../src/services/agentHostProtocol.ts';
+import {SubmissionFailure} from '../src/services/submissionErrors.ts';
 import {RemoteAgentSessions} from '../src/services/remoteAgentSessions.ts';
 
 test('agent host preserves fragmented long UTF-8 requests and tracks live turn ownership',async()=>{
@@ -32,6 +33,62 @@ test('agent host preserves fragmented long UTF-8 requests and tracks live turn o
     host.publish({type:'turn.completed',threadId:'antigravity-fixture',status:'completed'});await wait(()=>!client.runningIds.has('antigravity-fixture'));
   }finally{
     client?.close();socket?.destroy();host.close();
+    if(previous===undefined)delete process.env.CODEX_MOBILE_CONTROL_HOME;else process.env.CODEX_MOBILE_CONTROL_HOME=previous;
+    await fs.rm(home,{recursive:true,force:true});
+  }
+});
+
+test('agent host RPC restores SubmissionFailure kinds only for known errorKind values',async()=>{
+  const home=await fs.mkdtemp(path.join(os.tmpdir(),'cmc-host-kind-')),previous=process.env.CODEX_MOBILE_CONTROL_HOME;
+  process.env.CODEX_MOBILE_CONTROL_HOME=home;
+  const version=JSON.parse(await fs.readFile(new URL('../package.json',import.meta.url),'utf8')).version;
+  let failure;
+  const host=new AgentHostServer('fixture-token',version,async()=>{throw failure;},()=>[],()=>{});
+  let client;
+  try{
+    await host.listen();
+    client=new AgentHostClient(()=>{},()=>{},()=>{});await client.connect();
+    for(const kind of ['writer_occupied','not_started','uncertain','failed']){
+      failure=new SubmissionFailure(kind,'原始错误消息');
+      await assert.rejects(client.request('submit',[]),error=>{
+        assert(error instanceof SubmissionFailure);assert.equal(error.kind,kind);assert.equal(error.message,'原始错误消息');return true;
+      });
+    }
+    failure=Error('普通失败');
+    await assert.rejects(client.request('submit',[]),error=>{
+      assert(!(error instanceof SubmissionFailure));assert.equal(error.message,'普通失败');return true;
+    });
+  }finally{
+    client?.close();host.close();
+    if(previous===undefined)delete process.env.CODEX_MOBILE_CONTROL_HOME;else process.env.CODEX_MOBILE_CONTROL_HOME=previous;
+    await fs.rm(home,{recursive:true,force:true});
+  }
+});
+
+test('agent host client keeps plain errors when a legacy host omits errorKind',async()=>{
+  const home=await fs.mkdtemp(path.join(os.tmpdir(),'cmc-host-legacy-')),previous=process.env.CODEX_MOBILE_CONTROL_HOME;
+  process.env.CODEX_MOBILE_CONTROL_HOME=home;
+  const version=JSON.parse(await fs.readFile(new URL('../package.json',import.meta.url),'utf8')).version;
+  const raw=net.createServer(socket=>{
+    let buffer='';
+    socket.on('data',chunk=>{buffer+=chunk;let end;while((end=buffer.indexOf('\n'))>=0){
+      const line=buffer.slice(0,end);buffer=buffer.slice(end+1);
+      const message=JSON.parse(line);
+      if(message.type==='hello')socket.write(JSON.stringify({type:'ready',version,pid:process.pid,running:[],seq:0})+'\n');
+      else if(message.type==='request')socket.write(JSON.stringify({type:'response',id:message.id,ok:false,error:'旧执行器的 writer_occupied 样式错误'})+'\n');
+    }});
+  });
+  let client;
+  try{
+    await new Promise((resolve,reject)=>{raw.once('error',reject);raw.listen(0,'127.0.0.1',()=>resolve());});
+    const port=raw.address().port;
+    await fs.writeFile(path.join(home,'agent-host.json'),JSON.stringify({port,token:'fixture-token',pid:process.pid,version,startedAt:new Date().toISOString()}));
+    client=new AgentHostClient(()=>{},()=>{},()=>{});await client.connect();
+    await assert.rejects(client.request('submit',[]),error=>{
+      assert(!(error instanceof SubmissionFailure));assert.equal(error.message,'旧执行器的 writer_occupied 样式错误');return true;
+    });
+  }finally{
+    client?.close();raw.close();
     if(previous===undefined)delete process.env.CODEX_MOBILE_CONTROL_HOME;else process.env.CODEX_MOBILE_CONTROL_HOME=previous;
     await fs.rm(home,{recursive:true,force:true});
   }

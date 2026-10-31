@@ -12,7 +12,7 @@ type UpdateSource={source:string;sourceLabel:string;url:string|null;endpoint?:st
 type UpdateRecord={latestVersion:string|null;checkedAt:string|null;error:string|null};
 const sources:Record<HealthId,UpdateSource>={
   codex:npmSource('@openai/codex'),claude:npmSource('@anthropic-ai/claude-code'),grok:npmSource('@xai-official/grok'),
-  deepseek:npmSource('@deepseek-ai/dsh'),opencode:npmSource('opencode-ai'),
+  deepseek:npmSource('@deepseek-ai/dsh'),opencode:npmSource('opencode-ai'),pi:npmSource('pi-acp'),acp:{source:'custom',sourceLabel:'自定义 ACP',url:null,unsupported:'由对应助手管理更新'},
   zcode:{source:'desktop',sourceLabel:'ZCode 桌面应用',url:'https://zcode.z.ai',unsupported:'CLI 随 ZCode 桌面应用更新'},
   hermes:{source:'github',sourceLabel:'GitHub · NousResearch/hermes-agent',url:'https://github.com/NousResearch/hermes-agent/releases',endpoint:'https://api.github.com/repos/NousResearch/hermes-agent/releases/latest',field:'tag_name'},
   antigravity:{source:'github',sourceLabel:'GitHub · google-antigravity/antigravity-cli',url:'https://github.com/google-antigravity/antigravity-cli/releases',endpoint:'https://api.github.com/repos/google-antigravity/antigravity-cli/releases/latest',field:'tag_name'},
@@ -71,6 +71,7 @@ function processSeed(process:HealthProcess):HealthId|null{
   if(/^dsh(?:\.exe)?$/.test(name)||/@deepseek-ai\/dsh(?:\/|\b)/.test(command))return 'deepseek';
   if(/^hermes(?:\.exe)?$/.test(name)||/(?:^|\s)-m\s+hermes_cli(?:\.main)?(?:\s|$)|\/hermes_cli\/(?:main|__main__)\.py/.test(command))return 'hermes';
   if(/^opencode(?:\.exe)?$/.test(name)||/\/opencode-ai\/(?:bin|node_modules)\//.test(command))return 'opencode';
+  if(/^pi(?:-acp)?(?:\.exe)?$/.test(name)||/\/pi-acp\//.test(command))return 'pi';
   if(/^zcode(?:\.exe)?$/.test(name)||/\/glm\/zcode(?:\.mobile-native)?\.cjs\b|\/scripts\/zcode-shared-(?:backend|proxy)\.mjs\b/.test(command))return 'zcode';
   return null;
 }

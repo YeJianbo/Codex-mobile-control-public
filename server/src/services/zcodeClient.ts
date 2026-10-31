@@ -11,6 +11,7 @@ import {registerZcodeModelWindows} from './zcodeUsage.js';
 import {setTimeout as delay} from 'node:timers/promises';
 import {zcodeToolStream} from './zcodeStream.js';
 import {isZcodeBusyError,zcodeRecoveryEnabled,zcodeRecoveryDelay,zcodeRecoveryInputPrefix,zcodeRecoveryPrompt} from './zcodeRecovery.js';
+import {createAcpDispatch,type AcpDispatch} from './acpPromptDispatch.js';
 
 type ReverseRequest=(method:string,params:any)=>Promise<any>;
 /** Native NDJSON RPC. A shared connection owns its proxy, never the shared runtime. */
@@ -47,6 +48,21 @@ export class ZcodeConnection{
   request(method:string,params:any={},timeout=30000):Promise<any>{
     if(this.closed)return Promise.reject(Error('ZCode 连接已关闭'));
     return new Promise((resolve,reject)=>{const id='gateway-'+(++this.sequence),timer=setTimeout(()=>{this.pending.delete(id);reject(Error(`ZCode ${method} 超时`));},timeout);this.pending.set(id,{resolve,reject,timer});this.write({id,method,params});});
+  }
+  attemptSend(params:any,timeout=30000):{request:Promise<any>;phase:AcpDispatch['phase'];error?:unknown}{
+    if(this.closed){const error=Error('ZCode 连接已关闭');return {request:Promise.reject(error),phase:'not_started',error};}
+    const id='gateway-'+(++this.sequence);
+    let resolve!:(value:any)=>void,reject!:(error:Error)=>void;
+    const request=new Promise<any>((res,rej)=>{resolve=res;reject=rej;});
+    const timer=setTimeout(()=>{this.pending.delete(id);reject(Error('ZCode session/send 超时'));},timeout);
+    this.pending.set(id,{resolve,reject,timer});
+    let payload:string;
+    try{payload=JSON.stringify({id,method:'session/send',params})+'\n';}
+    catch(error){clearTimeout(timer);this.pending.delete(id);reject(Error('ZCode 消息无法序列化'));return {request,phase:'not_started',error};}
+    const stdin=this.child.stdin;
+    if(!stdin?.writable){clearTimeout(timer);this.pending.delete(id);const error=Error('ZCode 标准输入不可写，任务未发送');reject(error);return {request,phase:'not_started',error};}
+    try{stdin.write(payload);}catch(error){clearTimeout(timer);this.pending.delete(id);reject(Error('ZCode 写入任务失败'));return {request,phase:'uncertain',error};}
+    return {request,phase:'written'};
   }
   close(){if(this.closed)return;this.exit(Error('ZCode 连接已关闭'));this.child.stdin?.end();this.child.kill();}
 }
@@ -91,6 +107,8 @@ type RunOptions={executable:AgentExecutable;cwd:string;session?:string;model:str
 /** Emits the existing timeline wire format; only this adapter knows ZCode's event schema. */
 export function zcodeRun(options:RunOptions,launch:typeof execa=execa,terminate:typeof execa=execa){
   const stdout=new PassThrough(),stderr=new PassThrough();let connection:ZcodeConnection|undefined,sessionId=options.session,ending=false,stopped=false;
+  const dispatch=createAcpDispatch();let dispatchPhase:AcpDispatch['phase']='not_started',dispatchError:unknown,sessionReady=!!options.session;
+  const settleDispatch=()=>dispatch.settle({phase:dispatchPhase,...(dispatchError?{error:dispatchError}:{}),...(sessionReady&&sessionId?{session:sessionId}:{})});
   let resolveDone!:(value:{exitCode:number})=>void;
   const done=new Promise<{exitCode:number}>(resolve=>resolveDone=resolve);
   let settled=false;
@@ -106,8 +124,8 @@ export function zcodeRun(options:RunOptions,launch:typeof execa=execa,terminate:
     try{syncZcodeDesktopSession(sessionId,{title:options.prompt,model:decodeURIComponent(options.model),mode,status});}
     catch(reason){if(!desktopWarning){desktopWarning=true;stderr.write(`ZCode 桌面会话索引同步失败：${reason instanceof Error?reason.message:String(reason)}\n`);}}
   };
-  const finish=(exitCode:number)=>{if(settled)return;settled=true;retryWait?.abort();connection?.close();stdout.end();stderr.end();resolveDone({exitCode});};
-  const error=(reason:unknown)=>{if(ending)return;ending=true;syncDesktop('error');write({type:'result',is_error:true,result:reason instanceof Error?reason.message:'ZCode 执行失败'});finish(1);};
+  const finish=(exitCode:number)=>{if(settled)return;settleDispatch();settled=true;retryWait?.abort();connection?.close();stdout.end();stderr.end();resolveDone({exitCode});};
+  const error=(reason:unknown)=>{if(ending)return;if(dispatchPhase!=='written'&&!dispatchError)dispatchError=reason;settleDispatch();ending=true;syncDesktop('error');write({type:'result',is_error:true,result:reason instanceof Error?reason.message:'ZCode 执行失败'});finish(1);};
   const settleTerminal=async()=>{
     if(ending||checkingCompletion||steering||!terminal)return;
     const current=terminal;checkingCompletion=true;
@@ -177,15 +195,18 @@ export function zcodeRun(options:RunOptions,launch:typeof execa=execa,terminate:
     else{
       sessionId='sess_'+randomUUID();
       await connection.request('session/create',{sessionId,workspace:workspace(options.cwd),persistence:'immediate',titleGenerationEnabled:false,model:modelRef(options.model,options.effort)});
+      sessionReady=true;
     }
     write({type:'system',session_id:sessionId,model:decodeURIComponent(options.model.slice(options.model.indexOf('/')+1))});
     await connection.request('session/setMode',{sessionId,mode});
     await connection.request('session/subscribe',{sessionId,deliveryKind:'desktop-continuous'});
     if(stopped){ending=true;finish(0);return;}
-    await connection.request('session/send',{sessionId,content:options.prompt,modelSelection:modelRef(options.model,options.effort),inputId:randomUUID(),...(options.images?.length?{attachments:options.images.map(image=>({type:'image',path:image.absolutePath,mimeType:image.mime,name:image.name}))}:{})});
+    const attempt=connection.attemptSend({sessionId,content:options.prompt,modelSelection:modelRef(options.model,options.effort),inputId:randomUUID(),...(options.images?.length?{attachments:options.images.map(image=>({type:'image',path:image.absolutePath,mimeType:image.mime,name:image.name}))}:{})});
+    dispatchPhase=attempt.phase;dispatchError=attempt.error;settleDispatch();
+    await attempt.request;
     if(!ending)syncDesktop('running');
   })().catch(error);});
-  return {stdout,stderr,then:done.then.bind(done),get pid(){return connection?.child.pid;},
+  return {stdout,stderr,promptDispatch:dispatch.promise,then:done.then.bind(done),get pid(){return connection?.child.pid;},
     async steer(prompt:string,images:RunOptions['images']=[]){
       if(ending||stopped||!connection||!sessionId)throw Error('当前 ZCode 轮次不可引导，消息仍保留在队列中');
       steering++;

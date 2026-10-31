@@ -6,10 +6,11 @@ import type {Agent} from './agentProtocol.js';
 
 export type CliAgent=Exclude<Agent,'codex'>;
 export type AgentExecutable={command:string;args?:string[];source:'configured'|'path'|'installed-location'};
-const commands={claude:'claude',antigravity:'agy',grok:'grok',deepseek:'dsh',hermes:'hermes',opencode:'opencode',zcode:'zcode'};
-const variables={claude:'CODEX_MOBILE_CONTROL_CLAUDE_BIN',antigravity:'CODEX_MOBILE_CONTROL_AGY_BIN',grok:'CODEX_MOBILE_CONTROL_GROK_BIN',deepseek:'CODEX_MOBILE_CONTROL_DEEPSEEK_BIN',hermes:'CODEX_MOBILE_CONTROL_HERMES_BIN',opencode:'CODEX_MOBILE_CONTROL_OPENCODE_BIN',zcode:'CODEX_MOBILE_CONTROL_ZCODE_BIN'};
+const commands={claude:'claude',antigravity:'agy',grok:'grok',deepseek:'dsh',hermes:'hermes',opencode:'opencode',zcode:'zcode',pi:'pi-acp',acp:''};
+const variables={claude:'CODEX_MOBILE_CONTROL_CLAUDE_BIN',antigravity:'CODEX_MOBILE_CONTROL_AGY_BIN',grok:'CODEX_MOBILE_CONTROL_GROK_BIN',deepseek:'CODEX_MOBILE_CONTROL_DEEPSEEK_BIN',hermes:'CODEX_MOBILE_CONTROL_HERMES_BIN',opencode:'CODEX_MOBILE_CONTROL_OPENCODE_BIN',zcode:'CODEX_MOBILE_CONTROL_ZCODE_BIN',pi:'CODEX_MOBILE_CONTROL_PI_ACP_BIN',acp:''};
 
 export async function findAgentExecutable(agent:CliAgent,discover:typeof execa=execa):Promise<AgentExecutable>{
+  if(agent==='acp')throw Error('请选择自定义 ACP 配置');
   const configured=process.env[variables[agent]];
   const valid=async(file:string)=>{
     if(!path.isAbsolute(file))return false;
@@ -30,6 +31,10 @@ export async function findAgentExecutable(agent:CliAgent,discover:typeof execa=e
   }
   if(process.platform==='win32'&&agent==='opencode'){
     const candidate=path.join(os.homedir(),'.codex','tools','harnesses','opencode','opencode.exe');
+    if(await valid(candidate))return {command:candidate,source:'installed-location'};
+  }
+  if(agent==='pi'){
+    const candidate=path.join(os.homedir(),'.codex','tools','harnesses','pi','node_modules','.bin','pi-acp'+(process.platform==='win32'?'.cmd':''));
     if(await valid(candidate))return {command:candidate,source:'installed-location'};
   }
   if(process.platform==='win32'&&agent==='zcode'){

@@ -1,7 +1,7 @@
 import type {FastifyInstance} from 'fastify';
 import {z} from 'zod';
 
-const sources=['codex','agy','claude','zcode','grok','hermes','deepseek','opencode'] as const;
+const sources=['codex','agy','claude','zcode','grok','hermes','deepseek','opencode','pi','research'] as const;
 type Source=typeof sources[number];
 type Data=Record<string,any>;
 const object=(value:unknown):Data=>value&&typeof value==='object'&&!Array.isArray(value)?value as Data:{};
@@ -173,7 +173,7 @@ export function consoleState(raw:Data){
 }
 
 export function consoleStatistics(raw:Data,source:Source,range:string,pricing='codex'){
-  const codex=source==='codex',agy=source==='agy',harness=source==='hermes'||source==='deepseek'||source==='opencode'||source==='zcode',separate=agy||source==='claude';
+  const codex=source==='codex',agy=source==='agy',harness=['hermes','deepseek','opencode','zcode','pi','research'].includes(source),separate=agy||source==='claude';
   const token=object(raw.tokens),totals=object(codex?token.totals:raw.totals),activity=object(raw.totals),cost=object(harness?raw.cost:token.cost),coverage=object(raw.coverage),progress=object(raw.progress);
   const tokenRow=(row:Data)=>{
     const cached=count(codex||agy?row.cached:row.cacheRead),cacheWrite=count(row.cacheWrite);

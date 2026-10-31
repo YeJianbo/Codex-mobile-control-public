@@ -24,6 +24,7 @@ data class NativeState(
     val route:ConnectionRoute=ConnectionRoute.AUTO,val connected:Boolean=false,val connecting:Boolean=false,val error:String="",val address:String="",val publicUrl:String="",val remotePassword:String="",val certificateSha256:String="",val activeAddress:String="",
     val publicTestRunning:Boolean=false,val publicTestMessage:String="",val publicTestPassed:Boolean=false,
     val projects:List<Project> = emptyList(),val sidebarProjects:List<Project> = emptyList(),val threads:List<ThreadRecord> = emptyList(),
+    val unreadThreads:List<ThreadRecord> = emptyList(),val moreUnreadThreads:Boolean=false,val loadingUnreadThreads:Boolean=false,val unreadThreadsError:String="",
     val projectThreads:Map<String,NativeProjectThreads> = emptyMap(),
     val threadFilter:NativeThreadFilter=NativeThreadFilter.ALL,
     val moreThreads:Boolean=false,val moreProjects:Boolean=false,val loadingSidebar:Boolean=false,

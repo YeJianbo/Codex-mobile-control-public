@@ -38,10 +38,13 @@ export function renderModelEfforts({state,$,safeRead,Option}){
   const model=state.models.find(m=>m.model===$('chatModel').value),select=$('chatEffort');
   const context=JSON.stringify([state.threadId||'',state.harness,model?.model||'']),current=select.value,preserve=select.dataset.context===context;
   const remembered=safeRead('cmc.effort.'+(model?.model||'')),choices=model?.supportedReasoningEfforts||[];
-  const labels={default:'默认',__default:'默认',none:'无',minimal:'极低',low:'低',medium:'中',high:'高',xhigh:'极高',max:'超高',ultra:'最高'};
+  const labels={default:'默认',__default:'默认',off:'关',none:'无',minimal:'极低',low:'低',medium:'中',high:'高',xhigh:'极高',max:'超高',ultra:'最高'};
+  const identity=`${model?.model||''} ${model?.displayName||''}`.toLowerCase();
+  const ecnu=/^(deepseek|pi)::/.test(identity)&&/ecnu[-/", ]+(max|plus)/.test(identity);
+  const ecnuLabels=identity.startsWith('pi::')?{off:'关',low:'中',medium:'高',xhigh:'超高'}:{off:'关',low:'中',high:'高',medium:'高',max:'超高',xhigh:'超高'};
   select.replaceChildren(...choices.map(e=>{
-    const label=labels[e.reasoningEffort]||e.reasoningEffort;
-    const option=new Option(`${label} · ${e.reasoningEffort}`,e.reasoningEffort);
+    const label=(ecnu&&ecnuLabels[e.reasoningEffort])||labels[e.reasoningEffort]||e.reasoningEffort;
+    const option=new Option(ecnu?label:`${label} · ${e.reasoningEffort}`,e.reasoningEffort);
     option.dataset.compactLabel=label;
     return option;
   }));

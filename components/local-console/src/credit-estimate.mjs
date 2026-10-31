@@ -42,6 +42,33 @@ export function subscriptionEstimate(points){
   return result;
 }
 
+// Reconstruct non-overlapping calibration intervals from already sampled quota
+// history. Short individual samples often contain only one native token event,
+// which cannot establish when its cumulative delta began.
+export function historicalCalibration(history,accountKey,plan,requestsForInterval,{since=0,intervalSeconds=3600}={}){
+  const result=[];
+  for(const key of ['primary','secondary']){
+    let first=null,previous=null;
+    for(const row of history){
+      if(!Number.isFinite(row?.timestamp)||row.timestamp<since)continue;
+      const reset=row[key+'ResetAt'],balance=row.credits?.balance,used=row[key+'UsedPercent'];
+      const usable=row.accountKey===accountKey&&row.plan===plan&&reset!=null&&balance!=null&&Number.isFinite(used);
+      if(!usable){first=previous=null;continue;}
+      if(!first||!previous||row.timestamp<previous.timestamp||row.timestamp-previous.timestamp>900||reset!==first[key+'ResetAt']||balance!==first.credits.balance){first=row;previous=row;continue;}
+      previous=row;
+      if(row.timestamp-first.timestamp<intervalSeconds)continue;
+      const delta=used-first[key+'UsedPercent'];
+      if(delta>0&&delta<=100&&used<100){
+        const requests=requestsForInterval(first.timestamp*1000,row.timestamp*1000,key,reset,balance);
+        const quotes=requests.map(estimateCredits).filter(Boolean);
+        if(quotes.length)result.push({plan,calibration:{[key]:{resetAt:reset,percent:delta,credits:quotes.reduce((sum,q)=>sum+q.subscription,0),requests:quotes.length}}});
+      }
+      first=row;
+    }
+  }
+  return result;
+}
+
 export function creditConsumption(points){
   let consumed=0,added=0,intervals=0,previous=null;
   for(const point of points){

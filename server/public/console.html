@@ -458,6 +458,19 @@
                   role="switch" /></label
             ></section>
             <section class="settings-section"><h2>助手显示</h2><div id="harnessVisibility" role="group" aria-label="显示的助手"></div></section>
+            <section class="settings-section" id="customAcpSettings">
+              <h2>自定义 ACP 助手</h2>
+              <div id="customAcpList"></div>
+              <form id="customAcpForm" class="form-grid">
+                <label>标识<input name="id" required pattern="[a-z][a-z0-9_]{0,31}" placeholder="例如 myagent"></label>
+                <label>名称<input name="name" required maxlength="80"></label>
+                <label>可执行文件绝对路径<input name="command" required maxlength="1024"></label>
+                <label>启动参数（每行一个）<textarea name="args" rows="3"></textarea></label>
+                <button class="button" type="submit">保存助手</button>
+                <button class="button secondary" type="button" id="customAcpClear">清空</button>
+              </form>
+              <p id="customAcpStatus" role="status" class="muted"></p>
+            </section>
             <section class="settings-section">
               <div class="section-heading">
                 <span data-icon="spark"></span>
@@ -676,7 +689,7 @@
         <label class="form-label"
           >电脑上的项目路径<input
             id="projectPath"
-            placeholder="例如 F:\Code\my-project"
+            placeholder="例如 C:\Projects\my-project"
             autocomplete="off"
             required
         /></label>

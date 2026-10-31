@@ -8,6 +8,7 @@ import {calendarRange} from './analytics-core.mjs';
 import {readHermesUsage,readDeepSeekUsage,harnessSummary} from './harness-usage.mjs';
 import {readZcodeUsage} from './zcode-usage.mjs';
 import {readOpenCodeUsage,openCodeActivitySummary} from './opencode-usage.mjs';
+import {readPiUsage,readResearchAgentUsage} from './agent-native-usage.mjs';
 
 const number=value=>Number.isFinite(Number(value))?Math.max(0,Number(value)):0;
 const empty=()=>({input:0,output:0,cacheRead:0,cacheWrite:0,reasoning:0,requests:0,sessions:0,turns:0});
@@ -76,7 +77,15 @@ export class ExternalUsage{
   const window=calendarRange(range,Date.now(),bounds);
   return {...harnessSummary('opencode',data.rows,window,data.coverage),range,activity:openCodeActivitySummary(data.events,data.rows,window,data.coverage),freshness:{readAt:data.readAt,checkedAt:data.checkedAt,cached,sourceChangedDuringRead:data.sourceChangedDuringRead}};
  }
- async summary(source,range='week',bounds={}){if(!['zcode','claude','grok','deepseek','hermes','opencode'].includes(source))throw new Error('统计来源无效');if(source==='opencode')return this.opencode(range,bounds);if(['deepseek','hermes'].includes(source)){
+ async summary(source,range='week',bounds={}){if(!['zcode','claude','grok','deepseek','hermes','opencode','pi','research'].includes(source))throw new Error('统计来源无效');if(source==='opencode')return this.opencode(range,bounds);if(['pi','research'].includes(source)){
+   let data=this.cache.get(source);
+   if(!data||Date.now()-data.checkedAt>=this.refreshMs){
+    const researchDir=this.environment.AA_DATA_DIR||path.join(this.home,'.autoacademic');
+    const native=source==='pi'?await readPiUsage(this.home,this.environment):readResearchAgentUsage(researchDir),rows=this.retain(source,native.rows);
+    data={rows,coverage:{...native.coverage,available:native.coverage.available||rows.length>0,historyOnly:!native.coverage.available&&rows.length>0},checkedAt:Date.now()};this.cache.set(source,data);
+   }
+   return {...harnessSummary(source,data.rows,calendarRange(range,Date.now(),bounds),data.coverage),range};
+ }if(['deepseek','hermes'].includes(source)){
    const home=source==='deepseek'?process.env.DSH_HOME||path.join(this.home,'.dsh'):process.env.HERMES_HOME||path.join(process.env.LOCALAPPDATA||path.join(this.home,'AppData','Local'),'hermes');
    const recent=this.cache.get(source);let data=recent;
    if(!recent||Date.now()-recent.checkedAt>=this.refreshMs){const native=source==='hermes'?readHermesUsage(home):readDeepSeekUsage(home),saved=this.retain(source,native.rows);data={rows:saved,coverage:{...native.coverage,available:native.coverage.available||saved.length>0,historyOnly:!native.coverage.available&&saved.length>0},checkedAt:Date.now()};this.cache.set(source,data);}

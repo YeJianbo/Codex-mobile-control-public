@@ -12,6 +12,7 @@ export const CONTROL_CAPABILITIES = [
   "codex-background-terminals",
   "codex-review",
   "desktop-browser",
+  "remote-desktop",
   "focused-thread-stream",
   "mobile-live-activity-details",
   "agent-health",

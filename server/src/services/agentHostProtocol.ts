@@ -7,6 +7,7 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {StringDecoder} from 'node:string_decoder';
 import {appHome} from './paths.js';
+import {SubmissionFailure,SubmissionFailureKind} from './submissionErrors.js';
 
 export type AgentHostInfo={port:number;token:string;pid:number;version:string;startedAt:string};
 export type AgentHostEvent={seq:number;event:unknown};
@@ -14,7 +15,8 @@ type Request={type:'request';id:string;method:string;params:unknown[]};
 type Hello={type:'hello';token:string};
 type Ack={type:'ack';seq:number};
 type Ready={type:'ready';version:string;pid:number;running:string[];seq:number};
-type Response={type:'response';id:string;ok:boolean;result?:unknown;error?:string};
+type Response={type:'response';id:string;ok:boolean;result?:unknown;error?:string;errorKind?:SubmissionFailureKind};
+const submissionFailureKinds:readonly string[]=['writer_occupied','not_started','uncertain','failed'];
 type EventMessage={type:'event';seq:number;event:unknown};
 type ThreadCreated={type:'thread-created';requestId?:string;threadId:string};
 type ServerMessage=Response|EventMessage|Ready|ThreadCreated;
@@ -76,7 +78,7 @@ export class AgentHostServer{
         if(message.type!=='request')continue;
         void this.handle(message.method,message.params).then(
           result=>write({type:'response',id:message.id,ok:true,result}),
-          error=>write({type:'response',id:message.id,ok:false,error:String((error as Error)?.message||error)}),
+          error=>write({type:'response',id:message.id,ok:false,error:String((error as Error)?.message||error),...(error instanceof SubmissionFailure?{errorKind:error.kind}:{})}),
         );
       }
     });
@@ -224,7 +226,9 @@ export class AgentHostClient{
         const waiter=this.waiting.get(message.id);
         if(!waiter)continue;
         this.waiting.delete(message.id);
-        if(message.ok)waiter.resolve(message.result);else waiter.reject(Error(message.error||'执行器请求失败'));
+        if(message.ok)waiter.resolve(message.result);
+        else if(message.errorKind&&submissionFailureKinds.includes(message.errorKind))waiter.reject(new SubmissionFailure(message.errorKind,message.error||'执行器请求失败'));
+        else waiter.reject(Error(message.error||'执行器请求失败'));
       }
     });
     const drop=()=>{

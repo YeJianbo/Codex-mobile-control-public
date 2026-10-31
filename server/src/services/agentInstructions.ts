@@ -8,7 +8,7 @@ import {codexHome} from './paths.js';
 import {threadAgent,publicAgentAllowed,type Agent} from './agentProtocol.js';
 import {assertControllableThread} from './cloudSnapshots.js';
 
-const agents=z.enum(['codex','claude','antigravity','grok','deepseek','hermes','opencode','zcode']);
+const agents=z.enum(['codex','claude','antigravity','grok','deepseek','hermes','opencode','zcode','pi']);
 const locks=new Map<string,Promise<unknown>>();
 const version=(content:string)=>createHash('sha256').update(content).digest('hex');
 const home=()=>os.homedir();
@@ -22,6 +22,8 @@ export function globalInstructionFile(agent:Agent){
     case 'hermes':return path.join(process.env.HERMES_HOME||path.join(home(),'.hermes'),'SOUL.md');
     case 'opencode':return path.join(process.env.XDG_CONFIG_HOME||path.join(home(),'.config'),'opencode','AGENTS.md');
     case 'zcode':return path.join(home(),'.zcode','AGENTS.md');
+    case 'pi':return path.join(process.env.PI_CODING_AGENT_DIR||path.join(home(),'.pi','agent'),'AGENTS.md');
+    case 'acp':throw Error('自定义 ACP 的全局指令由对应助手管理');
   }
 }
 async function readFile(file:string){try{return await fs.readFile(file,'utf8');}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return '';throw error;}}

@@ -8,7 +8,7 @@ import {calendarRange,normalizeAnalyticsTier} from './analytics-core.mjs';
 import {tokenSpeedStats} from './token-speed.mjs';
 import {RequestJournal} from './request-journal.mjs';
 import {normalizeCredits} from './credit-balance.mjs';
-import {estimateCredits,subscriptionEstimate,creditConsumption} from './credit-estimate.mjs';
+import {estimateCredits,subscriptionEstimate,creditConsumption,historicalCalibration} from './credit-estimate.mjs';
 import {nativeCreditRequests} from './native-credit-meter.mjs';
 
 const percent=v=>typeof v==='number'&&Number.isFinite(v)&&v>=0&&v<=1000?v:null;
@@ -46,7 +46,8 @@ export class UsageService {
     if(previous?.accountKey===accountKey&&previous.plan===record.plan&&Date.parse(record.at)-Date.parse(previous.at)<=900000){
       const rows=this.journal().db.prepare('SELECT data FROM requests WHERE at>? AND at<=?').all(Date.parse(previous.at),Date.parse(record.at)).map(row=>JSON.parse(row.data));
       const eligible=rows.filter(row=>row.accountKey===accountKey&&row.provider==='openai'&&!row.errorCode&&row.status>=200&&row.status<300&&row.purpose!=='test'&&row.startedAt>=Date.parse(previous.at));
-      const native=nativeCreditRequests(path.join(this.store.dir,'analytics/activity.sqlite'),accountKey,Date.parse(previous.at),Date.parse(record.at),eligible);
+      const config=this.store.configInfo?.(),officialProviders=['openai',...(config?.officialHttp&&config.provider?[config.provider]:[])];
+      const native=nativeCreditRequests(path.join(this.store.dir,'analytics/activity.sqlite'),accountKey,Date.parse(previous.at),Date.parse(record.at),eligible,officialProviders);
       const balanceSame=record.credits?.balance!=null&&previous.credits?.balance===record.credits.balance;
       for(const key of ['primary','secondary']){
         const before=previous[key],after=record[key],delta=(after?.used_percent??NaN)-(before?.used_percent??NaN);
@@ -60,7 +61,25 @@ export class UsageService {
     // Warmup probes keep current quota fresh without shortening history retention.
     // A simultaneous normal refresh promotes the shared request to a history sample.
     if(this.recordPending!==false)append(this.historyFile,{accountKey,timestamp:Math.floor(this.now()/1000),primaryUsedPercent:record.primary?.used_percent??null,secondaryUsedPercent:record.secondary?.used_percent??null,primaryResetAt:record.primary?.reset_at??null,secondaryResetAt:record.secondary?.reset_at??null,plan:record.plan,calibration,credits:record.credits,source:'official-api'});
-    record.subscriptionEstimate=this.recordPending===false?(prior?.accountKey===accountKey?prior.subscriptionEstimate:null):subscriptionEstimate([...history,{accountKey,plan:record.plan,timestamp:this.now()/1000,calibration}].filter(row=>row.accountKey===accountKey&&row.plan===record.plan&&row.timestamp*1000>=this.now()-90*86400000));
+    if(this.recordPending===false)record.subscriptionEstimate=prior?.accountKey===accountKey?prior.subscriptionEstimate:null;
+    else{
+      const config=this.store.configInfo?.(),providers=['openai',...(config?.officialHttp&&config.provider?[config.provider]:[])];
+      const cacheKey=JSON.stringify([accountKey,record.plan,providers]);
+      if(this.calibrationCache?.key!==cacheKey||this.now()-this.calibrationCache.at>=1800000){
+        // Existing recorded calibrations already include their own request
+        // intervals; do not reconstruct overlapping history a second time.
+        const firstRecorded=history.findIndex(row=>row.accountKey===accountKey&&row.plan===record.plan&&Object.keys(row.calibration||{}).length>0);
+        const backfill=firstRecorded<0?history:history.slice(0,firstRecorded);
+        const reconstructed=historicalCalibration(backfill,accountKey,record.plan,(since,until,key,reset,balance)=>{
+          const rows=this.journal().db.prepare('SELECT data FROM requests WHERE at>? AND at<=?').all(since,until).map(row=>JSON.parse(row.data));
+          const eligible=rows.filter(row=>row.accountKey===accountKey&&row.provider==='openai'&&!row.errorCode&&row.status>=200&&row.status<300&&row.purpose!=='test'&&row.startedAt>=since);
+          const native=nativeCreditRequests(path.join(this.store.dir,'analytics/activity.sqlite'),accountKey,since,until,eligible,providers);
+          return [...eligible,...native.filter(row=>Number(row.nativeMeter[key+'Reset'])===reset&&row.nativeMeter.balance!=null&&Number(row.nativeMeter.balance)===balance)];
+        },{since:this.now()/1000-7*86400});
+        this.calibrationCache={key:cacheKey,at:this.now(),rows:reconstructed};
+      }
+      record.subscriptionEstimate=subscriptionEstimate([...this.calibrationCache.rows,...history,{accountKey,plan:record.plan,timestamp:this.now()/1000,calibration}].filter(row=>(row.accountKey===undefined||row.accountKey===accountKey)&&row.plan===record.plan&&(row.timestamp===undefined||row.timestamp*1000>=this.now()-90*86400000)));
+    }
     atomicWrite(this.latestFile,record);if(activeAccount(this.store)===accountKey)this.store.usage=record;return record;
   }
   history(accountKey=activeAccount(this.store),days=7,range=null,bounds={}){

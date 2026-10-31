@@ -195,7 +195,7 @@ function readDrafts() {
   }
 }
 const state = {
-  harness:['codex','claude','antigravity','grok','deepseek','hermes','opencode','zcode'].includes(safeRead('cmc.harness'))?safeRead('cmc.harness'):'codex',
+  harness:['codex','claude','antigravity','grok','deepseek','hermes','opencode','zcode','pi','acp'].includes(safeRead('cmc.harness'))?safeRead('cmc.harness'):'codex',
   imageDrafts: (()=>{try{return JSON.parse(safeRead('cmc.imageDrafts')||'{}')}catch{return {}}})(),
   fileDrafts: (()=>{try{return JSON.parse(safeRead('cmc.fileDrafts')||'{}')}catch{return {}}})(),
   uploading:0,
@@ -1211,7 +1211,7 @@ function renderThreads() {
   reconcileThreadSection($('threads'),recent.slice(0,100),false,state.connected?(query?'没有匹配的会话':'你的会话会出现在这里'):'连接后同步最近会话');
   applySidebarSections();
 }
-const harnessNames={codex:'Codex',claude:'Claude Code',antigravity:'Antigravity',grok:'Grok Build',deepseek:'DeepSeek Harness',hermes:'Hermes',opencode:'OpenCode',zcode:'ZCode'};
+const harnessNames={codex:'Codex',claude:'Claude Code',antigravity:'Antigravity',grok:'Grok Build',deepseek:'DeepSeek Harness',hermes:'Hermes',opencode:'OpenCode',zcode:'ZCode',pi:'Pi',acp:'自定义 ACP'};
 const hiddenHarnesses=(()=>{
   try{const values=JSON.parse(safeRead('cmc.hiddenHarnesses')||'[]');return new Set(Array.isArray(values)?values.filter(key=>Object.hasOwn(harnessNames,key)):[]);}catch{return new Set();}
 })();
@@ -1237,7 +1237,7 @@ function showBackendDetails(detail){
   dialog.append(header,el('pre','service-detail-text',detail));
   dialog.addEventListener('close',()=>dialog.remove(),{once:true});document.body.append(dialog);dialog.showModal();
 }
-function harnessForThread(id=''){return /^(claude|antigravity|grok|deepseek|hermes|opencode|zcode)-/.exec(id)?.[1]||'codex';}
+function harnessForThread(id=''){return /^(claude|antigravity|grok|deepseek|hermes|opencode|zcode|pi|acp)-/.exec(id)?.[1]||'codex';}
 function harnessForModel(model=''){return modelHarness(model);}
 function updateBackendNotice(){
   if(!state.backends.length&&!state.models.length){$('backendNotice').hidden=true;return;}
@@ -2974,7 +2974,7 @@ async function showAutomations(focusId,{threadId:scopeThreadId=''}={}){
       await update(task?.id,value);
       }catch(failure){if(dialog.open){error.textContent=errorMessage(failure);error.hidden=false;}}
     });};
-    let targetId=task?task.threadId:(creationThread?.readOnly||/^(cloud:|cloud-snapshot:|claude-|antigravity-|grok-|deepseek-|hermes-|opencode-|zcode-)/.test(creationId)?'':creationId);
+    let targetId=task?task.threadId:(creationThread?.readOnly||/^(cloud:|cloud-snapshot:|claude-|antigravity-|grok-|deepseek-|hermes-|opencode-|zcode-|pi-|acp-)/.test(creationId)?'':creationId);
     const target=el('div','automation-target'),picker=el('div','automation-target-picker'),search=el('input'),matches=el('div','automation-target-matches'),pickerStatus=el('p','muted');
     picker.hidden=true;search.placeholder='搜索会话名称、路径或 ID';search.setAttribute('aria-label',search.placeholder);picker.append(search,pickerStatus,matches);
     let choose;
@@ -4163,7 +4163,32 @@ function setTerminalUnread(count) {
 window.addEventListener("focus", () => {
   if (state.page === "terminal" && terminalUnread) setTerminalUnread(0);
 });
+let customAcpEntries=[];
+async function loadCustomAcp(){
+  const section=$('customAcpSettings');
+  if(!['localhost','127.0.0.1','::1','[::1]'].includes(location.hostname)){section.hidden=true;return;}
+  try{customAcpEntries=(await api('/api/settings/custom-acp')).agents;renderCustomAcp();$('customAcpStatus').textContent='';}
+  catch(error){$('customAcpStatus').textContent=errorMessage(error);}
+}
+function renderCustomAcp(){
+  const list=$('customAcpList');list.replaceChildren();
+  for(const entry of customAcpEntries){
+    const row=document.createElement('div'),label=document.createElement('span'),edit=document.createElement('button'),remove=document.createElement('button');
+    label.textContent=entry.name+' · '+entry.id;edit.textContent='编辑';remove.textContent='删除';
+    edit.type=remove.type='button';edit.className=remove.className='button secondary compact';
+    edit.onclick=()=>{const form=$('customAcpForm');for(const key of ['id','name','command'])form.elements[key].value=entry[key];form.elements.args.value=entry.args.join('\n');};
+    remove.onclick=async()=>{try{const result=await api('/api/settings/custom-acp',{method:'PUT',body:{agents:customAcpEntries.filter(item=>item.id!==entry.id)}});customAcpEntries=result.agents;renderCustomAcp();$('customAcpStatus').textContent='已删除';}catch(error){$('customAcpStatus').textContent=errorMessage(error);}};
+    row.append(label,edit,remove);list.append(row);
+  }
+}
+$('customAcpClear').onclick=()=>$('customAcpForm').reset();
+$('customAcpForm').onsubmit=async event=>{
+  event.preventDefault();const form=event.currentTarget;
+  const entry={id:form.elements.id.value.trim(),name:form.elements.name.value.trim(),command:form.elements.command.value.trim(),args:form.elements.args.value.split(/\r?\n/).filter(Boolean)};
+  try{const result=await api('/api/settings/custom-acp',{method:'PUT',body:{agents:[...customAcpEntries.filter(item=>item.id!==entry.id),entry]}});customAcpEntries=result.agents;renderCustomAcp();form.reset();$('customAcpStatus').textContent='已保存，模型列表将在刷新后更新';}catch(error){$('customAcpStatus').textContent=errorMessage(error);}
+};
 function showPage(page) {
+  if(page==='settings')void loadCustomAcp();
   state.page = page;
   if (page === "terminal" && terminalUnread) setTerminalUnread(0);
   for (const name of Object.keys(pageNames))

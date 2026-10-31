@@ -39,7 +39,7 @@ export async function loadServerConfig(): Promise<ServerConfig> {
       token: parsed.token ?? nanoid(32),
       projectRoots: parsed.projectRoots ?? [],
       capacityAutoRetry: parsed.capacityAutoRetry === true,
-      publicAgents: parsed.publicAgents&&typeof parsed.publicAgents==='object'?Object.fromEntries(Object.entries(parsed.publicAgents).filter(([agent,enabled])=>['codex','claude','antigravity','grok','deepseek','hermes','opencode','zcode'].includes(agent)&&typeof enabled==='boolean')):{},
+      publicAgents: parsed.publicAgents&&typeof parsed.publicAgents==='object'?Object.fromEntries(Object.entries(parsed.publicAgents).filter(([agent,enabled])=>['codex','claude','antigravity','grok','deepseek','hermes','opencode','zcode','pi','acp'].includes(agent)&&typeof enabled==='boolean')):{},
       https: parsed.https ?? { enabled: false },
     };
     if (parsed.token == null) await writeConfig(config);

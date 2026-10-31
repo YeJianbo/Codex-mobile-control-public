@@ -67,3 +67,15 @@ test('compacted activity retains file statistics without sending diff bodies',()
  assert.equal(compact[0].diff,undefined);assert.equal(compact[0].fileChanges[0].added,2);
  assert.equal(history.group('t','e|e')[0].fileChanges[0].removed,1);
 });
+test('compacted activity exposes the latest reasoning title without loading operation details',()=>{
+ const history=new MobileActivityHistory();
+ const compact=history.compact([
+  {type:'tool.started',threadId:'t',eventId:'a',itemId:'tool',detail:'private command body'},
+  {type:'reasoning.summary',threadId:'t',eventId:'b',itemId:'thought',text:'**检查横屏布局**\n详细思考'},
+  {type:'tool.completed',threadId:'t',eventId:'c',itemId:'tool',detail:'private command result'},
+ ]);
+ assert.equal(compact[0].activitySummary,'**检查横屏布局**');
+ assert.equal(compact[0].detail,undefined);
+ assert.equal(history.group('t','a|c')[1].title,'**检查横屏布局**');
+ assert.equal(history.group('t','a|c')[1].detailsDeferred,true);
+});

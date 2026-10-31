@@ -145,7 +145,7 @@ import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 import kotlin.math.min
 
-private val sidebarModuleKeys=listOf("projects","goals","pinned","recent","agents")
+private val sidebarModuleKeys=listOf("projects","goals","unread","pinned","recent")
 @Composable internal fun PopupMenuRow(icon:Int,label:String,danger:Boolean=false,compact:Boolean=false,action:()->Unit){
     val color=if(danger)AppColor.Danger else Ink
     val feedback=rememberHaptics()
@@ -250,7 +250,7 @@ private fun nativeCommandIcon(name:String)=when(name){
         Text(command.description,Modifier.weight(1f).padding(start=10.dp),fontSize=11.sp,color=Muted,maxLines=1,overflow=TextOverflow.Ellipsis)
     }
 }
-@Composable internal fun EffortSlider(efforts:List<String>,current:String,change:(String)->Unit,compact:Boolean=false,showLabel:Boolean=true){
+@Composable internal fun EffortSlider(efforts:List<String>,current:String,change:(String)->Unit,compact:Boolean=false,showLabel:Boolean=true,model:NativeModel?=null){
     val levels=remember(efforts){nativeOrderedEfforts(efforts)}
     if(levels.size<2)return
     var index by remember(levels){mutableIntStateOf(levels.indexOf(current).coerceAtLeast(0))}
@@ -278,8 +278,8 @@ private fun nativeCommandIcon(name:String)=when(name){
         index=next
     }
     Column{
-    if(showLabel)Text("思考强度 · ${effortName(levels[index])}",modifier=Modifier.padding(start=if(compact)12.dp else 4.dp,top=if(compact)2.dp else 22.dp,bottom=if(compact)0.dp else 5.dp),fontSize=if(compact)12.sp else 13.sp,color=nativeEffortColor(levels[index],Muted))
-    Canvas(Modifier.fillMaxWidth().padding(horizontal=if(compact)10.dp else 4.dp,vertical=8.dp).height(if(compact)34.dp else 38.dp).testTag("effortSlider").semantics{stateDescription=effortName(levels[index])}.onSizeChanged{width=it.width.toFloat()}
+    if(showLabel)Text("思考强度 · ${modelEffortName(model,levels[index])}",modifier=Modifier.padding(start=if(compact)12.dp else 4.dp,top=if(compact)2.dp else 22.dp,bottom=if(compact)0.dp else 5.dp),fontSize=if(compact)12.sp else 13.sp,color=nativeEffortColor(levels[index],Muted))
+    Canvas(Modifier.fillMaxWidth().padding(horizontal=if(compact)10.dp else 4.dp,vertical=8.dp).height(if(compact)34.dp else 38.dp).testTag("effortSlider").semantics{stateDescription=modelEffortName(model,levels[index])}.onSizeChanged{width=it.width.toFloat()}
         .pointerInput(levels){detectTapGestures(onPress={pressed=true;try{tryAwaitRelease()}finally{pressed=false}},onTap={move(it.x);position=index.toFloat();onChange(levels[index])})}
         .pointerInput(levels){detectHorizontalDragGestures(
             onDragStart={dragging=true;move(it.x)},
@@ -360,8 +360,8 @@ private fun nativeCommandIcon(name:String)=when(name){
                     }
                 }
                 Column(Modifier.weight(1f).clip(Radius.Button).clickable{onShowModels(true)}.padding(vertical=4.dp),horizontalAlignment=Alignment.CenterHorizontally,verticalArrangement=Arrangement.spacedBy(1.dp)){
-                    if(effort=="max"||effort=="ultra")NativeEffortBadge(effort,Modifier.testTag("selectedEffort"))
-                    else Text(effortName(effort).ifBlank{"思考强度"},Modifier.testTag("selectedEffort"),fontSize=13.sp,lineHeight=15.sp,style=TextStyle(platformStyle=PlatformTextStyle(includeFontPadding=false)),fontWeight=FontWeight.SemiBold,color=Accent)
+                    if((effort=="max"||effort=="ultra")&&!isEcnuReasoningModel(model))NativeEffortBadge(effort,Modifier.testTag("selectedEffort"))
+                    else Text(modelEffortName(model,effort).ifBlank{"思考强度"},Modifier.testTag("selectedEffort"),fontSize=13.sp,lineHeight=15.sp,style=TextStyle(platformStyle=PlatformTextStyle(includeFontPadding=false)),fontWeight=FontWeight.SemiBold,color=Accent)
                     Row(Modifier.padding(horizontal=3.dp),verticalAlignment=Alignment.CenterVertically){
                         Text(model?.let(::nativeModelDisplayName)?:"选择模型",Modifier.weight(1f,false),fontSize=11.sp,lineHeight=13.sp,style=TextStyle(platformStyle=PlatformTextStyle(includeFontPadding=false)),color=Muted,maxLines=1,overflow=TextOverflow.Ellipsis)
                         ModernIcon(R.drawable.ic_lucide_chevron_right,null,Modifier.size(12.dp),Muted)
@@ -373,7 +373,7 @@ private fun nativeCommandIcon(name:String)=when(name){
                     }
                 }
             }
-            EffortSlider(model?.efforts.orEmpty(),effort,onEffort,compact=true,showLabel=false)
+            EffortSlider(model?.efforts.orEmpty(),effort,onEffort,compact=true,showLabel=false,model=model)
             if(onSettings!=null){
             Divider(Modifier.padding(top=3.dp,bottom=2.dp),color=Ink.copy(alpha=0.06f))
             Row(Modifier.fillMaxWidth().height(34.dp).clip(Radius.Button).clickable(onClick=onSettings).padding(horizontal=10.dp),verticalAlignment=Alignment.CenterVertically){
@@ -512,7 +512,7 @@ private fun nativeCommandIcon(name:String)=when(name){
     Box(Modifier.fillMaxSize().semantics{paneTitle=title}){content()}
 }
 @OptIn(ExperimentalMaterialApi::class)
-@Composable fun NativeApp(vm:NativeViewModel){
+@Composable fun NativeApp(vm:NativeViewModel,pairPrompt:NativePairPromptModel?=null){
     val s=vm.state
     val wideLayout=LocalConfiguration.current.screenWidthDp>=840
     var wideSidebarOpen by rememberSaveable{mutableStateOf(true)}
@@ -520,6 +520,10 @@ private fun nativeCommandIcon(name:String)=when(name){
     val home=s.threadId.isEmpty() && s.events.isEmpty() && !s.sending && !s.loadingHistory
     val drawer=rememberNativeDrawerState()
     val sidebarIsVisible=if(wideLayout)wideSidebarOpen else drawer.isOpen
+    DisposableEffect(sidebarIsVisible,s.connected,s.activeAddress){
+        vm.setSidebarVisible(sidebarIsVisible&&s.connected)
+        onDispose{vm.setSidebarVisible(false)}
+    }
     LaunchedEffect(wideLayout){if(wideLayout)drawer.close()}
     LaunchedEffect(wideLayout,s.connected){if(wideLayout&&s.connected)vm.refreshSidebar()}
     LaunchedEffect(drawer.currentValue,s.connected){if(drawer.currentValue==DrawerValue.Open&&s.connected)vm.refreshSidebar()}
@@ -655,12 +659,16 @@ private fun nativeCommandIcon(name:String)=when(name){
     val approvalSheetVisible=pendingApproval!=null&&pendingApprovalKey!=dismissedApprovalKey&&goalEditor==null&&!settings&&!pairing&&!harnessOpen&&managementPage.isEmpty()&&!networkOpen&&!s.automationsVisible&&workPanel.isEmpty()&&s.pdf==null&&s.markdown==null&&s.openedImage==null
     val questionSheetVisible=approvalSheetVisible&&pendingApproval?.approvalType=="question"
     val sidebarPrefs=remember{context.getSharedPreferences("sidebar",0)}
-    var sidebarModuleOrder by remember{mutableStateOf((sidebarPrefs.getString("moduleOrder","").orEmpty().split(',').filter{it in sidebarModuleKeys}+sidebarModuleKeys).distinct())}
+    var sidebarModuleOrder by remember{mutableStateOf(run{
+        val saved=sidebarPrefs.getString("moduleOrder","").orEmpty().split(',').filter{it in sidebarModuleKeys}.distinct().toMutableList()
+        if(saved.isNotEmpty()&&"unread" !in saved)saved.add((saved.indexOf("goals")+1).coerceAtLeast(0),"unread")
+        (saved+sidebarModuleKeys).distinct()
+    })}
     var projectsOpen by remember{mutableStateOf(sidebarPrefs.getBoolean("projects",true))}
     var recentOpen by remember{mutableStateOf(sidebarPrefs.getBoolean("recent",true))}
     var pinnedOpen by remember{mutableStateOf(sidebarPrefs.getBoolean("pinned",true))}
     var goalsOpen by remember{mutableStateOf(sidebarPrefs.getBoolean("goals",true))}
-    var agentsOpen by remember{mutableStateOf(sidebarPrefs.getBoolean("agents",false))}
+    var unreadOpen by remember{mutableStateOf(sidebarPrefs.getBoolean("unread",true))}
     val agentRows=remember(s.threads,s.projectThreads){(s.threads+s.projectThreads.values.flatMap{it.rows}).distinctBy{it.id}}
     val parentThread=remember(agentRows,s.threadId){conversationParent(agentRows,s.threadId)}
     val expandedProjects=remember{mutableStateMapOf<String,Boolean>()}
@@ -727,10 +735,13 @@ private fun nativeCommandIcon(name:String)=when(name){
                 drawerTopRadius=radius
             }
         },drawerState=drawer,gesturesEnabled=!imeVisible,drawerBackgroundColor=colors.background,contentBackgroundColor=activeTheme.palette.chat,contentCornerRadius=drawerTopRadius,scrimColor=Color.Black.copy(alpha=0.06f),drawerContent={
-            Column(Modifier.fillMaxSize().systemBarsPadding().padding(horizontal=12.dp,vertical=8.dp)){
+            val config=LocalConfiguration.current
+            val compactLandscape=config.orientation==android.content.res.Configuration.ORIENTATION_LANDSCAPE&&config.screenWidthDp>=600
+            Column(Modifier.fillMaxSize().systemBarsPadding().padding(horizontal=12.dp,vertical=if(compactLandscape)4.dp else 8.dp)){
                 var query by remember{mutableStateOf("")}
                 var searchOpen by remember{mutableStateOf(false)}
                 var searchFocused by remember{mutableStateOf(false)}
+                var cloudErrorOpen by remember{mutableStateOf(false)}
                 val searchFocus=remember{FocusRequester()}
                 val searchAvailable=sidebarIsVisible&&(wideLayout||drawer.targetValue==DrawerValue.Open)
                 NativeSidebarReachability(enabled=sidebarIsVisible&&!imeVisible&&!searchOpen,modifier=Modifier.weight(1f)){
@@ -787,15 +798,17 @@ private fun nativeCommandIcon(name:String)=when(name){
                 val remoteMatches=if(remoteEnabled)remoteSearch.matches else emptyList()
                 val harnessThreads=s.threads.filter{nativeThreadAgent(it.id)==s.harness}
                 val roots=remember(harnessThreads,query,s.threadFilter){sidebarThreadRoots(harnessThreads,query,s.threadFilter)}
-                val inactiveAgents=remember(agentRows,s.harness,query,s.threadFilter){sidebarInactiveAgents(agentRows.filter{nativeThreadAgent(it.id)==s.harness},query,s.threadFilter)}
                 val runningPulse=rememberNativeRunningPulse(sidebarIsVisible&&agentRows.any{nativeThreadAgent(it.id)==s.harness&&it.status=="running"})
                 val agentChildren=remember(agentRows){agentRows.filter{it.subagent?.parentThreadId?.isNotBlank()==true}.groupBy{it.subagent!!.parentThreadId}}
                 val activeGoals=remember(roots,agentChildren){roots.filter{threadFamilyRunning(it,agentChildren)}}
+                val unreadRows=remember(s.unreadThreads,query,vm.hiddenHarnesses){s.unreadThreads.filter{thread->
+                    nativeThreadAgent(thread.id) !in vm.hiddenHarnesses&&(query.isBlank()||listOf(thread.title,thread.projectPath,subagentLabel(thread)).any{it.contains(query.trim(),true)})
+                }}
                 val visibleModules=sidebarModuleOrder.filter{module->when(module){
                     "projects"->s.sidebarProjects.isNotEmpty()||s.projects.isNotEmpty()
                     "goals"->s.threadFilter==NativeThreadFilter.ALL&&activeGoals.isNotEmpty()
+                    "unread"->s.threadFilter==NativeThreadFilter.ALL&&(unreadRows.isNotEmpty()||s.moreUnreadThreads||s.unreadThreadsError.isNotBlank())
                     "pinned"->s.threadFilter==NativeThreadFilter.ALL&&roots.any{it.pinnedIndex>=0}
-                    "agents"->inactiveAgents.isNotEmpty()
                     else->true
                 }}
                 fun moveSidebarModule(module:String,direction:Int){
@@ -805,20 +818,20 @@ private fun nativeCommandIcon(name:String)=when(name){
                     sidebarPrefs.edit().putString("moduleOrder",sidebarModuleOrder.joinToString(",")).apply()
                 }
                 val threadRow: @Composable LazyItemScope.(ThreadRecord)->Unit={t->Box(Modifier.animateItem(fadeInSpec=null,fadeOutSpec=null,placementSpec=tween(180,easing=ControlEase))){NativeSidebarThread(t,s.threadId,{scope.launch{drawer.close();vm.openThread(it)}},{selectedThread=it},{vm.pinThread(it,it.pinnedIndex<0)},pulse=runningPulse,manage=manageThread)}}
+                if(vm.threadToolError.isNotBlank())Row(Modifier.fillMaxWidth().padding(start=12.dp,end=4.dp),verticalAlignment=Alignment.CenterVertically){
+                    Text(vm.threadToolError,Modifier.weight(1f),fontSize=12.sp,color=MaterialTheme.colors.error)
+                    IconButton(onClick=vm::dismissThreadToolError,modifier=Modifier.size(40.dp)){ModernIcon(R.drawable.ic_lucide_x,"关闭提示",Modifier.size(16.dp),Muted)}
+                }
                 val sidebarList=rememberLazyListState()
                 LazyColumn(Modifier.weight(1f).nativeSidebarEdgeFade(sidebarList).testTag("sidebarList"),state=sidebarList,
                     contentPadding=PaddingValues(bottom=activeTheme.material.sidebarFadeDp.dp)){
-                    if(s.cloudListError.isNotBlank())item(key="cloudListError"){Text("云端任务：${s.cloudListError}",Modifier.padding(12.dp),fontSize=12.sp,color=Muted)}
+                    if(s.cloudListError.isNotBlank())item(key="cloudListError"){
+                        Text("云端任务：${s.cloudListError}",Modifier.fillMaxWidth().then(if(compactLandscape)Modifier.clip(Radius.Field).clickable{cloudErrorOpen=true} else Modifier).padding(horizontal=12.dp,vertical=if(compactLandscape)6.dp else 12.dp),fontSize=12.sp,color=Muted,maxLines=if(compactLandscape)1 else Int.MAX_VALUE,overflow=TextOverflow.Ellipsis)
+                    }
                     visibleModules.forEachIndexed{position,module->
                     val moveUp:(()->Unit)?=if(position>0)({moveSidebarModule(module,-1)}) else null
                     val moveDown:(()->Unit)?=if(position<visibleModules.lastIndex)({moveSidebarModule(module,1)}) else null
                     when(module){
-                    "agents"->{
-                        item(key="agentsHeading"){SidebarHeading("子代理 · ${inactiveAgents.size}",agentsOpen,moveUp,moveDown){agentsOpen=!agentsOpen;sidebarPrefs.edit().putBoolean("agents",agentsOpen).apply()}}
-                        if(agentsOpen||query.isNotBlank())items(inactiveAgents,key={"agent:"+it.id}){thread->
-                            NativeSidebarAgent(thread,agentRows.find{it.id==thread.subagent?.parentThreadId},{vm.openThread(thread);scope.launch{drawer.close()}},{vm.closeSubagent(thread)})
-                        }
-                    }
                     "projects"->{
                     item(key="projectsHeading"){SidebarHeading("项目",projectsOpen,moveUp,moveDown){projectsOpen=!projectsOpen;sidebarPrefs.edit().putBoolean("projects",projectsOpen).apply();if(projectsOpen)vm.refreshSidebar()}}
                     if(projectsOpen&&query.isBlank())(s.sidebarProjects.ifEmpty{s.projects}).forEach{p->
@@ -841,6 +854,19 @@ private fun nativeCommandIcon(name:String)=when(name){
                     "goals"->{
                         item(key="goalsHeading"){SidebarHeading("进行中",goalsOpen,moveUp,moveDown){goalsOpen=!goalsOpen;sidebarPrefs.edit().putBoolean("goals",goalsOpen).apply()}}
                         if(goalsOpen||query.isNotBlank())items(activeGoals,key={"goal:"+it.id}){t->NativeSidebarThread(t,s.threadId,{scope.launch{drawer.close();vm.openThread(it)}},{selectedThread=it},{vm.pinThread(it,it.pinnedIndex<0)},goal=true,pulse=runningPulse,manage=manageThread)}
+                    }
+                    "unread"->{
+                        item(key="unreadHeading"){SidebarHeading("未读会话",unreadOpen,moveUp,moveDown){unreadOpen=!unreadOpen;sidebarPrefs.edit().putBoolean("unread",unreadOpen).apply()}}
+                        if(unreadOpen||query.isNotBlank()){
+                            items(unreadRows,key={"unread:"+it.id}){t->
+                                Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
+                                    NativeHarnessIcon(nativeThreadAgent(t.id),Modifier.padding(start=12.dp).size(18.dp),Muted)
+                                    Box(Modifier.weight(1f)){NativeSidebarThread(t,s.threadId,{scope.launch{drawer.close();vm.openThread(it)}},{selectedThread=it},{vm.pinThread(it,it.pinnedIndex<0)},pulse=runningPulse,manage=manageThread)}
+                                }
+                            }
+                            if(s.unreadThreadsError.isNotBlank())item(key="unreadError"){TextButton(onClick=vm::refreshUnreadThreads){Text("未读会话刷新失败，点击重试",fontSize=13.sp)}}
+                            else if(s.moreUnreadThreads)item(key="moreUnread"){TextButton(onClick=vm::loadMoreUnreadThreads,enabled=!s.loadingUnreadThreads){Text("加载更多未读会话",fontSize=13.sp)}}
+                        }
                     }
                     "pinned"->{
                         item(key="pinnedHeading"){SidebarHeading("置顶会话",pinnedOpen,moveUp,moveDown){pinnedOpen=!pinnedOpen;sidebarPrefs.edit().putBoolean("pinned",pinnedOpen).apply()}}
@@ -869,15 +895,25 @@ private fun nativeCommandIcon(name:String)=when(name){
                             }
                         }
                     }
-                    if(query.isNotBlank()&&s.threadFilter==NativeThreadFilter.ALL&&roots.isEmpty()&&inactiveAgents.isEmpty()&&remoteMatches.isEmpty()&&(!s.connected||!remoteSearch.loading)&&remoteSearch.error.isBlank())item(key="noSidebarResults"){
+                    if(query.isNotBlank()&&s.threadFilter==NativeThreadFilter.ALL&&roots.isEmpty()&&unreadRows.isEmpty()&&remoteMatches.isEmpty()&&(!s.connected||!remoteSearch.loading)&&remoteSearch.error.isBlank())item(key="noSidebarResults"){
                         Text(when{!s.connected->"连接电脑后搜索正文";!remoteEnabled->"输入至少 2 个字符搜索正文";else->"没有找到会话"},color=Muted,fontSize=14.sp,modifier=Modifier.padding(16.dp))
                     }
                 }
                 }
-                Spacer(Modifier.height(8.dp))
-                NativeSidebarAction(R.drawable.ic_lucide_gauge,"账号额度"){quotaOpen=true}
-                if(!s.connected||"automations" in s.capabilities)NativeSidebarAction(R.drawable.ic_lucide_clock_3,"定时任务"){openAutomationSheet("")}
-                NativeSidebarAction(R.drawable.ic_lucide_settings,"设置"){openManagement("home")}
+                if(cloudErrorOpen&&s.cloudListError.isNotBlank())NativeAlertDialog(onDismissRequest={cloudErrorOpen=false},title={Text("云端任务")},text={Text(s.cloudListError)},confirmButton={TextButton(onClick={cloudErrorOpen=false}){Text("关闭")}})
+                Spacer(Modifier.height(if(compactLandscape)4.dp else 8.dp))
+                val shortcuts=listOfNotNull(
+                    NativeSidebarShortcut(R.drawable.ic_lucide_gauge,"账号额度"){quotaOpen=true},
+                    if("remote-desktop" in s.capabilities)NativeSidebarShortcut(R.drawable.ic_lucide_monitor,"远程桌面"){openManagement("remote-desktop")} else null,
+                    if(!s.connected||"automations" in s.capabilities)NativeSidebarShortcut(R.drawable.ic_lucide_clock_3,"定时任务"){openAutomationSheet("")} else null,
+                    NativeSidebarShortcut(R.drawable.ic_lucide_settings,"设置"){openManagement("home")}
+                )
+                if(compactLandscape)shortcuts.chunked(2).forEach{row->
+                    Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(4.dp)){
+                        row.forEach{shortcut->NativeSidebarAction(shortcut.icon,shortcut.label,modifier=Modifier.weight(1f),action=shortcut.action)}
+                        if(row.size==1)Spacer(Modifier.weight(1f))
+                    }
+                } else shortcuts.forEach{shortcut->NativeSidebarAction(shortcut.icon,shortcut.label,action=shortcut.action)}
                 Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically){
                     Box(Modifier.weight(1f)){
                         NativeSidebarAction(R.drawable.ic_lucide_monitor,if(s.connected)"已连接电脑" else "连接电脑",status=if(s.connected)AppColor.StatusOk else AppColor.StatusError){pairing=true}
@@ -927,13 +963,16 @@ private fun nativeCommandIcon(name:String)=when(name){
                             }else ModernIcon(R.drawable.ic_lucide_monitor,null,Modifier.size(21.dp).testTag("statusComputer"),connectionColor)
                         }
                     }
-                    if(!home)NativeConversationAgents(agentRows,s.threadId,vm::openThread,onClose=vm::closeSubagent)
+                    if(s.threadId.isNotBlank())NativeConversationAgents(agentRows,s.threadId,vm::openThread,onClose=vm::closeSubagent)
                     var more by remember{mutableStateOf(false)}
                     var moreDismissedAt by remember{mutableLongStateOf(0L)}
+                    val finishedAgents=remember(agentRows,s.threadId){conversationFinishedAgents(agentRows,s.threadId)}
+                    var conversationAgentsOpen by remember(s.threadId){mutableStateOf(false)}
                     Box{
                         ChromeControl({val now=android.os.SystemClock.uptimeMillis();if(more){more=false;moreDismissedAt=now}else if(now-moreDismissedAt>300)more=true},false){Crossfade(more,animationSpec=tween(150,easing=ControlEase),label="menuIcon"){open->ModernIcon(if(open)R.drawable.ic_lucide_x else R.drawable.ic_lucide_ellipsis,if(open)"关闭会话菜单" else "会话菜单",Modifier.size(21.dp))}}
                         ModernDropdown(more,{more=false;moreDismissedAt=android.os.SystemClock.uptimeMillis()},250.dp,placement=NativePopupPlacement.ADJACENT){
                             Column(Modifier.padding(6.dp)){
+                                if(finishedAgents.isNotEmpty())PopupMenuRow(R.drawable.ic_lucide_bot,"子代理 · ${finishedAgents.size}"){more=false;conversationAgentsOpen=true}
                                 if(s.connected&&s.harness=="codex"&&s.threadId.isNotBlank()&&!readOnly){
                                     if("thread-side-chat" in s.capabilities)PopupMenuRow(R.drawable.ic_lucide_messages_square,"侧聊"){more=false;vm.sideChat.open(s.threadId,s.model,s.effort,s.permission)}
                                     if("thread-fork" in s.capabilities)PopupMenuRow(R.drawable.ic_lucide_git_branch,"创建会话分支"){more=false;vm.forkConversation()}
@@ -953,6 +992,13 @@ private fun nativeCommandIcon(name:String)=when(name){
                                 PopupMenuRow(R.drawable.ic_lucide_settings,"设置"){more=false;openManagement("home")}
                             }
                         }
+                        ModernDropdown(conversationAgentsOpen,{conversationAgentsOpen=false},280.dp,placement=NativePopupPlacement.ADJACENT){
+                            Column(Modifier.heightIn(max=360.dp).verticalScroll(rememberScrollState()).padding(6.dp)){
+                                finishedAgents.forEach{child->
+                                    NativeSidebarAgent(child,agentRows.find{it.id==child.subagent?.parentThreadId},{conversationAgentsOpen=false;vm.openThread(child)},{conversationAgentsOpen=false;vm.closeSubagent(child)})
+                                }
+                            }
+                        }
                     }
                 }
                 },messages={topInset,bottomInset->
@@ -960,7 +1006,10 @@ private fun nativeCommandIcon(name:String)=when(name){
                 }){
                 NativeQueuedDraftRecovery(s.queueDrafts){q->vm.restoreQueued(q);scope.launch{composerFocus.requestFocus()}}
                 if(vm.threadToolBusy)Text("正在创建分支…",Modifier.padding(horizontal=16.dp),fontSize=12.sp,color=Muted)
-                if(vm.threadToolError.isNotBlank())Text(vm.threadToolError,Modifier.padding(horizontal=16.dp),fontSize=12.sp,color=MaterialTheme.colors.error)
+                if(vm.threadToolError.isNotBlank())Row(Modifier.fillMaxWidth().padding(start=16.dp,end=8.dp),verticalAlignment=Alignment.CenterVertically){
+                    Text(vm.threadToolError,Modifier.weight(1f),fontSize=12.sp,color=MaterialTheme.colors.error)
+                    IconButton(onClick=vm::dismissThreadToolError,modifier=Modifier.size(40.dp)){ModernIcon(R.drawable.ic_lucide_x,"关闭提示",Modifier.size(16.dp),Muted)}
+                }
                 NativeQueueDock(vm,s.queue,s.running){q->vm.restoreQueued(q);scope.launch{composerFocus.requestFocus()}}
                 if(readOnly&&s.threadId.startsWith("cloud:"))Text("云端会话 · 自动刷新 · 在桌面继续",Modifier.fillMaxWidth().padding(horizontal=20.dp,vertical=8.dp).testTag("cloudThreadNotice"),fontSize=12.sp,color=Muted)
                 if(readOnly&&!s.threadId.startsWith("cloud:"))s.threads.find{it.id==s.threadId}?.let{snapshot->
@@ -1044,8 +1093,8 @@ private fun nativeCommandIcon(name:String)=when(name){
                             Row(Modifier.widthIn(max=184.dp).heightIn(min=48.dp).clip(Radius.Button).clickable{showModelList=false;modelMenu=true;vm.refreshBackends();if(!s.fastBusy)vm.loadFast(force=true)}.padding(horizontal=10.dp),verticalAlignment=Alignment.CenterVertically){
                                 if(s.harness=="codex"&&(s.fastMode?:s.sessionFast)==true)ModernIcon(R.drawable.ic_lucide_zap,"Fast 已开启",Modifier.padding(end=4.dp).size(14.dp),Accent)
                                 val showEffort=s.effort.isNotBlank()&&(model?.efforts?.size?:0)>=2
-                                val effortBadge=showEffort&&(s.effort=="max"||s.effort=="ultra")
-                                Text((model?.let(::nativeModelDisplayName)?:"选择模型")+(if(showEffort&&!effortBadge)" · "+effortName(s.effort) else ""),Modifier.weight(1f,false),fontSize=13.sp,color=Ink,maxLines=1,overflow=TextOverflow.Ellipsis)
+                                val effortBadge=showEffort&&(s.effort=="max"||s.effort=="ultra")&&!isEcnuReasoningModel(model)
+                                Text((model?.let(::nativeModelDisplayName)?:"选择模型")+(if(showEffort&&!effortBadge)" · "+modelEffortName(model,s.effort) else ""),Modifier.weight(1f,false),fontSize=13.sp,color=Ink,maxLines=1,overflow=TextOverflow.Ellipsis)
                                 if(effortBadge)NativeEffortBadge(s.effort,Modifier.padding(start=5.dp))
                                 ModernIcon(R.drawable.ic_lucide_chevron_down,null,Modifier.padding(start=3.dp).size(15.dp),Muted)
                             }
@@ -1132,6 +1181,7 @@ private fun nativeCommandIcon(name:String)=when(name){
                 "automations"->NativeAutomations(vm,back)
                 "quota-warmup"->NativeQuotaWarmupPage(vm,back)
                 "console"->LocalConsoleRoute(vm,back)
+                "remote-desktop"->NativeRemoteDesktop(vm){managementPage=""}
                 "app-update"->NativeAppUpdatePage(vm.appUpdates,back)
                 "harness-visibility"->NativeHarnessVisibilityPage(vm.hiddenHarnesses,vm::setHarnessVisible,back)
                 "appearance"->NativeAppearancePage(appearance,themeStore.state,
@@ -1304,6 +1354,7 @@ private fun nativeCommandIcon(name:String)=when(name){
         }}
         if(pairing) NativePairingSheet(vm){pairing=false}
         if(settings)NativeModelSettings(vm){settings=false}
+        pairPrompt?.pending?.let{link->NativePairLinkConfirm(vm,pairPrompt,link)}
         if(workPanel.isNotEmpty()){
             val workspaceScroll=rememberScrollState()
             val fileList=workPanel=="文件"&&s.file==null
@@ -1583,7 +1634,7 @@ private fun nativeCommandIcon(name:String)=when(name){
             }
         }}
         val efforts=model?.efforts.orEmpty()
-        EffortSlider(efforts,s.effort,vm::effort)
+        EffortSlider(efforts,s.effort,vm::effort,model=model)
         Text("执行权限",fontSize=13.sp,color=Muted,modifier=Modifier.padding(start=4.dp,top=22.dp,bottom=8.dp))
         Text(if(s.harness=="antigravity")"工具操作自动执行；更改对新任务生效" else "对新任务生效",fontSize=12.sp,color=Muted,modifier=Modifier.padding(start=4.dp,bottom=8.dp))
         Column(Modifier.fillMaxWidth().clip(Radius.Section).background(MaterialTheme.colors.surface)){
@@ -1696,12 +1747,14 @@ private fun nativeCommandIcon(name:String)=when(name){
     }
 }
 
-@Composable private fun NativeSidebarAction(icon:Int,label:String,status:Color?=null,action:()->Unit){
+private data class NativeSidebarShortcut(val icon:Int,val label:String,val action:()->Unit)
+
+@Composable private fun NativeSidebarAction(icon:Int,label:String,status:Color?=null,modifier:Modifier=Modifier,action:()->Unit){
     val feedback=rememberHaptics()
-    Row(Modifier.fillMaxWidth().heightIn(min=48.dp).clip(Radius.Field).clickable{feedback.keyTap();action()}
+    Row(modifier.fillMaxWidth().heightIn(min=48.dp).clip(Radius.Field).clickable{feedback.keyTap();action()}
         .padding(horizontal=12.dp,vertical=10.dp),verticalAlignment=Alignment.CenterVertically){
         ModernIcon(icon,null,Modifier.size(20.dp),Muted)
-        Text(label,Modifier.weight(1f).padding(start=12.dp),fontSize=14.sp,color=Ink)
+        Text(label,Modifier.weight(1f).padding(start=12.dp),fontSize=14.sp,color=Ink,maxLines=1,overflow=TextOverflow.Ellipsis)
         if(status!=null)Box(Modifier.size(6.dp).background(status,CircleShape))
     }
 }
@@ -1711,7 +1764,7 @@ private fun nativeCommandIcon(name:String)=when(name){
         ModernIcon(R.drawable.ic_lucide_bot,null,Modifier.size(18.dp),Muted)
         Column(Modifier.weight(1f).padding(horizontal=10.dp,vertical=5.dp)){
             Text(subagentLabel(thread),fontSize=14.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
-            val status=when(thread.status){"error","failed"->"失败";"interrupted"->"已停止";"ok","completed"->"已完成";else->"空闲"}
+            val status=if(subagentRunning(thread))"进行中" else when(thread.status){"error","failed"->"失败";"interrupted"->"已停止";"ok","completed"->"已完成";else->"空闲"}
             Text(listOf(status,parent?.let{if(it.subagent!=null)subagentLabel(it) else it.title}.orEmpty()).filter{it.isNotBlank()}.joinToString(" · "),fontSize=12.sp,color=Muted,maxLines=1,overflow=TextOverflow.Ellipsis)
         }
         if(!thread.readOnly&&nativeThreadAgent(thread.id) in setOf("codex","zcode"))IconButton(onClick=close,modifier=Modifier.testTag("closeSidebarAgent:${thread.id}")){ModernIcon(R.drawable.ic_lucide_x,"关闭子代理",Modifier.size(16.dp),Muted)}
@@ -1794,6 +1847,15 @@ private fun nativeCommandIcon(name:String)=when(name){
 }
 
 internal fun effortName(s:String)=mapOf("default" to "默认","__default" to "默认","off" to "关闭","none" to "无","minimal" to "极低","low" to "低","medium" to "中","high" to "高","xhigh" to "极高","max" to "Max","ultra" to "Ultra")[s]?:s
+internal fun isEcnuReasoningModel(model:NativeModel?):Boolean {
+    if(model==null||model.harness !in listOf("deepseek","pi"))return false
+    val identity="${model.id} ${model.name}".lowercase()
+    return Regex("ecnu[-/\", ]+(max|plus)").containsMatchIn(identity)
+}
+internal fun modelEffortName(model:NativeModel?,value:String):String {
+    if(!isEcnuReasoningModel(model))return effortName(value)
+    return when(value){"off","none"->"关";"low"->"中";"medium","high"->"高";"max","xhigh"->"超高";else->effortName(value)}
+}
 
 @Composable private fun rememberCaretColor():Color{val transition=rememberInfiniteTransition(label="caret");val alpha by transition.animateFloat(0.15f,1f,infiniteRepeatable(tween(600,easing=androidx.compose.animation.core.LinearEasing),RepeatMode.Reverse),label="caretAlpha");return Muted.copy(alpha=alpha)}
 private fun streamingText(text:String,caretColor:Color)=buildAnnotatedString{append(text);withStyle(SpanStyle(color=caretColor)){append(" ▍")}}
@@ -2431,6 +2493,10 @@ private data class NativeMessageViewState(
     var certificate by remember{mutableStateOf(state.certificateSha256)}
     var code by remember{mutableStateOf("")}
     var scanError by remember{mutableStateOf("")}
+    var scannerOpen by rememberSaveable{mutableStateOf(false)}
+    val cameraPermission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()){granted->
+        if(granted)scannerOpen=true else scanError="请在系统设置中允许相机权限后扫码"
+    }
     var connectionError by remember{mutableStateOf("")}
     var legacyOpen by remember{mutableStateOf(false)}
     val legacy=remember(vm,state.recoveryVersion){vm.unassignedMessages()}
@@ -2440,29 +2506,17 @@ private data class NativeMessageViewState(
         return
     }
     val paired=vm.hasSavedPairing()
+    if(scannerOpen)NativePairScanner(onResult={value->
+        scannerOpen=false
+        val link=parseNativePairLink(value)
+        if(link==null)scanError="这不是有效的电脑配对码"
+        else {scanError="";connectionError="";address=link.address;publicUrl=link.publicUrl;certificate=link.certificateSha256;code=link.code}
+    },onError={message->scannerOpen=false;scanError=message},onClose={scannerOpen=false})
     Sheet("连接电脑",close){
         OutlinedButton(onClick={
             scanError=""
-            val scan=runCatching{
-                com.google.mlkit.vision.codescanner.GmsBarcodeScanning.getClient(
-                    context,
-                    com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions.Builder()
-                        .setBarcodeFormats(com.google.mlkit.vision.barcode.common.Barcode.FORMAT_QR_CODE)
-                        .build()
-                ).startScan()
-            }
-            scan.onFailure{scanError="无法启动扫码，请检查 Google Play 服务或手动输入配对码"}
-            scan.getOrNull()?.addOnSuccessListener{result->
-                val link=parseNativePairLink(result.rawValue.orEmpty())
-                if(link==null)scanError="这不是有效的电脑配对码"
-                else {
-                    connectionError=""
-                    address=link.address
-                    publicUrl=link.publicUrl
-                    certificate=link.certificateSha256
-                    code=link.code
-                }
-            }?.addOnFailureListener{scanError="扫码未完成，请重试或手动输入配对码"}
+            if(androidx.core.content.ContextCompat.checkSelfPermission(context,android.Manifest.permission.CAMERA)==android.content.pm.PackageManager.PERMISSION_GRANTED)scannerOpen=true
+            else cameraPermission.launch(android.Manifest.permission.CAMERA)
         },modifier=Modifier.fillMaxWidth()){
             ModernIcon(R.drawable.ic_lucide_qr_code,null,Modifier.size(18.dp))
             Spacer(Modifier.width(8.dp))
@@ -2496,6 +2550,20 @@ private data class NativeMessageViewState(
             Text(if(paired&&code.isBlank())"保存并连接" else "连接")
         }
     }
+}
+
+@Composable private fun NativePairLinkConfirm(vm:NativeViewModel,prompt:NativePairPromptModel,link:NativePairLink){
+    val state=vm.state
+    NativeAlertDialog(onDismissRequest={prompt.dismiss(vm)},modifier=Modifier.testTag("pairLinkDialog"),
+        title={Text("确认连接电脑")},
+        text={Column(verticalArrangement=Arrangement.spacedBy(10.dp)){
+            Text("收到外部配对链接，连接前请确认电脑地址：",fontSize=14.sp)
+            SelectionContainer{Text(link.address,fontFamily=FontFamily.Monospace,fontWeight=FontWeight.Medium)}
+            if(link.publicUrl.isNotBlank())SelectionContainer{Text("公网地址：${link.publicUrl}",fontFamily=FontFamily.Monospace,fontSize=13.sp,color=Muted)}
+            if(state.connected||state.connecting)Text("确认后将断开当前连接，并替换已保存的电脑地址和凭据。",color=AppColor.StatusWarning,fontSize=13.sp)
+        }},
+        confirmButton={Button(onClick={prompt.confirm(vm)}){Text("连接该电脑")}},
+        dismissButton={TextButton(onClick={prompt.dismiss(vm)}){Text("取消")}})
 }
 
 @Composable internal fun NativeLegacyMessagesSheet(records:List<NativeLegacySubmission>,copy:(String)->Unit,close:()->Unit){

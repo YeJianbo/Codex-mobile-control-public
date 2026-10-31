@@ -122,7 +122,7 @@ export function createServer({home,port=25819,webDir=path.join(here,'..','dist')
  const claudeAccounts=new ClaudeAccountManager({dir:store.dir,harnessProfiles});
  const invalidateAgy=()=>{modelAccounts.readonlyAccounts.cached=null;modelAccounts.readonlyAccounts.at=0;modelAccounts.readonlyAccounts.agySnapshot=null;};
  const readModelAccounts=()=>agyAccounts.withQuotaRefresh(()=>modelAccounts.list(),{invalidateCache:invalidateAgy});
- const quotaOverview=new QuotaOverview({store,usage:usageService,agy:agyAccounts,claude:claudeAccounts,refreshAgy:async()=>{
+ const quotaOverview=new QuotaOverview({store,usage:usageService,agy:agyAccounts,claude:claudeAccounts,agyUsage:()=>getAgy(),refreshAgy:async()=>{
   const result=await agyAccounts.withQuotaRefresh(async()=>({accounts:[await modelAccounts.readonlyAccounts.agy()]}),{invalidateCache:invalidateAgy});
   const row=result.accounts[0];if(!row?.windows?.length||row.stale)throw Error(row?.note||'AGY 未返回额度');
  }});
@@ -310,7 +310,10 @@ export function createServer({home,port=25819,webDir=path.join(here,'..','dist')
    res.writeHead(200,{'Content-Type':file.endsWith('.js')?'text/javascript':file.endsWith('.css')?'text/css':'text/html; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"});res.end(content);
   }catch(e){if(!res.headersSent){const failure=networkError(e);if(failure){res.setHeader('Retry-After','1');send(failure.status,{error:{message:failure.message,type:'upstream_connection_error',code:failure.code}});}else send(Number.isInteger(e.statusCode)&&e.statusCode>=400&&e.statusCode<600?e.statusCode:400,{error:e.message});}else res.destroy();}
  });
- server.on('close',()=>quotaWarmup.stop());
+ // Record quota observations without sending model messages.
+ let agySampleTimer;
+ server.on('listening',()=>{agySampleTimer=setInterval(async()=>{try{if((await agyAccounts.list()).current.configured)quotaOverview.refresh('agy');}catch{}},15*60000);agySampleTimer.unref();});
+ server.on('close',()=>{clearInterval(agySampleTimer);quotaWarmup.stop();});
  attachResponsesWebSocket(server,{
   authorize:req=>{
    if(![`127.0.0.1:${port}`,`localhost:${port}`].includes(req.headers.host))return 403;

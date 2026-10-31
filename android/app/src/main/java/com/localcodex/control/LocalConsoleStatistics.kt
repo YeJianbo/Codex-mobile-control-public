@@ -26,7 +26,7 @@ import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
 
-private val sources=listOf("codex" to "Codex","agy" to "AGY","claude" to "Claude","zcode" to "ZCode","grok" to "Grok","hermes" to "Hermes","deepseek" to "DeepSeek","opencode" to "OpenCode")
+private val sources=listOf("codex" to "Codex","agy" to "AGY","claude" to "Claude","zcode" to "ZCode","grok" to "Grok","hermes" to "Hermes","deepseek" to "DeepSeek","opencode" to "OpenCode","pi" to "Pi","research" to "自动科研 Agent")
 private val ranges=listOf("today" to "今天","week" to "本周","month" to "本月","year" to "今年")
 private val secondary:Color @Composable get()=MaterialTheme.colors.onSurface.copy(alpha=0.65f)
 private val hairline:Color @Composable get()=MaterialTheme.colors.onSurface.copy(alpha=0.07f)

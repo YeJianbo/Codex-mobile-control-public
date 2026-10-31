@@ -1,5 +1,5 @@
-export type Agent = 'codex'|'claude'|'antigravity'|'grok'|'deepseek'|'hermes'|'opencode'|'zcode';
-export const agentNames:Record<Agent,string>={codex:'Codex',claude:'Claude Code',antigravity:'Antigravity',grok:'Grok Build',deepseek:'DeepSeek Harness',hermes:'Hermes',opencode:'OpenCode',zcode:'ZCode'};
+export type Agent = 'codex'|'claude'|'antigravity'|'grok'|'deepseek'|'hermes'|'opencode'|'zcode'|'pi'|'acp';
+export const agentNames:Record<Agent,string>={codex:'Codex',claude:'Claude Code',antigravity:'Antigravity',grok:'Grok Build',deepseek:'DeepSeek Harness',hermes:'Hermes',opencode:'OpenCode',zcode:'ZCode',pi:'Pi',acp:'自定义 ACP'};
 export function modelAgent(model=''):Agent { const prefix=model.split('::')[0];return Object.hasOwn(agentNames,prefix)&&prefix!=='codex'?prefix as Agent:'codex'; }
 export function threadAgent(id=''):Agent {const prefix=id.split('-')[0];return Object.hasOwn(agentNames,prefix)&&prefix!=='codex'?prefix as Agent:'codex';}
 let publicAgentAccess:Partial<Record<Agent,boolean>>={};

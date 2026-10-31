@@ -3,7 +3,7 @@ import {DatabaseSync} from 'node:sqlite';
 
 // Incremental native telemetry only. Older events without account and official
 // window metadata stay unassigned instead of being charged to the current login.
-export function nativeCreditRequests(file,accountKey,since,until,router=[]){
+export function nativeCreditRequests(file,accountKey,since,until,router=[],officialProviders=['openai']){
   if(!fs.existsSync(file))return [];
   const db=new DatabaseSync(file,{readOnly:true});
   try{
@@ -15,7 +15,7 @@ export function nativeCreditRequests(file,accountKey,since,until,router=[]){
       const startedAt=previous.get(row.session);previous.set(row.session,row.time);
       if(startedAt==null)continue;
       let meter;try{meter=JSON.parse(row.credit_meter);}catch{continue;}
-      if(!meter?.account||meter.provider!=='openai'||!(accountKey===meter.account||accountKey.endsWith('::'+meter.account)))continue;
+      if(!meter?.account||!officialProviders.includes(meter.provider)||!(accountKey===meter.account||accountKey.endsWith('::'+meter.account)))continue;
       // Routed and native logs may group tokens differently. Exclude routed
       // sessions from native calibration rather than count the same work twice.
       if(router.some(request=>request.sessionId===row.session))continue;

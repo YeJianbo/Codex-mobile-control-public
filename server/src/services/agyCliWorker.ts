@@ -1,11 +1,13 @@
 import {spawn} from 'node:child_process';
 import {execa} from 'execa';
+import {agyProcess} from './agyProcess.js';
 
 // The IPC channel closes when the gateway exits, including a Windows forced stop.
 // Own and terminate only this worker's AGY tree so idle CLI processes cannot become orphans.
 const [command,...args]=process.argv.slice(2);
 if(!command)throw Error('Missing AGY executable');
-const child=execa(command,args,{cwd:process.cwd(),windowsHide:true,reject:false,buffer:false,stdin:'pipe'});
+const target=agyProcess(command,args);
+const child=execa(target.command,target.args,{cwd:process.cwd(),windowsHide:true,reject:false,buffer:false,stdin:'pipe'});
 void child.catch(()=>{});
 process.stdin.pipe(child.stdin);
 child.stdout.pipe(process.stdout);

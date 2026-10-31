@@ -11,10 +11,13 @@ import type {PickerModel} from './modelCatalog.js';
 import {deepseekDesktopProviderPatch,deepseekDesktopReasoningModels,canonicalDeepseekModel} from './deepseekDesktopConfig.js';
 import {opencodeAcpEnvironment,refreshOpencodeModels} from './opencodeConfig.js';
 import {createOpencodePolicy,type OpencodePolicy} from './opencodePolicy.js';
+import {piEcnuEnvironment} from './piEcnu.js';
 
-type Harness='deepseek'|'hermes'|'opencode';
+type Harness='deepseek'|'hermes'|'opencode'|'pi'|'acp';
 const scripts=fileURLToPath(new URL('../../scripts/',import.meta.url));
-function launchSettings(agent:Harness,permission?:string,catalog=false){
+function launchSettings(agent:Harness,permission?:string,catalog=false,customArgs:string[]=[]){
+  if(agent==='acp')return {args:customArgs,env:{}};
+  if(agent==='pi')return {args:[],env:{}};
   if(agent==='opencode')return {args:['acp'],env:opencodeAcpEnvironment()};
   if(agent==='hermes')return {args:['acp'],env:{CMC_HERMES_ACP_EXTENSION:'1',PYTHONPATH:[path.join(scripts,'hermes-mobile-acp'),process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)}};
   const preset=permission==='full'?'danger-full-access':'workspace-write';
@@ -43,8 +46,9 @@ class AcpConnection {
   onRequest:(message:any)=>void=message=>this.send({id:message.id,error:{code:-32601,message:'Client method not supported'}});
   onPolicyRequest:(params:any)=>Promise<boolean>=async()=>false;
   onUpdate:(params:any)=>void=()=>{};
-  constructor(readonly agent:Harness,command:string,cwd:string,launch:typeof execa,private terminate:typeof execa=execa,permission?:string,catalog=false){
-    const settings=launchSettings(agent,permission,catalog);
+  constructor(readonly agent:Harness,command:string,cwd:string,launch:typeof execa,private terminate:typeof execa=execa,permission?:string,catalog=false,customArgs:string[]=[]){
+    const settings=launchSettings(agent,permission,catalog,customArgs);
+    if(agent==='pi')settings.env={...settings.env,PATH:[path.dirname(command),process.env.PATH].filter(Boolean).join(path.delimiter)};
     this.patchDirectory='patchDirectory' in settings?settings.patchDirectory:undefined;
     const start=(env:Record<string,string>)=>{
       this.child=launch(command,settings.args,{cwd,env,windowsHide:true,reject:false,buffer:false,stdin:'pipe'});
@@ -64,6 +68,7 @@ class AcpConnection {
       void Promise.resolve(this.child).then(result=>this.exited(`进程已退出（${result.exitCode}）`),error=>this.exited(error.message));
     };
     if(agent==='opencode'&&permission)this.ready=createOpencodePolicy(params=>this.onPolicyRequest(params)).then(policy=>{this.opencodePolicy=policy;start({...settings.env,...policy.env});});
+    else if(agent==='pi')this.ready=piEcnuEnvironment().then(env=>{start({...settings.env,...env});});
     else{start(settings.env);this.ready=Promise.resolve();}
   }
   private exited(reason:string){for(const waiter of this.pending.values()){clearTimeout(waiter.timer);waiter.reject(Error(`${agentNames[this.agent]} ${reason}${this.stderr?'：'+this.stderr:''}`));}this.pending.clear();}
@@ -71,6 +76,23 @@ class AcpConnection {
   assertPermissionAdapter(){
     if(this.agent==='deepseek'&&!this.permissionAdapterReady)throw Error('DeepSeek 权限适配器未加载，已停止发送任务，请更新电脑网关');
     if(this.agent==='opencode'&&!this.opencodePolicy?.ready)throw Error('OpenCode 权限插件未加载，已停止发送任务，请更新电脑网关');
+  }
+  // Prompt-only dispatch: register the JSON-RPC pending entry before touching
+  // stdin so an immediate synchronous reply can be matched, and report whether
+  // the write actually happened. Must be called after `ready` has resolved.
+  attempt(method:string,params:any,timeout=0):{request:Promise<any>;write:'written'|'uncertain'|'not_started';error?:unknown}{
+    const id=++this.sequence;
+    let resolve!:(value:any)=>void,reject!:(error:Error)=>void;
+    const request=new Promise<any>((res,rej)=>{resolve=res;reject=rej;});
+    const timer=timeout?setTimeout(()=>{this.pending.delete(id);reject(Error(`${agentNames[this.agent]} ${method} 超时${this.stderr?'：'+this.stderr:''}`));},timeout):undefined;
+    this.pending.set(id,{resolve,reject,timer});
+    let payload:string;
+    try{payload=JSON.stringify({jsonrpc:'2.0',id,method,params})+'\n';}
+    catch(error){this.pending.delete(id);clearTimeout(timer);const failure=Error(`${agentNames[this.agent]} 无法序列化 ${method} 消息`);reject(failure);return {request,write:'not_started',error};}
+    const stdin=this.child?.stdin;
+    if(!stdin?.writable){this.pending.delete(id);clearTimeout(timer);const failure=Error(`${agentNames[this.agent]} 标准输入不可写，任务未发送${this.stderr?'：'+this.stderr:''}`);reject(failure);return {request,write:'not_started',error:failure};}
+    try{stdin.write(payload);}catch(error){this.pending.delete(id);clearTimeout(timer);const failure=Error(`${agentNames[this.agent]} 写入任务失败：${(error as Error)?.message||error}`);reject(failure);return {request,write:'uncertain',error};}
+    return {request,write:'written'};
   }
   async request(method:string,params:any,timeout=30000):Promise<any>{
     await this.ready;
@@ -115,7 +137,7 @@ function sessionModes(state:any):string[]{
     :(state?.modes?.availableModes||[]).map((entry:any)=>entry.id).filter((value:any)=>typeof value==='string');
 }
 
-async function opencodeReasoningCatalog(connection:AcpConnection,state:any,sessionId:string){
+async function opencodeReasoningCatalog(connection:AcpConnection,state:any,sessionId:string,agent:Harness='opencode'){
   const model=configOption(state,'model');
   if(!model||typeof model.currentValue!=='string')return state;
   const originalEffort=configOption(state,'thought_level','reasoning_effort')?.currentValue;
@@ -133,6 +155,7 @@ async function opencodeReasoningCatalog(connection:AcpConnection,state:any,sessi
   try{
     for(const entry of selectOptions(model.options||[])){
       if(typeof entry.value!=='string'||entry.value===model.currentValue)continue;
+      if(agent==='pi'&&!/^ecnu\/ecnu-(max|plus)$/.test(entry.value))continue;
       const remaining=deadline-Date.now();if(remaining<=0)break;
       try{
         selected=true;
@@ -178,16 +201,16 @@ function catalogFromSession(agent:Harness,state:any):PickerModel[]{
   return agent==='opencode'?models.sort(compareOpencodeModels):models;
 }
 
-export async function readHarnessCatalog(agent:Harness,command:string,cwd:string,launch:typeof execa=execa,refresh=false){
+export async function readHarnessCatalog(agent:Harness,command:string,cwd:string,launch:typeof execa=execa,refresh=false,customArgs:string[]=[]){
   if(agent==='opencode')await refreshOpencodeModels(command,cwd,launch,refresh);
-  const connection=new AcpConnection(agent,command,cwd,launch,execa,undefined,true);
+  const connection=new AcpConnection(agent,command,cwd,launch,execa,undefined,true,customArgs);
   let session:string|undefined,canClose=false;
   try{
     const init=await connection.request('initialize',initialize,20000);
     canClose=init.agentCapabilities?.sessionCapabilities?.close!=null;
     // Standard ACP catalogs are session-scoped; this creates no prompt or model invocation.
     let state=await connection.request('session/new',{cwd,mcpServers:[]},20000);session=state.sessionId;
-    if(agent==='opencode'&&session)state=await opencodeReasoningCatalog(connection,state,session);
+    if((agent==='opencode'||agent==='pi')&&session)state=await opencodeReasoningCatalog(connection,state,session,agent);
     return {models:catalogFromSession(agent,state),supportsImages:init.agentCapabilities?.promptCapabilities?.image===true,supportsPlanMode:sessionModes(state).includes('plan')};
   }finally{
     if((agent==='deepseek'||canClose)&&session)await connection.request('session/close',{sessionId:session},3000).catch(()=>{});
@@ -195,10 +218,20 @@ export async function readHarnessCatalog(agent:Harness,command:string,cwd:string
   }
 }
 
-export function harnessAcp(options:{agent:Harness;command:string;cwd:string;session?:string;model?:string;effort?:string;mode?:string;permission?:string;content:any[];approve:(params:any)=>Promise<boolean>},launch:typeof execa=execa,terminate:typeof execa=execa){
-  const connection=new AcpConnection(options.agent,options.command,options.cwd,launch,terminate,options.permission||'ask');
+export function harnessAcp(options:{agent:Harness;command:string;cwd:string;session?:string;model?:string;effort?:string;mode?:string;permission?:string;content:any[];approve:(params:any)=>Promise<boolean>;customArgs?:string[]},launch:typeof execa=execa,terminate:typeof execa=execa){
+  const connection=new AcpConnection(options.agent,options.command,options.cwd,launch,terminate,options.permission||'ask',false,options.customArgs);
   const stdout=new PassThrough(),stderr=new PassThrough();
   let session=options.session,promptStarted=false,stopped=false,settled=false,contextWindow:number|undefined,contextUsed:number|undefined,actualModel:string|undefined;
+  let dispatchPhase:'written'|'not_started'|'uncertain'='not_started',dispatchError:unknown;
+  let resolveDispatch!:(value:{phase:'written'|'not_started'|'uncertain';error?:unknown;session?:string;actualModel?:string})=>void;
+  const promptDispatch=new Promise<{phase:'written'|'not_started'|'uncertain';error?:unknown;session?:string;actualModel?:string}>(resolve=>{resolveDispatch=resolve;});
+  // Dispatch status must be available as soon as the prompt write is attempted,
+  // not when the whole turn settles; every path resolves exactly once.
+  let dispatchResolved=false;
+  const settleDispatch=()=>{
+    if(dispatchResolved)return;dispatchResolved=true;
+    resolveDispatch({phase:dispatchPhase,...(dispatchPhase!=='written'&&dispatchError?{error:dispatchError}:{}),...(session?{session}:{}),...(actualModel!==undefined?{actualModel}:{})});
+  };
   const tools=new Map<string,any>(),completed=new Set<string>();let config:any[]=[];
   const permissionDecisions=new Map<string,Promise<boolean>>();
   const emit=(message:any)=>stdout.write(JSON.stringify(message)+'\n');
@@ -248,9 +281,11 @@ export function harnessAcp(options:{agent:Harness;command:string;cwd:string;sess
     try{
       const init=await connection.request('initialize',initialize);
       if(options.content.some(c=>c.type==='image')&&init.agentCapabilities?.promptCapabilities?.image!==true)throw Error(`${agentNames[options.agent]} 当前模型不支持图片消息`);
-      const canResume=options.agent==='deepseek'||options.agent==='opencode'&&init.agentCapabilities?.sessionCapabilities?.resume!=null;
+      const canResume=options.agent==='deepseek'||(options.agent==='opencode'||options.agent==='pi'||options.agent==='acp')&&init.agentCapabilities?.sessionCapabilities?.resume!=null;
+      if((options.agent==='pi'||options.agent==='acp')&&session&&!canResume&&init.agentCapabilities?.loadSession!==true)throw Error(`${agentNames[options.agent]} 未声明恢复会话能力，未创建替代会话`);
       if(options.agent==='opencode'&&session&&!canResume&&init.agentCapabilities?.loadSession!==true)throw Error('OpenCode ACP 未声明恢复会话能力，未创建替代会话');
       const state=await connection.request(session?(canResume?'session/resume':'session/load'):'session/new',{...(session?{sessionId:session}:{}),cwd:options.cwd,mcpServers:[]});
+      if(options.agent==='deepseek'&&session&&state?.sessionId&&state.sessionId!==session)throw Error('DeepSeek 恢复会话返回了不同的会话编号，请检查原会话后重试');
       session=session||state?.sessionId;if(!session)throw Error('ACP 未返回会话编号');
       // Save the native identity before configuration can fail, so a retry resumes
       // this session instead of creating another conversation.
@@ -259,12 +294,12 @@ export function harnessAcp(options:{agent:Harness;command:string;cwd:string;sess
       config=state?.configOptions||[];
       const requestedModel=options.agent==='deepseek'?canonicalDeepseekModel(options.model&&options.model!=='default'?options.model:config.find((o:any)=>o.id==='model'||o.category==='model')?.currentValue||state?.models?.currentModelId||''):options.model;
       if(requestedModel&&requestedModel!=='default'){
-        if(options.agent==='deepseek'||options.agent==='opencode'&&configOption({configOptions:config},'model')){
+        if(options.agent==='deepseek'||(options.agent==='opencode'||options.agent==='pi'||options.agent==='acp')&&configOption({configOptions:config},'model')){
           const modelOption=configOption({configOptions:config},'model');
           if(options.agent==='opencode'&&!selectOptions(modelOption.options||[]).some(entry=>entry.value===requestedModel))throw Error('模型已不在当前可用目录，请重新选择');
           const configId=options.agent==='deepseek'?'model':modelOption.id;
           config=(await connection.request('session/set_config_option',{sessionId:session,configId,value:requestedModel})).configOptions||[];
-          if(options.agent==='opencode'&&configOption({configOptions:config},'model')?.currentValue!==requestedModel)throw Error('OpenCode 未确认所选模型已应用');
+          if((options.agent==='opencode'||options.agent==='pi'||options.agent==='acp')&&configOption({configOptions:config},'model')?.currentValue!==requestedModel)throw Error(`${agentNames[options.agent]} 未确认所选模型已应用`);
         }
         else {
           const changed=await connection.request('session/set_model',{sessionId:session,modelId:options.model});
@@ -300,13 +335,23 @@ export function harnessAcp(options:{agent:Harness;command:string;cwd:string;sess
       if(stopped)return {exitCode:0};
       promptStarted=true;
       const prompt=options.content.map(c=>c.type==='image'?{type:'image',mimeType:c.source.media_type,data:c.source.data}:c);
-      const result=await connection.request('session/prompt',{sessionId:session,prompt},0);
+      const attempt=connection.attempt('session/prompt',{sessionId:session,prompt},0);
+      dispatchPhase=attempt.write;if(attempt.error)dispatchError=attempt.error;
+      settleDispatch();
+      const result=await attempt.request;
       const u=result?.usage||result?._meta?.usage;
       if(result?.stopReason==='cancelled'&&!stopped)throw Error('任务被助手取消');
       emit({type:'result',session_id:session,model:actualModel,is_error:false,result:'',usage:u||contextWindow?{...(u?{input_tokens:u.inputTokens,output_tokens:u.outputTokens,total_tokens:u.totalTokens,cache_read_input_tokens:u.cachedReadTokens,thinking_tokens:u.thoughtTokens}:{}),context_window:contextWindow,context_used:contextUsed}:undefined});
       return {exitCode:0};
-    }catch(error){const detail=String((error as Error).message);stderr.write(detail);emit({type:'result',is_error:true,result:detail});return {exitCode:1};}
-    finally{try{await connection.close();}finally{stdout.end();stderr.end();settled=true;}}
+    }catch(error){
+      if(!stopped&&dispatchPhase!=='written'&&!dispatchError)dispatchError=error;
+      settleDispatch();
+      const detail=String((error as Error).message);stderr.write(detail);emit({type:'result',is_error:true,result:detail});return {exitCode:1};}
+    finally{
+      settleDispatch();
+      try{await connection.close();}
+      finally{stdout.end();stderr.end();settled=true;}
+    }
   })();
   const interrupt=async()=>{
     stopped=true;await connection.cancelPolicy();if(session&&promptStarted)connection.send({method:'session/cancel',params:{sessionId:session}});
@@ -318,5 +363,5 @@ export function harnessAcp(options:{agent:Harness;command:string;cwd:string;sess
       await done;
     }
   };
-  return {get pid(){return connection.child?.pid;},stdout,stderr,then:done.then.bind(done),interrupt,kill(){void interrupt();return true;}};
+  return {get pid(){return connection.child?.pid;},stdout,stderr,promptDispatch,then:done.then.bind(done),interrupt,kill(){void interrupt();return true;}};
 }

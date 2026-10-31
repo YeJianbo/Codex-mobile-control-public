@@ -20,8 +20,8 @@ android {
         applicationId = "com.localcodex.control"
         minSdk = 26
         targetSdk = 31
-        versionCode = 477
-        versionName = "0.6.505"
+        versionCode = 492
+        versionName = "0.6.520"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -80,7 +80,10 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview:1.7.8")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.4.0")
     implementation("com.squareup.okhttp3:okhttp:4.9.3")
-    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
+    implementation("androidx.camera:camera-camera2:1.0.1")
+    implementation("androidx.camera:camera-lifecycle:1.0.1")
+    implementation("androidx.camera:camera-view:1.0.0-alpha27")
+    implementation("com.google.zxing:core:3.3.3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.5.2")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4:1.7.8")

@@ -1,6 +1,6 @@
 const harnessNames = {
   codex: 'Codex', claude: 'Claude Code', antigravity: 'Antigravity', grok: 'Grok Build',
-  deepseek: 'DeepSeek Harness', hermes: 'Hermes', opencode: 'OpenCode', zcode: 'ZCode',
+  deepseek: 'DeepSeek Harness', hermes: 'Hermes', opencode: 'OpenCode', zcode: 'ZCode', pi: 'Pi', acp:'自定义 ACP',
 };
 const ownBrands = {codex:'gpt', claude:'claude', antigravity:'gemini', grok:'grok', deepseek:'deepseek', hermes:'hermes'};
 const brandPrefix = /^(gpt|claude|gemini|grok|deepseek|qwen)(?=[-\s]|\d|[vr]\d)/i;

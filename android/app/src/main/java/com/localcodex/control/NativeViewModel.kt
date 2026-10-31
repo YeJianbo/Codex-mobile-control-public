@@ -27,6 +27,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
     }
     internal var threadToolBusy by mutableStateOf(false);private set
     internal var threadToolError by mutableStateOf("");private set
+    fun dismissThreadToolError(){threadToolError=""}
     internal fun returnFromSideChat(){
         sideChat.minimize()
     }
@@ -48,6 +49,7 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         if(epoch!=generation||client!==api)throw CancellationException("电脑连接已变化")
         return response
     }
+    internal fun desktopGateway():GatewayClient=client?:throw IllegalStateException("尚未连接电脑")
     internal fun startPerformanceRecording(){
         val owner=NativePerformanceRecorder.start()?:return
         viewModelScope.launch{
@@ -332,14 +334,14 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
         if(readReceiptGeneration!=generation){readReceipts.clear();readReceiptGeneration=generation}
         return if(row.completedAt>0&&row.completedAt<=(readReceipts[row.id]?:0L))row.copy(unread=false) else row
     }
-    private fun listedThread(id:String)=(state.threads.asSequence()+state.projectThreads.values.asSequence().flatMap{it.rows.asSequence()})
+    private fun listedThread(id:String)=(state.threads.asSequence()+state.unreadThreads.asSequence()+state.projectThreads.values.asSequence().flatMap{it.rows.asSequence()})
         .filter{it.id==id}.maxWithOrNull(compareBy<ThreadRecord>{it.completedAt}.thenBy{it.unread})
     internal fun unreadCompletion(id:String)=listedThread(id)?.takeIf{it.unread}?.completedAt?:0L
     private fun applyThreadRead(id:String,readThrough:Long){
         if(readReceiptGeneration!=generation){readReceipts.clear();readReceiptGeneration=generation}
         if(readThrough<=(readReceipts[id]?:0L))return
         readReceipts[id]=maxOf(readReceipts[id]?:0L,readThrough)
-        state=state.copy(threads=state.threads.map(::knownThreadRead),projectThreads=state.projectThreads.mapValues{(_,page)->page.copy(rows=page.rows.map(::knownThreadRead))})
+        state=state.copy(threads=state.threads.map(::knownThreadRead),unreadThreads=state.unreadThreads.map(::knownThreadRead).filter{it.unread},projectThreads=state.projectThreads.mapValues{(_,page)->page.copy(rows=page.rows.map(::knownThreadRead))})
         if(state.threadFilter==NativeThreadFilter.ALL)rememberSidebar()
     }
     internal fun markResultRead(id:String){
@@ -432,6 +434,12 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
     private var projectLimit=5
     private var sidebarRefreshPending=false
     private var sidebarFilterRevision=0
+    private var unreadJob:Job?=null
+    private var unreadRefreshPending=false
+    private var unreadRevision=0
+    private var unreadLimit=30
+    private var sidebarVisible=false
+    private var unreadAddress=""
     private val activityGroups=linkedMapOf<Pair<String,String>,List<ChatEvent>>()
     private val activityDetails=linkedMapOf<Pair<String,String>,ChatEvent>()
     private val activityDetailPending=mutableSetOf<Triple<GatewayClient,String,String>>()
@@ -803,8 +811,35 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
     }
     fun refreshSidebar(){
         if(!state.connected)return
+        if(sidebarVisible)refreshUnreadThreads()
         if(listJob?.isActive==true){sidebarRefreshPending=true;return}
         viewModelScope.launch{refreshLists(true)}
+    }
+    fun setSidebarVisible(visible:Boolean){
+        sidebarVisible=visible
+        if(!visible){unreadRevision++;unreadJob?.cancel();unreadJob=null;unreadRefreshPending=false;state=state.copy(loadingUnreadThreads=false);return}
+        if(unreadAddress!=state.activeAddress){unreadAddress=state.activeAddress;unreadLimit=30;state=state.copy(unreadThreads=emptyList(),moreUnreadThreads=false,unreadThreadsError="")}
+        refreshUnreadThreads()
+    }
+    fun loadMoreUnreadThreads(){if(state.moreUnreadThreads&&!state.loadingUnreadThreads){unreadLimit+=30;refreshUnreadThreads()}}
+    fun refreshUnreadThreads(){
+        val api=client?:return
+        if(!sidebarVisible||!state.connected||"thread-sidebar-filters" !in state.capabilities)return
+        if(unreadJob?.isActive==true){unreadRefreshPending=true;return}
+        val epoch=generation;val revision=unreadRevision
+        fun current()=epoch==generation&&api===client&&sidebarVisible&&revision==unreadRevision
+        unreadJob=viewModelScope.launch{
+            do{
+                unreadRefreshPending=false
+                state=state.copy(loadingUnreadThreads=true)
+                try{
+                    val page=withContext(Dispatchers.IO){api.sidebarUnreadThreads(unreadLimit)}
+                    if(!current())return@launch
+                    state=state.copy(unreadThreads=page.first.map(::knownThreadRead).filter{it.unread&&it.subagent==null},moreUnreadThreads=page.second,unreadThreadsError="")
+                }catch(e:CancellationException){throw e}catch(e:Exception){if(current())state=state.copy(unreadThreadsError=nativeError(e))}
+                finally{if(current())state=state.copy(loadingUnreadThreads=false)}
+            }while(unreadRefreshPending&&current()&&state.connected)
+        }
     }
     init {
         store.migrateNativeChatDrafts(store.baseUrl(),store.certificateSha256())
@@ -1563,22 +1598,25 @@ class NativeViewModel(application:Application):AndroidViewModel(application) {
     fun archiveThread(thread:ThreadRecord){
         val api=client?:return;val parent=thread.subagent?.parentThreadId.orEmpty()
         if(!state.connected||thread.readOnly||nativeReadOnlyThreadId(thread.id))return
-        if(thread.status in setOf("running","starting")||thread.goal?.status=="active"){error("会话仍在运行，请先停止再归档");return}
+        if(thread.status in setOf("running","starting")||thread.goal?.status=="active"){threadToolError="会话仍在运行，请先停止再归档";return}
         val key=api to thread.id;if(!closingSubagents.add(key))return
-        val epoch=generation
+        val epoch=generation;threadToolError=""
         fun current()=epoch==generation&&api===client
         scopedWork(::current){try{
-            api.archiveThread(thread.id)
+            val result=api.archiveThread(thread.id)
             withContext(Dispatchers.Main){if(current()){
                 listJob?.cancel();listTicket++
                 state=state.copy(threads=state.threads.filter{it.id!=thread.id},projectThreads=state.projectThreads.mapValues{(_,page)->page.copy(rows=page.rows.filter{it.id!=thread.id})})
                 if(state.threadId==thread.id){
                     if(parent.isNotBlank())openThread(state.threads.firstOrNull{it.id==parent}?:ThreadRecord(parent,projectPath=thread.projectPath)) else newThread()
                 }
-                archivedThreads=(listOf(thread)+archivedThreads).distinctBy{it.id}
+                val closure=result.optString("closureKind").takeIf{it.isNotBlank()}
+                archivedThreads=(listOf(thread.copy(closureKind=closure))+archivedThreads).distinctBy{it.id}
+                if(closure=="gatewayClosed")threadToolError="会话已从控制台关闭，可在设置中恢复；电脑端因跨磁盘未能归档。"
                 rememberSidebar();refreshSidebar()
             }}
-        }finally{withContext(NonCancellable+Dispatchers.Main){closingSubagents.remove(key)}}}
+        }catch(e:CancellationException){throw e}catch(e:Exception){withContext(Dispatchers.Main){if(current())threadToolError="归档失败：${nativeError(e)}"}}
+        finally{withContext(NonCancellable+Dispatchers.Main){closingSubagents.remove(key)}}}
     }
     fun loadMoreProjects(){if(state.loadingSidebar||!state.moreProjects)return;projectLimit+=5;viewModelScope.launch{refreshLists(true)}}
     fun loadProjectThreads(project:Project,more:Boolean=false,force:Boolean=false){

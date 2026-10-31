@@ -10,6 +10,11 @@ foreach ($module in $Modules) {
     $relativeModulePath = switch ($module) {
         'index' { 'dist\index.js' }
         'agentHost' { 'dist\agentHost.js' }
+        'protocol' { 'dist\protocol.js' }
+        'desktopControlBinary' { 'dist\services\vncfree-server.exe' }
+        'desktopControlLicense' { 'dist\services\vncfree-LICENSE.txt' }
+        'package' { 'package.json' }
+        'packageLock' { 'package-lock.json' }
         default { "dist\services\$module.js" }
     }
     if (-not (Test-Path -LiteralPath (Join-Path $source $relativeModulePath))) { throw "网关模块尚未构建：$module" }

@@ -1,5 +1,6 @@
 // Read account metadata and existing quota samples. Opening the overview never
 // switches a login or starts a model request; refresh is an explicit operation.
+import {agyQuotaEstimates} from './agy-quota-estimate.mjs';
 export const QUOTA_SOURCES={codex:'Codex',agy:'Antigravity',claude:'Claude Code',zcode:'ZCode',grok:'Grok',deepseek:'DeepSeek',hermes:'Hermes',opencode:'OpenCode'};
 const text=value=>typeof value==='string'?value.slice(0,300):null;
 const percent=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0&&value<=100?value:null;
@@ -26,7 +27,7 @@ export function agyOverviewWindows(values){
     if(seen.has(key))return [];seen.add(key);
     const group=(text(value.group)||row.name).replace(/\s+models$/i,'').replace(/\s+and\s+/gi,' / ');
     const window=value.window==='weekly'?'7d':text(value.window);
-    return [{...row,name:window?`${group} · ${window}`:group,poolId:text(value.poolId),description:text(value.description)}];
+    return [{...row,name:window?`${group} · ${window}`:group,poolId:text(value.poolId),window:text(value.window),description:text(value.description)}];
   });
 }
 const account=(row,extra={})=>({id:text(row.id),label:text(row.alias)||text(row.email)||text(row.identity)||text(row.name)||'当前账号',
@@ -36,8 +37,8 @@ function latestSamples(points,id){
   return {latest:own.at(-1),success:own.findLast(point=>point.status!=='unavailable'&&point.windows?.length)};
 }
 export class QuotaOverview{
-  constructor({store,usage,agy,claude,refreshAgy,now=()=>Date.now()}){
-    Object.assign(this,{store,usage,agy,claude,now});this.jobs=new Map();this.snapshots=new Map();
+  constructor({store,usage,agy,claude,refreshAgy,agyUsage,now=()=>Date.now()}){
+    Object.assign(this,{store,usage,agy,claude,agyUsage,now});this.jobs=new Map();this.snapshots=new Map();
     this.refreshers={codex:()=>usage.refresh(),agy:refreshAgy,claude:()=>claude.refresh('current').then(value=>{if(value.sample?.status!=='ok')throw Error(value.message||'Claude 额度读取失败');})};
   }
   catalog(){
@@ -67,9 +68,23 @@ export class QuotaOverview{
         const {latest,success}=latestSamples(points,row.id==='unassigned'?null:row.id);
         const error=(row.active?this.jobs.get(source)?.error||text(state.current.error):null)||
           (latest?.status==='unavailable'?text(latest.reason)||'额度刷新失败':null);
+        let estimates=new Map();
+        if(row.active&&row.id!=='unassigned'&&this.agyUsage){
+          const recent=points.filter(point=>Date.parse(point.at)>=this.now()-7*86400000);
+          estimates=agyQuotaEstimates(recent,row.id,(start,end)=>{
+            const index=this.agyUsage();index.refresh();
+            return index.db.prepare('SELECT data FROM usage WHERE time>? AND time<=?').all(start,end).map(item=>JSON.parse(item.data));
+          });
+        }
+        const resultWindows=agyOverviewWindows(success?.windows||[]).map(window=>{
+          const original=success?.windows?.find(item=>item.poolId===window.poolId&&item.window===window.window&&iso(item.resetsAt)===window.resetsAt);
+          if(!original?.poolId)return window;
+          const sample=estimates.get(JSON.stringify([original.poolId,original.window,original.resetsAt]));
+          return {...window,estimate:sample&&sample.percent>=1&&sample.tokens>0?{state:'estimated',tokens:sample.tokens*100/sample.percent,usd:sample.priced?sample.usd*100/sample.percent:null,partial:sample.partial}:{state:'collecting'}};
+        });
         return account(row,{disabled:row.disabled===true,updatedAt:iso(success?.at),cached:true,
           stale:!!success&&!!error,reason:error,
-          windows:agyOverviewWindows(success?.windows||[])});
+          windows:resultWindows});
       });
     }
     if(source==='claude'){

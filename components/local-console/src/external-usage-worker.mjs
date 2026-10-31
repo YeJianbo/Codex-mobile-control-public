@@ -70,7 +70,7 @@ if(!isMainThread&&workerData?.directory){
     }
     if(command!=='refresh')return;
     const sources={};
-    for(const source of ['claude','zcode','grok','hermes','deepseek','opencode']){
+    for(const source of ['claude','zcode','grok','hermes','deepseek','opencode','pi','research']){
       try{await summary(source,'year');sources[source]=true;}catch{sources[source]=false;}
     }
     parentPort.postMessage({type:'refresh',result:{sources,at:Date.now()}});

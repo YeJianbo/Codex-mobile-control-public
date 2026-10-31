@@ -6,6 +6,7 @@ import {fileURLToPath} from 'node:url';
 import fs from 'node:fs';
 import path from 'node:path';
 import {acpFileChanges} from './agentFileChanges.js';
+import {attemptAcpPrompt,createAcpDispatch,type AcpDispatch} from './acpPromptDispatch.js';
 import type {PickerModel} from './modelCatalog.js';
 
 export type OfficialAcpAgent='claude'|'antigravity';
@@ -72,6 +73,8 @@ export function officialAcp(options:{agent:OfficialAcpAgent;cwd:string;session?:
   const stdout=new PassThrough(),stderr=new PassThrough();
   let sequence=0,session=options.session,stopped=false,promptStarted=false,settled=false;
   let config:any[]=[],actualModel:string|undefined,contextWindow:number|undefined,contextUsed:number|undefined;
+  const dispatch=createAcpDispatch();let phase:AcpDispatch['phase']='not_started',dispatchError:unknown;
+  const settleDispatch=()=>dispatch.settle({phase,...(dispatchError?{error:dispatchError}:{}),...(session?{session}:{}),...(actualModel!==undefined?{actualModel}:{})});
   const tools=new Map<string,any>(),completed=new Set<string>();
   const pending=new Map<number,{resolve:(value:any)=>void;reject:(error:Error)=>void;timer?:NodeJS.Timeout}>();
   const emit=(event:any)=>stdout.write(JSON.stringify(event)+'\n');
@@ -121,13 +124,15 @@ export function officialAcp(options:{agent:OfficialAcpAgent;cwd:string;session?:
       else throw Error(`ACP 未提供所需权限模式：${wanted}`);
       emit({type:'system',session_id:session,model:actualModel});if(stopped)return {exitCode:0};
       promptStarted=true;
-      const result=await request('session/prompt',{sessionId:session,prompt:options.content.map(c=>c.type==='image'?{type:'image',mimeType:c.source.media_type,data:c.source.data}:c)},0);
+      const attempt=attemptAcpPrompt(child.stdin,++sequence,{sessionId:session,prompt:options.content.map(c=>c.type==='image'?{type:'image',mimeType:c.source.media_type,data:c.source.data}:c)},pending,'ACP');
+      phase=attempt.phase;dispatchError=attempt.error;settleDispatch();
+      const result=await attempt.request;
       if(result.stopReason==='cancelled'&&!stopped)throw Error('ACP 任务已被取消');
       const u=result.usage||result._meta?.usage;
       emit({type:'result',session_id:session,model:actualModel,is_error:false,result:'',stopReason:result.stopReason,usage:u||contextWindow?{input_tokens:u?.inputTokens||0,output_tokens:u?.outputTokens||0,total_tokens:u?.totalTokens,cache_read_input_tokens:u?.cachedReadTokens||0,context_window:contextWindow,context_used:contextUsed}:undefined});return {exitCode:0};
-    }catch(error){const message=String((error as Error).message);stderr.write(message);emit({type:'result',is_error:true,result:message});return {exitCode:1};}
-    finally{child.stdin?.end();try{await stopProcess();await Promise.resolve(child).catch(()=>{});}finally{reader.close();stdout.end();stderr.end();settled=true;}}
+    }catch(error){if(phase!=='written'&&!dispatchError)dispatchError=error;settleDispatch();const message=String((error as Error).message);stderr.write(message);emit({type:'result',is_error:true,result:message});return {exitCode:1};}
+    finally{settleDispatch();child.stdin?.end();try{await stopProcess();await Promise.resolve(child).catch(()=>{});}finally{reader.close();stdout.end();stderr.end();settled=true;}}
   })();
   const interrupt=async()=>{stopped=true;if(session&&promptStarted)send({method:'session/cancel',params:{sessionId:session}});let timer:NodeJS.Timeout|undefined;await Promise.race([done,new Promise(resolve=>{timer=setTimeout(resolve,5000);})]).finally(()=>clearTimeout(timer));if(!settled){await stopProcess();await done;}};
-  return {get pid(){return child.pid;},stdout,stderr,then:done.then.bind(done),interrupt,kill(){void interrupt();return true;}};
+  return {get pid(){return child.pid;},stdout,stderr,promptDispatch:dispatch.promise,then:done.then.bind(done),interrupt,kill(){void interrupt();return true;}};
 }

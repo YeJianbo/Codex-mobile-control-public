@@ -4,9 +4,9 @@ import {LocalConsoleClient, consoleStatistics} from './localConsole.js';
 import {creditBalance} from './usage.js';
 
 type Data=Record<string,any>;
-const sourceIds=['codex','agy','claude','zcode','grok','hermes','deepseek','opencode'] as const;
+const sourceIds=['codex','agy','claude','zcode','grok','hermes','deepseek','opencode','pi','research'] as const;
 type Source=typeof sourceIds[number];
-const sourceNames:Record<Source,string>={codex:'Codex',agy:'Antigravity',claude:'Claude Code',zcode:'ZCode',grok:'Grok',hermes:'Hermes',deepseek:'DeepSeek',opencode:'OpenCode'};
+const sourceNames:Record<Source,string>={codex:'Codex',agy:'Antigravity',claude:'Claude Code',zcode:'ZCode',grok:'Grok',hermes:'Hermes',deepseek:'DeepSeek',opencode:'OpenCode',pi:'Pi',research:'自动科研 Agent'};
 const object=(value:unknown):Data=>value&&typeof value==='object'&&!Array.isArray(value)?value as Data:{};
 const rows=(value:unknown,max=500):Data[]=>Array.isArray(value)?value.slice(0,max).map(object):[];
 const number=(value:unknown):number|null=>typeof value==='number'&&Number.isFinite(value)&&value>=0?value:null;
@@ -81,10 +81,10 @@ function referenceQuote(row:Data,folded:boolean){
 function tokenResult(raw:Data,source:Source,query:z.infer<typeof tokenQuery>){
   const result=consoleStatistics(raw,source,query.range,query.pricing),tokens=object(raw.tokens);
   const models=result.models.map(row=>{
-    const quote=row.usd===null&&!['codex','hermes','deepseek','opencode'].includes(source)?referenceQuote(row,source==='agy'||source==='claude'):null;
+    const quote=row.usd===null&&!['codex','hermes','deepseek','opencode','pi','research'].includes(source)?referenceQuote(row,source==='agy'||source==='claude'):null;
     return {...row,usd:row.usd??(quote?.currency==='USD'?quote.value:null),cny:quote?.currency==='CNY'?quote.value:null};
   });
-  const reference=!['codex','agy','hermes','deepseek','opencode'].includes(source),usd=models.filter(row=>row.usd!==null),cny=models.filter(row=>row.cny!==null);
+  const reference=!['codex','agy','hermes','deepseek','opencode','pi','research'].includes(source),usd=models.filter(row=>row.usd!==null),cny=models.filter(row=>row.cny!==null);
   const cost=reference?{...result.cost,usd:usd.length?usd.reduce((sum,row)=>sum+count(row.usd),0):null,cny:cny.length?cny.reduce((sum,row)=>sum+count(row.cny),0):null,basis:'api-reference',priceDate:models.some(row=>/glm-5[.]3/i.test(row.id))?'2026-10-24':result.cost.priceDate||'2026-09-24',unpricedRecords:models.filter(row=>row.usd===null&&row.cny===null).reduce((sum,row)=>sum+row.records,0)}:result.cost;
   return {...result,
     models,cost,

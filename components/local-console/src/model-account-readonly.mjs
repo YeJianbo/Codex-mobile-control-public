@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 
 const home=os.homedir();
 function executable(name,extras=[]){return [...extras,...(process.env.PATH||'').split(path.delimiter).map(dir=>path.join(dir,name+'.exe'))].find(file=>fs.existsSync(file));}
@@ -29,7 +30,9 @@ export class ReadonlyModelAccounts{
     if(!file)return row;
     try{
       // Only this verified built-in command is allowed: it performs zero agent turns.
-      const value=await jsonCommand(file,['-p','/usage','--output-format','json'],60000);
+      const launcher=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../gateway/dist/services/hidden-console-launcher.exe');
+      const useLauncher=process.platform==='win32'&&fs.existsSync(launcher);
+      const value=await jsonCommand(useLauncher?launcher:file,[...(useLauncher?[file]:[]),'-p','/usage','--output-format','json'],60000);
       if(value.status!=='SUCCESS'||value.command?.name!=='usage'||value.num_turns!==0||!Array.isArray(value.command?.data?.groups))throw new Error('无有效额度');
       row.configured=true;row.status='额度可读取';row.updatedAt=new Date().toISOString();
       row.windows=value.command.data.groups.flatMap(group=>(Array.isArray(group.buckets)?group.buckets:[]).flatMap(bucket=>{

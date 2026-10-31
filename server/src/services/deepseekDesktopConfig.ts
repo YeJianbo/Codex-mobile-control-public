@@ -22,7 +22,17 @@ export function deepseekDesktopProviderPatch():unknown[] {
   // patches can be applied to ACP without copying credentials or user files.
   return patches.filter(entry=>entry&&typeof entry==='object'&&
     (typeof entry.name==='string'&&entry.name.startsWith('@deepseek-ai/dsh-llm-')||
-     typeof entry.id==='string'&&entry.id.startsWith('llm-')));
+     typeof entry.id==='string'&&entry.id.startsWith('llm-'))).map((entry:any)=>{
+    const provider=entry.config?.providers?.ecnu;
+    if(!provider||provider.baseURL!=='https://chat.ecnu.edu.cn/open/api/v1')return entry;
+    // The school's DSH integration requires the explicit Chat Completions
+    // thinking switch; applying it to the transient ACP patch preserves the desktop config.
+    const models=(provider.models||[]).map((model:any)=>{
+      if(!['ecnu-max','ecnu-plus'].includes(model.id)||!model.reasoningEfforts)return model;
+      return {...model,reasoningEfforts:{...model.reasoningEfforts,off:null}};
+    });
+    return {...entry,config:{...entry.config,providers:{...entry.config.providers,ecnu:{...provider,api:'openai-completions',compat:{...provider.compat,supportsDeveloperRole:false,maxTokensField:'max_tokens',thinkingFormat:'deepseek'},models}}}};
+  });
 }
 
 export function deepseekDesktopReasoningModels(){

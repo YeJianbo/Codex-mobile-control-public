@@ -27,6 +27,7 @@ test('Grok ACP retains every reply chunk, configured executable and saved effort
  };
  const manager=new AgentSessions(store,{publish:e=>events.push(e)},launch,undefined,undefined,async()=>({command:'configured-grok.exe',source:'configured'}));
  manager.models=async()=>[{model:'grok::default',supportedReasoningEfforts:[]}];
+ manager.modelsForAgent=manager.models;
  const settle=async()=>{for(let i=0;i<100;i++){if(!manager.owns(threads[0].id))return;await new Promise(r=>setTimeout(r,5));}throw Error('ACP did not settle');};
  await manager.handle({type:'thread.start',model:'grok::default',projectPath:process.cwd(),permission:'ask',effort:'high',initialText:'fixture'});await settle();
  assert.equal(threads[0].status,'completed');assert.equal(events.filter(e=>e.type==='message.delta').map(e=>e.text).join(''),'**VERIFY_complete**');

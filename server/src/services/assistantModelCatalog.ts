@@ -9,7 +9,7 @@ type Loaders={
   claude:(refresh:boolean)=>Promise<OfficialCatalog>;
   antigravity:(refresh:boolean)=>Promise<OfficialCatalog>;
 };
-const transports:Record<Agent,'app-server'|'acp'>={codex:'app-server',zcode:'app-server',grok:'acp',deepseek:'acp',hermes:'acp',opencode:'acp',claude:'acp',antigravity:'acp'};
+const transports:Record<Agent,'app-server'|'acp'>={codex:'app-server',zcode:'app-server',grok:'acp',deepseek:'acp',hermes:'acp',opencode:'acp',claude:'acp',antigravity:'acp',pi:'acp',acp:'acp'};
 
 class CatalogSource<T>{
   value?:T;

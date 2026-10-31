@@ -94,7 +94,7 @@ export async function listThreadsWithCodexHistory(storedThreads: ThreadRecord[],
   }
   for(const [id,thread] of merged){
     if(pinned.has(id))thread.pinnedIndex=pinned.get(id);
-    else if(desktop.pinsAuthoritative&&!/^(claude|antigravity|grok|deepseek|hermes|opencode|zcode)-/.test(id))delete thread.pinnedIndex;
+    else if(desktop.pinsAuthoritative&&!/^(claude|antigravity|grok|deepseek|hermes|opencode|zcode|pi|acp)-/.test(id))delete thread.pinnedIndex;
   }
   for(const id of desktop.archived)merged.delete(id);
   if(desktop.threadsLoaded){
@@ -256,13 +256,37 @@ export function readCodexThreadEvents(threadId:string, count?:number,priority:'i
   const pending=historyReads.get(key);if(pending)return pending;
   const read=readHistory(threadId,count).finally(()=>historyReads.delete(key));historyReads.set(key,read);return read;
 }
+// Async questions live within the latest turn. Expand only when the retained
+// window omitted that turn's beginning, including after multiple steer messages.
+export async function readCodexQuestionEvents(threadId:string):Promise<GatewayEvent[]> {
+  if(isMainThread&&!/^(deepseek|zcode)-/.test(threadId))return historyWorkerCall('readCodexQuestionEvents',[threadId],'background');
+  if(/^(deepseek|zcode)-/.test(threadId))return readCodexThreadEvents(threadId);
+  const home=process.env.CODEX_HOME||path.join(os.homedir(),'.codex');
+  const files=await findSessionFiles(home,threadId);
+  const latestFile=files.at(-1);
+  if(!latestFile)return [];
+  if(latestFile.endsWith('.jsonl.zst'))return readCodexThreadEvents(threadId);
+  for(let turns=1;turns<=1024;turns*=2){
+    const events=await readHistoryFile(latestFile,threadId,Math.max(600,turns*4),turns+1);
+    const start=events.slice().reverse().find(event=>event.type==='turn.started');
+    if(start?.eventId){
+      const prefix=`history:${threadId}:${path.basename(canonicalRollout(latestFile))}:`;
+      const line=Number(start.eventId.slice(prefix.length)),cache=historyCache.get(latestFile);
+      if(start.eventId.startsWith(prefix)&&cache&&Number.isSafeInteger(line)&&line>cache.omittedThrough)return events;
+    }
+    if(events.filter(event=>event.type==='user.message').length<turns+1)break;
+  }
+  return readCodexThreadEvents(threadId);
+}
 export function selectConversationTurns(events:GatewayEvent[],turns:number):GatewayEvent[] {
   let remaining=turns;
   for(let i=events.length-1;i>=0;i--)if(events[i].type==='user.message'&&--remaining===0)return events.slice(i);
   return events;
 }
 export async function readCodexConversationPreview(threadId:string,turns:number,signal?:AbortSignal):Promise<GatewayEvent[]>{
-  if(isMainThread)return historyWorkerCall('readCodexConversationPreview',[threadId,turns],'interactive',signal);
+  // Resolve ZCode's gateway-to-native session alias on the main thread. The
+  // native transcript itself is still read by the history worker.
+  if(isMainThread&&!threadId.startsWith('zcode-'))return historyWorkerCall('readCodexConversationPreview',[threadId,turns],'interactive',signal);
   return confirmedToolChanges((await readCodexConversationEvents(threadId,turns)).filter(isVisibleMobileThreadEvent)).map(event=>deferMobileActivityDetails(event) as GatewayEvent);
 }
 
@@ -643,10 +667,13 @@ async function readHistoryFileExclusive(file:string,threadId:string,limit:number
         if(cached.turns&&event.type==='user.message'&&(row.type==='response_item'||!cached.hasResponse)){
           const first=selectConversationTurns(cached.hasResponse?cached.transcript:cached.fallback,cached.turns)[0];
           const firstLine=Number(first?.eventId?.split(':').at(-1))||0;
-          if(firstLine>cached.omittedThrough){
-            const keep=(event:GatewayEvent)=>Number(event.eventId?.split(':').at(-1))>=firstLine;
+          const currentStart=cached.events.slice().reverse().find(event=>event.type==='turn.started');
+          const startLine=Number(currentStart?.eventId?.split(':').at(-1))||firstLine;
+          const keepFrom=Math.min(firstLine,startLine);
+          if(keepFrom>cached.omittedThrough){
+            const keep=(event:GatewayEvent)=>Number(event.eventId?.split(':').at(-1))>=keepFrom;
             cached.events=cached.events.filter(keep);cached.transcript=cached.transcript.filter(keep);cached.fallback=cached.fallback.filter(keep);
-            cached.omittedThrough=firstLine-1;
+            cached.omittedThrough=keepFrom-1;
           }
         }
       }

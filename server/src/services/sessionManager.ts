@@ -2,6 +2,7 @@ import {CommandReceipts,SubmissionNotStartedError} from './commandReceipts.js';
 import {stripSessionInstructionPrefix} from './agentInstructions.js';
 import {deepseekNativeSessions} from './deepseekNativeSessions.js';
 import {zcodeNativeSessions} from './zcodeNativeSessions.js';
+import {zcodeDesktopSteer} from './zcodeDesktopSteer.js';
 import {assertControllableThread} from './cloudSnapshots.js';
 import {historyToolPresentation,invalidateCodexHistory,desktopAsyncQuestionEvent,splitDesktopAttachments} from './codexSessions.js';
 import {codexImageInputs,type ImageAttachment} from './imageUploads.js';
@@ -370,6 +371,7 @@ export class SessionManager {
     await this.pauseInterruptedGoal(threadId,'interrupted');
   }
   async steer(threadId:string,text:string,images:ImageAttachment[]=[],files:FileAttachment[]=[],desktopTurnId?:string):Promise<void> {
+    if(threadAgent(threadId)==='zcode'&&!this.agents.owns(threadId))return zcodeDesktopSteer.steer(threadId,text,images,files);
     if(['antigravity','zcode'].includes(threadAgent(threadId)))return this.agents.steer(threadId,text,images,files);
     const expectedTurnId=this.activeTurns.get(threadId)||desktopTurnId;
     if(!expectedTurnId)throw new Error('当前没有可引导的运行轮次，消息已保留在队列中');
@@ -383,7 +385,13 @@ export class SessionManager {
     if(command.type==='turn.start'&&command.replaceTurnId&&threadAgent(command.threadId)!=='codex')throw new Error('当前助手不支持覆盖已发送消息');
     if('threadId' in command)assertControllableThread(command.threadId||'');
     if((command.type==='thread.start'||command.type==='turn.start')&&(command.type==='thread.start'?modelAgent(command.model):threadAgent(command.threadId))!=='codex'){
-      await this.receipts.run(identity as typeof command,()=>this.executeClientCommand(command,viaPublic),()=>{},consumeQueued);
+      await this.receipts.run(identity as typeof command,async()=>{
+        const existing=command.type==='thread.start'?(await this.receipts.get(command.requestId||''))?.threadId:undefined;
+        if(existing&&command.type==='thread.start'){
+          const {initialText,...fields}=command;
+          await this.executeClientCommand({...fields,type:'turn.start',threadId:existing,text:initialText||''},viaPublic);
+        }else await this.executeClientCommand(command,viaPublic);
+      },()=>{},consumeQueued);
       this.hub.publish({type:'command.accepted',threadId:(await this.receipts.get(command.requestId||''))?.threadId||('threadId' in command?command.threadId:''),requestId:command.requestId});
       return;
     }

@@ -32,23 +32,24 @@ private fun nativeEventSignature(event:ChatEvent):NativeEventSignature?{
     if(event.text.isBlank()&&event.title.isBlank()&&event.detail.isBlank()&&event.images.isEmpty()&&event.uploads.isEmpty()&&event.attachments.isEmpty())return null
     return NativeEventSignature(event.type,event.text,event.title,event.detail,event.status,event.images,event.uploads,event.attachments)
 }
+private fun isNativeHistory(event:ChatEvent)=event.eventId.startsWith("history:")||event.eventId.startsWith("zcode-history:")||event.eventId.startsWith("deepseek-history:")
 // A live event gets a new eventId when the Codex transcript replaces it. Reuse
 // its row key only for an unambiguous match; eventId stays intact for APIs.
 internal fun preserveNativeEventKeys(previous:List<ChatEvent>,incoming:List<ChatEvent>):List<ChatEvent>{
     // Polling can return new objects with identical values. Keep the active
     // snapshot so its streaming buffer and lookup index remain warm.
     if(previous==incoming)return previous
-    val live=previous.filter{it.eventId.isNotBlank()&&!it.eventId.startsWith("history:")}
+    val live=previous.filter{it.eventId.isNotBlank()&&!isNativeHistory(it)}
     val oldById=previous.filter{it.displayKey.isNotBlank()}.associateBy{it.eventId}
     if(live.isEmpty()&&oldById.isEmpty())return incoming
     val unique=live.mapNotNull{event->nativeEventSignature(event)?.let{it to event}}.groupBy({it.first},{it.second}).filterValues{it.size==1}.mapValues{it.value.single()}
     val counts=mutableMapOf<NativeEventSignature,Int>()
-    if(unique.isNotEmpty())incoming.forEach{event->if(event.eventId.startsWith("history:"))nativeEventSignature(event)?.takeIf{it in unique}?.let{counts[it]=(counts[it]?:0)+1}}
+    if(unique.isNotEmpty())incoming.forEach{event->if(isNativeHistory(event))nativeEventSignature(event)?.takeIf{it in unique}?.let{counts[it]=(counts[it]?:0)+1}}
     val incomingIds=incoming.map{it.eventId}.toSet()
     val identified=incoming.map{event->
         val known=oldById[event.eventId]
         if(known!=null){if(known.displayKey==event.displayKey)event else event.copy(displayKey=known.displayKey)}
-        else if(event.eventId.startsWith("history:")){
+        else if(isNativeHistory(event)){
             val signature=nativeEventSignature(event)
             val old=signature?.takeIf{counts[it]==1}?.let{unique[it]}
             if(old!=null&&old.eventId !in incomingIds){
@@ -80,7 +81,7 @@ internal fun reconcileNativeHistory(previous:List<ChatEvent>,incoming:List<ChatE
     if(identified==previous)return previous
     val textTypes=TimelineTypes.text
     fun item(event:ChatEvent)=event.itemId.takeIf{it.isNotBlank()&&!it.startsWith("history:")}?.let{event.type to it}
-    val snapshots=identified.filter{it.type in textTypes&&it.eventId.startsWith("history:")&&item(it)!=null}.associateBy{item(it)!!}
+    val snapshots=identified.filter{it.type in textTypes&&isNativeHistory(it)&&item(it)!=null}.associateBy{item(it)!!}
     val partialItems=snapshots.filterValues{!it.textComplete}.keys
     val next=if(partialItems.isEmpty())identified else {
         val oldText=previous.filter{it.type in textTypes&&item(it) in partialItems}.groupBy{item(it)!!}
@@ -102,14 +103,14 @@ internal fun reconcileNativeHistory(previous:List<ChatEvent>,incoming:List<ChatE
     }
     val ids=next.map{it.eventId}.filter{it.isNotBlank()}.toSet()
     val submitted=next.filter{it.type=="user.message"&&it.requestId.isNotBlank()}.map{it.requestId}.toSet()
-    val rawItems=next.filter{!it.eventId.startsWith("history:")}.mapNotNull{item(it)}.toSet()
+    val rawItems=next.filter{!isNativeHistory(it)}.mapNotNull{item(it)}.toSet()
     val compactedItems=next.filter{it.type=="context.compaction"&&it.status!="running"}.mapNotNull{item(it)}.toSet()
-    val historyCutoffs=next.filter{it.eventId.startsWith("history:")&&it.createdAt.isNotBlank()}.groupBy{it.type}.mapValues{(_,events)->events.maxOf{it.createdAt}}
-    val savedSignatures=next.filter{it.eventId.startsWith("history:")}.mapNotNull{nativeEventSignature(it)}.groupingBy{it}.eachCount()
+    val historyCutoffs=next.filter{isNativeHistory(it)&&it.createdAt.isNotBlank()}.groupBy{it.type}.mapValues{(_,events)->events.maxOf{it.createdAt}}
+    val savedSignatures=next.filter(::isNativeHistory).mapNotNull{nativeEventSignature(it)}.groupingBy{it}.eachCount()
     val previousSignatures=previous.mapNotNull{nativeEventSignature(it)}.groupingBy{it}.eachCount()
     val missing=previous.filter{event->
         val signature=nativeEventSignature(event)
-        event.eventId.isNotBlank()&&event.eventId !in ids&&!event.eventId.startsWith("history:")&&
+        event.eventId.isNotBlank()&&event.eventId !in ids&&!isNativeHistory(event)&&
             !(event.type=="user.message"&&event.requestId.isNotBlank()&&event.requestId in submitted)&&
             item(event) !in snapshots&&
             !(event.type=="context.compaction"&&item(event) in compactedItems)&&
@@ -334,7 +335,7 @@ internal fun orderNativeTurnEvents(events:List<ChatEvent>):List<ChatEvent>{
             if(id.isNotBlank()){
                 val prior=ends[id]
                 if(prior==null)ends[id]=index
-                else {duplicate.add(index);if(event.eventId.startsWith("history:")&&!events[prior].eventId.startsWith("history:"))replacements[prior]=event}
+                else {duplicate.add(index);if(isNativeHistory(event)&&!isNativeHistory(events[prior]))replacements[prior]=event}
                 if(active==id)active=null
             }
         }

@@ -24,7 +24,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-internal data class QuotaOverviewWindow(val name:String,val remaining:Double,val resetsAt:String)
+internal data class QuotaOverviewWindow(val name:String,val remaining:Double,val resetsAt:String,val estimate:JSONObject?=null)
 internal data class QuotaOverviewAccount(val id:String,val label:String,val active:Boolean,val plan:String,val updatedAt:String,val stale:Boolean,val configured:Boolean,val reason:String,val windows:List<QuotaOverviewWindow>,val credits:JSONObject?=null)
 internal data class QuotaOverviewSource(val id:String,val label:String,val accounts:List<QuotaOverviewAccount> = emptyList(),val refreshing:Boolean=false,val error:String="",val supported:Boolean=true,val refreshable:Boolean=true)
 private fun JSONObject.quotaText(key:String)=optString(key).takeUnless{it=="null"}.orEmpty()
@@ -38,7 +38,7 @@ private fun parseQuotaOverview(value:JSONObject):QuotaOverviewSource{
             (0 until (windows?.length()?:0)).mapNotNull windowLoop@{windowIndex->
                 val window=windows?.optJSONObject(windowIndex)?:return@windowLoop null
                 val remaining=window.optDouble("remainingPercent",Double.NaN).takeIf{it.isFinite()&&it in 0.0..100.0}?:return@windowLoop null
-                QuotaOverviewWindow(window.quotaText("name"),remaining,window.quotaText("resetsAt"))
+                QuotaOverviewWindow(window.quotaText("name"),remaining,window.quotaText("resetsAt"),window.optJSONObject("estimate"))
             },row.optJSONObject("credits"))
     },value.optBoolean("refreshing"),value.quotaText("error"),value.optBoolean("supported",true),value.optBoolean("refreshable",true))
 }
@@ -202,6 +202,14 @@ private fun parseQuotaOverview(value:JSONObject):QuotaOverviewSource{
                 }
                 LinearProgressIndicator((window.remaining/100).toFloat(),Modifier.fillMaxWidth().height(5.dp),color=if(window.remaining<10)MaterialTheme.colors.error else MaterialTheme.colors.primary,backgroundColor=MaterialTheme.colors.onSurface.copy(alpha=.065f))
                 Text(if(window.resetsAt.isNotBlank())quotaOverviewTime(window.resetsAt)+" 重置" else "重置时间未提供",fontSize=10.sp,color=muted)
+                window.estimate?.let{estimate->
+                    val label=if(estimate.optString("state")=="estimated"){
+                        val tokens=nativeTokenCount(estimate.optDouble("tokens").toLong())
+                        val amount=if(estimate.isNull("usd"))"金额暂无价格" else (if(estimate.optBoolean("partial"))"部分金额 " else "")+"\$"+String.format(Locale.US,"%.2f",estimate.optDouble("usd"))
+                        "本机折算 $tokens Token · $amount"
+                    }else "估算采样中"
+                    Text(label,fontSize=10.sp,color=muted)
+                }
             }
         }
         if(group.size==1)Spacer(Modifier.weight(1f))
@@ -210,6 +218,7 @@ private fun parseQuotaOverview(value:JSONObject):QuotaOverviewSource{
 
 @Composable private fun QuotaAccountFoot(account:QuotaOverviewAccount){
     val muted=MaterialTheme.colors.onSurface.copy(alpha=.62f)
+    if(account.windows.any{it.estimate!=null})Text("本机用量折算，账号归属无法确认",fontSize=10.sp,color=muted)
     if(account.windows.isEmpty())Text(if(account.configured)"暂无额度记录" else "未登录",fontSize=12.sp,color=muted)
     Text(if(account.updatedAt.isNotBlank())quotaOverviewTime(account.updatedAt)+" 采集"+(if(account.stale)" · 上次成功数据" else "")else "尚无采集记录",fontSize=10.sp,color=muted)
     if(account.reason.isNotBlank())Text(account.reason,fontSize=11.sp,color=muted,maxLines=3,overflow=TextOverflow.Ellipsis)

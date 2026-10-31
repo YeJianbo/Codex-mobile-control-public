@@ -9,6 +9,7 @@ import {zcodeRecoveryInputPrefix,zcodeRecoveryPrompt} from '../src/services/zcod
 import {mergeZcodeThreadEvents} from '../src/services/mobileHistory.ts';
 import {closeHistoryWorkers} from '../src/services/historyWorkers.ts';
 import {SessionManager} from '../src/services/sessionManager.ts';
+import {readCodexConversationPreview} from '../src/services/codexSessions.ts';
 
 test('discarded attempts and automatic continuation remain one logical ZCode turn',()=>{
  const messages=[],parts=[];
@@ -79,6 +80,7 @@ test('desktop changes refresh the original gateway thread without taking ownersh
   assert.equal(opened[0].thread.id,id);
   let snapshot=await zcodeNativeSessions.read(id);
   assert.equal(snapshot.events.filter(e=>e.type==='user.message').length,1);
+  assert.equal((await readCodexConversationPreview(id,10)).find(e=>e.type==='user.message')?.text,'原始请求');
   assert.equal(snapshot.events.find(e=>e.type==='message.delta').text,'正在回答');
   assert.equal(snapshot.events.filter(e=>e.type==='tool.started').length,1);
   events.length=0;
@@ -91,6 +93,7 @@ test('desktop changes refresh the original gateway thread without taking ownersh
   assert.ok(events.some(e=>e.type==='turn.completed'&&e.threadId===id&&e.status==='completed'));
   snapshot=await zcodeNativeSessions.read(id);
   assert.equal(snapshot.thread.status,'completed');assert.equal(snapshot.events.find(e=>e.type==='message.delta').text,'已经回答完毕');
+  assert.equal((await readCodexConversationPreview(id,10)).find(e=>e.type==='message.delta')?.text,'已经回答完毕');
   const saved=[{type:'user.message',threadId:id,turnId:'gateway-turn',text:'原始请求',createdAt:new Date(now+1).toISOString(),images:[{id:'image'}]},
     {type:'turn.started',threadId:id,turnId:'gateway-turn',createdAt:new Date(now+1).toISOString()},
     {type:'message.delta',threadId:id,turnId:'gateway-turn',itemId:'gateway-turn:reply',text:'正在回答'},

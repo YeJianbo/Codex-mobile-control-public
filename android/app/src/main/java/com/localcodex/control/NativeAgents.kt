@@ -1,14 +1,14 @@
 package com.localcodex.control
 
 fun nativeAgent(model:String):String=model.substringBefore("::","codex").takeIf{it in nativeHarnesses}?:"codex"
-internal val nativeHarnesses=listOf("codex","claude","antigravity","grok","deepseek","hermes","opencode","zcode")
+internal val nativeHarnesses=listOf("codex","claude","antigravity","grok","deepseek","hermes","opencode","zcode","pi","acp")
 fun nativeModelCatalogOrDefaults(models:List<NativeModel>):List<NativeModel> = models.ifEmpty {
     nativeHarnesses.map { agent ->
         NativeModel(if(agent=="codex")"" else "$agent::default","默认模型",emptyList(),"",available=false,unavailableReason="尚未获取模型目录，请重新检查连接")
     }
 }
 fun nativeThreadAgent(id:String):String=id.substringBefore('-').takeIf{it in nativeHarnesses}?:"codex"
-fun nativeAgentName(agent:String):String=when(agent){"claude"->"Claude Code";"antigravity"->"Antigravity";"grok"->"Grok Build";"deepseek"->"DeepSeek Harness";"hermes"->"Hermes";"opencode"->"OpenCode";"zcode"->"ZCode";else->"Codex"}
+fun nativeAgentName(agent:String):String=when(agent){"claude"->"Claude Code";"antigravity"->"Antigravity";"grok"->"Grok Build";"deepseek"->"DeepSeek Harness";"hermes"->"Hermes";"opencode"->"OpenCode";"zcode"->"ZCode";"pi"->"Pi";"acp"->"自定义 ACP";else->"Codex"}
 
 internal fun nativeModelProviderId(model:NativeModel):String=model.providerId.ifBlank{
     if(model.harness=="opencode")model.id.substringAfter("::").substringBefore('/',"") else ""

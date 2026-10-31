@@ -64,6 +64,15 @@ class NativeOutputIntegrityTest {
         val updated=listOf(old[0].copy(text="新请求",eventId="snapshot:t:new:0"),old[1].copy(text="新摘要",eventId="snapshot:t:new:1"))
         assertEquals(updated,reconcileNativeHistory(old,updated,false,retainLive=false))
     }
+    @Test fun nativeHarnessHistoryCannotBeAppendedAfterANewerWindow(){
+        for(prefix in listOf("zcode-history:","deepseek-history:")){
+            val old=ChatEvent("user.message","t",text="旧消息",eventId=prefix+"old",createdAt="2026-10-31T09:22:00Z")
+            val latest=ChatEvent("user.message","t",text="新消息",eventId=prefix+"new",createdAt="2026-10-31T09:56:00Z")
+            assertEquals(listOf(latest),reconcileNativeHistory(listOf(old),listOf(latest),true))
+            val live=ChatEvent("message.delta","t",text="实时回复",eventId="live:reply",itemId="reply",createdAt="2026-10-31T09:57:00Z")
+            assertEquals(listOf(old,latest,live),reconcileNativeHistory(listOf(old,live),listOf(latest),true))
+        }
+    }
     private fun sha(value:String)=MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString(""){"%02x".format(it)}
     @Test fun longActiveReplyIsNeverCutAtTheEventLimit(){
         val id="antigravity-fixture"

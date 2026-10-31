@@ -16,6 +16,7 @@ import {deepseekNativeSessions} from './deepseekNativeSessions.js';
 import {zcodeNativeSessions} from './zcodeNativeSessions.js';
 import {AgyUsageReader} from './agyUsage.js';
 import {AgyCliPool} from './agyCli.js';
+import {agyProcess} from './agyProcess.js';
 import {readAgySessionTokens,agyContextWindow} from './agySessionTokens.js';
 export {agyContextWindow} from './agySessionTokens.js';
 import {officialAcp,readOfficialAcpCatalog} from './claudeAcp.js';
@@ -24,8 +25,10 @@ import {catalogReadBudget} from './catalogReadBudget.js';
 import {readZcodeCatalog,zcodeRun} from './zcodeClient.js';
 import {readZcodeSessionTokens,zcodeSessionTokens} from './zcodeUsage.js';
 import {withZcodeRuntime} from './zcodeRuntime.js';
+import {SubmissionFailure} from './submissionErrors.js';
+import {readCustomAcp,customAcpModel,customAcpStamp,parseCustomAcpModel} from './customAcp.js';
 
-const commands={claude:'claude',antigravity:'agy',grok:'grok',deepseek:'dsh',hermes:'hermes',opencode:'opencode',zcode:'zcode'};
+const commands={claude:'claude',antigravity:'agy',grok:'grok',deepseek:'dsh',hermes:'hermes',opencode:'opencode',zcode:'zcode',pi:'pi-acp',acp:'custom-acp'};
 const agyEfforts=['low','medium','high','xhigh','max'];
 const agyVariant=/-(low|medium|high|xhigh|max)$/;
 // Antigravity's stream input only accepts text blocks. Handing over the local
@@ -43,15 +46,16 @@ export function agyTailRecovered(responded:boolean,failed:boolean,stderr:string)
   return responded&&!failed&&agyTransportNoise.test(stderr);
 }
 const sortAgentModels=(models:PickerModel[])=>models.sort((a,b)=>modelAgent(a.model)==='opencode'&&modelAgent(b.model)==='opencode'?(a.providerId||'').localeCompare(b.providerId||'')||(a.model==='opencode::default'?-1:b.model==='opencode::default'?1:0)||(a.shortName||a.displayName).localeCompare(b.shortName||b.displayName):a.model.localeCompare(b.model));
-type Meta={session?:string;model?:string;effort?:string;actualModel?:string;transport?:'acp';tokens?:Record<string,number|null>};
+type Meta={session?:string;model?:string;effort?:string;actualModel?:string;transport?:'acp';tokens?:Record<string,number|null>;customIdentity?:string};
 export class AgentSessions {
   onThreadCreated?:(requestId:string|undefined,threadId:string)=>Promise<void>;
   private active=new Map<string,{process:any;stopped:boolean;turnId:string}>();
   private starting=new Set<string>();
-  private catalog?:{at:number;models:PickerModel[];deepseekStamp:string;opencodeStamp:string};
+  private catalog?:{at:number;models:PickerModel[];deepseekStamp:string;opencodeStamp:string;customStamp:string};
   private catalogRead?:Promise<PickerModel[]>;
   private pickerReads=new Map<CliAgent,Promise<void>>();
   private readonly pickerSources=new Map<CliAgent,PickerModel[]>();
+  private readonly pickerStamps=new Map<CliAgent,string|undefined>();
   private readonly pickerPending=new Set<CliAgent>();
   private permissions=new Map<string,{threadId:string;resolve:(accept:boolean)=>void}>();
   private questions=new Map<string,{threadId:string;questions:{id:string;question:string;header?:string;options?:any[]}[];resolve:(answers:Record<string,string>|null)=>void}>();
@@ -101,7 +105,7 @@ export class AgentSessions {
       const supportsPlan=this.planCapabilities.get(agent)===true||agent==='claude'||agent==='antigravity';
       const protocolError=this.protocolErrors.get(agent)||'';
       const loginExpired=/token refresh failed|session has ended|please log in again|not logged in|authentication required/i.test(protocolError);
-      return {agent,name:agentNames[agent],installed,publicAllowed,available:enabled&&installed&&!this.protocolErrors.has(agent)&&(!viaPublic||publicAllowed),supportsImages:this.imageCapabilities.get(agent),supportsPlan,supportsPlanMode:supportsPlan,supportsApproval:agent!=='antigravity',accountStatus:loginExpired?'reauth-required':'not-checked',reason:!enabled?'此网关未启用该助手':viaPublic&&!publicAllowed?'此助手的公网访问已关闭':!installed?(this.discoveryErrors.get(agent)||'未检测到 CLI'):loginExpired?'登录已失效，请在账号中重新授权':protocolError,discovery:this.executables.get(agent)?.source};
+      return {agent,name:agentNames[agent],installed,publicAllowed,available:enabled&&installed&&!this.protocolErrors.has(agent)&&(!viaPublic||publicAllowed),supportsImages:this.imageCapabilities.get(agent),supportsPlan,supportsPlanMode:supportsPlan,supportsApproval:agent!=='antigravity'&&agent!=='pi'&&agent!=='acp',accountStatus:loginExpired?'reauth-required':'not-checked',reason:!enabled?'此网关未启用该助手':viaPublic&&!publicAllowed?'此助手的公网访问已关闭':!installed?(this.discoveryErrors.get(agent)||'未检测到 CLI'):loginExpired?'登录已失效，请在账号中重新授权':protocolError,discovery:this.executables.get(agent)?.source};
     });
   }
   async health(refresh=false,viaPublic=false){
@@ -111,7 +115,7 @@ export class AgentSessions {
       if(!this.healthDiscoveryRead){
         this.healthDiscoveryRead=Promise.all((Object.keys(commands) as CliAgent[]).map(async agent=>{
           if(process.env.CODEX_MOBILE_CONTROL_AGENTS&&!process.env.CODEX_MOBILE_CONTROL_AGENTS.split(',').includes(agent))return;
-          try{await this.executable(agent);}
+          try{if(agent!=='acp')await this.executable(agent);}
           catch(error){this.executables.delete(agent);this.discoveryErrors.set(agent,String((error as Error).message));}
         })).then(()=>{this.healthDiscoveryAt=Date.now();}).finally(()=>{this.healthDiscoveryRead=undefined;});
       }
@@ -122,14 +126,16 @@ export class AgentSessions {
       const agent=backend.agent,command=this.executables.get(agent)?.command;
       let version=this.healthVersions.get(agent);
       if(version?.command!==command)version=undefined;
-      if(backend.installed&&command&&(refresh||!version||Date.now()-version.at>300000)){
+      if(agent!=='pi'&&agent!=='acp'&&backend.installed&&command&&(refresh||!version||Date.now()-version.at>300000)){
         const readKey=JSON.stringify([agent,command]);
         let pending=this.healthVersionReads.get(readKey);
         if(!pending){
           pending=(async()=>{
             let next:{command:string;version:string;error:string;at:number};
             try{
-              const result=await this.discover(command,[...(this.executables.get(agent)?.args||[]),'--version'],{timeout:agent==='hermes'?20000:10000,windowsHide:true,reject:false});
+              const args=[...(this.executables.get(agent)?.args||[]),'--version'];
+              const target=agent==='antigravity'?agyProcess(command,args):{command,args};
+              const result=await this.discover(target.command,target.args,{timeout:agent==='hermes'?20000:10000,windowsHide:true,reject:false});
               next={command,version:result.exitCode===0?result.stdout.trim().split(/\r?\n/)[0].slice(0,160):version?.version||'',error:result.exitCode===0?'':'版本检查未成功',at:Date.now()};
             }catch{next={command,version:version?.version||'',error:'版本检查超时或不可用',at:Date.now()};}
             if(this.executables.get(agent)?.command===command)this.healthVersions.set(agent,next);
@@ -196,6 +202,7 @@ export class AgentSessions {
     const forceRefresh=refresh;
     if(this.catalog&&this.catalog.deepseekStamp!==deepseekConfigStamp())refresh=true;
     if(this.catalog&&this.catalog.opencodeStamp!==opencodeConfigStamp())refresh=true;
+    if(this.catalog&&this.catalog.customStamp!==customAcpStamp())refresh=true;
     if(!refresh&&this.catalog&&Date.now()-this.catalog.at<300000)return this.catalog.models;
     if(!this.catalogRead){
       this.catalogRead=this.discoverModels(forceRefresh).then(models=>{this.catalogRead=undefined;return models;},error=>{this.catalogRead=undefined;throw error;});
@@ -204,17 +211,61 @@ export class AgentSessions {
     if(this.catalog&&!refresh){void this.catalogRead.catch(()=>{});return this.catalog.models;}
     const models=await this.catalogRead;
     if(this.catalog&&this.catalog.opencodeStamp!==opencodeConfigStamp())return this.models();
+    if(this.catalog&&this.catalog.customStamp!==customAcpStamp())return this.models();
     return models;
+  }
+  // Only these harnesses read a user-editable config that a stamp tracks; other
+  // catalogs have no per-agent configuration to wait for.
+  private agentStamp(agent:CliAgent):string|undefined{
+    return agent==='deepseek'?deepseekConfigStamp():agent==='opencode'?opencodeConfigStamp():agent==='acp'?customAcpStamp():undefined;
   }
   private async modelsForAgent(agent:CliAgent):Promise<PickerModel[]>{
     const all=this.models();void all.catch(()=>{});
+    const retryable=(message:string)=>Object.assign(new Error(message),{retryable:true});
     // A ready harness must not wait for another harness's CLI discovery timeout.
-    if(!this.catalog){const own=this.pickerReads.get(agent);if(own)await own;else return (await all).filter(model=>modelAgent(model.model)===agent);}
+    if(!this.catalog){
+      const own=this.pickerReads.get(agent);
+      if(own)await own.catch(()=>{});
+      else if(!this.pickerSources.has(agent)){
+        // No in-flight read and no settled source covers this agent: either discovery
+        // excludes it or this round's read already failed. A successfully read empty
+        // catalog does have a settled source (has() true) and must not land here —
+        // it is a real "model unavailable" result, handled by the normal return.
+        // Awaiting the whole round here would stall validation behind unrelated
+        // harnesses, so fail fast with a retryable error instead.
+        const included=!process.env.CODEX_MOBILE_CONTROL_AGENTS||process.env.CODEX_MOBILE_CONTROL_AGENTS.split(',').includes(agent);
+        throw retryable(included?'模型目录验证尚未就绪，请稍后重试':'该助手未参与本次模型目录发现，请稍后重试');
+      }
+    }
+    for(let extra=0;;){
+      // A config change (deepseek/OpenCode stamp) makes this agent's cached picker
+      // list stale: wait for its own refresh and validate against the new source
+      // instead of silently trusting the old one.
+      const stamp=this.agentStamp(agent);
+      if(stamp===undefined||this.pickerStamps.get(agent)===stamp)break;
+      const own=this.pickerReads.get(agent);
+      // Only this agent's own read is awaited; other harnesses' discovery must
+      // never delay this validation.
+      if(own){await own.catch(()=>{});continue;}
+      // No in-flight read covers the new stamp: the previous round settled
+      // without a successful read for this agent (its source and stamp were
+      // left untouched) or the config changed mid-round. A plain models() call
+      // would now spin on its cache — the catalog stamps already match the
+      // current config even though this agent's read failed — so start an
+      // explicit refresh round and wait only for this agent's read inside it.
+      if(++extra>3)throw retryable('模型目录验证未能在新配置下完成（配置持续变化或刷新失败），请稍后重试');
+      if(this.catalogRead)throw retryable('模型目录正在重新发现，无法立即为该助手重启验证，请稍后重试');
+      void this.models(true).catch(()=>{});
+      const started=this.pickerReads.get(agent);
+      if(!started)throw retryable('该助手未参与本次模型目录发现，请稍后重试');
+      await started.catch(()=>{});
+    }
     return this.pickerSources.get(agent)||this.catalog?.models.filter(model=>modelAgent(model.model)===agent)||[];
   }
   private async discoverModels(refresh=false):Promise<PickerModel[]>{
     const deepseekStamp=deepseekConfigStamp();
     let opencodeStamp=opencodeConfigStamp();
+    const customStamp=customAcpStamp();
     const agents=(Object.keys(commands) as CliAgent[]).filter(agent=>!process.env.CODEX_MOBILE_CONTROL_AGENTS||process.env.CODEX_MOBILE_CONTROL_AGENTS.split(',').includes(agent));
     for(const agent of Object.keys(commands) as CliAgent[]){
       if(agents.includes(agent))this.pickerPending.add(agent);else this.pickerSources.delete(agent);
@@ -223,19 +274,38 @@ export class AgentSessions {
       const read=(async()=>{
       if(process.env.CODEX_MOBILE_CONTROL_AGENTS&&!process.env.CODEX_MOBILE_CONTROL_AGENTS.split(',').includes(engine))return;
       const models:PickerModel[]=[];
+      // Success is tracked explicitly: a failed read must neither apply its
+      // (possibly partial) list nor stamp the previous source as if it had been
+      // read against the current config. Failure keeps both untouched so the
+      // next round can retry and revalidate.
+      let succeeded=false;
       try{
         const agent=engine as Exclude<Agent,'codex'>;
+        if(agent==='acp'){
+          const configurations=readCustomAcp();
+          if(!configurations.length){this.executables.delete(agent);this.discoveryErrors.set(agent,'尚未添加 ACP 助手');succeeded=true;return;}
+          let firstError='';
+          for(const entry of configurations){
+            try{
+              const catalog=await readHarnessCatalog('acp',entry.command,process.cwd(),this.discover,refresh,entry.args);
+              models.push(...catalog.models.map(model=>({...model,model:customAcpModel(entry.id,model.model.slice('acp::'.length)),displayName:entry.name+' · '+model.displayName.replace(/^自定义 ACP · /,'')})));
+            }catch(error){firstError||=String((error as Error).message);}
+          }
+          if(models.length){this.executables.set(agent,{command:configurations[0].command,source:'configured'});this.discoveryErrors.delete(agent);this.protocolErrors.delete(agent);}
+          else{this.executables.delete(agent);this.discoveryErrors.set(agent,firstError||'ACP 助手暂不可用');}
+          succeeded=true;return;
+        }
         const command=(await this.executable(agent)).command;
         if(agent==='zcode'){
-          try{const catalog=await readZcodeCatalog(this.executables.get(agent)!,process.cwd(),this.launch);this.protocolErrors.delete(agent);this.imageCapabilities.set(agent,catalog.supportsImages);this.planCapabilities.set(agent,true);models.push(...catalog.models);}
+          try{const catalog=await readZcodeCatalog(this.executables.get(agent)!,process.cwd(),this.launch);this.protocolErrors.delete(agent);this.imageCapabilities.set(agent,catalog.supportsImages);this.planCapabilities.set(agent,true);models.push(...catalog.models);succeeded=true;}
           catch(error){this.protocolErrors.set(agent,(error as Error).message);}
           return;
         }
-        if(agent==='deepseek'||agent==='hermes'||agent==='opencode'){
+        if(agent==='deepseek'||agent==='hermes'||agent==='opencode'||agent==='pi'){
           try{
             if(agent==='opencode'){await refreshOpencodeModels(command,process.cwd(),this.discover,refresh);opencodeStamp=opencodeConfigStamp();}
             const catalog=await readHarnessCatalog(agent,command,process.cwd(),this.discover);
-            this.protocolErrors.delete(agent);this.imageCapabilities.set(agent,catalog.supportsImages);this.planCapabilities.set(agent,catalog.supportsPlanMode);models.push(...catalog.models);
+            this.protocolErrors.delete(agent);this.imageCapabilities.set(agent,catalog.supportsImages);this.planCapabilities.set(agent,catalog.supportsPlanMode);models.push(...catalog.models);succeeded=true;
           }catch(error){this.protocolErrors.set(agent,String((error as Error).message));}
           return;
         }
@@ -250,7 +320,8 @@ export class AgentSessions {
           const baseModels=new Map<string,PickerModel>();
           let result;
           try{
-            result=await this.discover(command,['models'],{timeout:30000,windowsHide:true,reject:false});
+            const target=agyProcess(command,['models']);
+            result=await this.discover(target.command,target.args,{timeout:30000,windowsHide:true,reject:false});
             if(result.exitCode!==0)throw Error(result.stderr||result.stdout||'AGY 模型目录读取失败');
             if(!result.stdout.split(/\r?\n/).some(line=>/^([\w.-]+)\t(.+)$/.test(line)))throw Error('AGY 未返回可用模型目录');
           }catch(error){
@@ -288,21 +359,28 @@ export class AgentSessions {
         }else{
           const catalog=await readAgentCatalog(agent,command,this.discover).catch(()=>({models:[],supportsImages:undefined}));
           if(typeof catalog.supportsImages==='boolean')this.imageCapabilities.set(agent,catalog.supportsImages);
-          if(catalog.models.length){models.push(...catalog.models);return;}
+          if(catalog.models.length){models.push(...catalog.models);succeeded=true;return;}
           add('default','默认模型');
           // Claude has no models subcommand: it treats this word as a prompt and starts a session.
-          if(agent==='claude')return;
+          if(agent==='claude'){succeeded=true;return;}
           const result=await this.discover(command,['models'],{timeout:12000,windowsHide:true,reject:false});
           for(const line of result.stdout.split(/\r?\n/)){
             const match=/^\s*[-*]\s+([\w.-]+)(?:\s|$)/.exec(line);
             if(match)add(match[1],match[1]);
           }
         }
+        succeeded=true;
       }catch(error){this.executables.delete(engine as CliAgent);this.discoveryErrors.set(engine as CliAgent,String((error as Error).message));}
       finally{
         const agent=engine as CliAgent;
-        // A failed refresh preserves the last successful source and its model IDs.
-        if(models.length||!this.pickerSources.has(agent))this.pickerSources.set(agent,models);
+        if(succeeded){
+          this.pickerSources.set(agent,models);
+          // Stamp each source with the config it was actually read against, so a
+          // later config change is visible to per-agent validation.
+          this.pickerStamps.set(agent,agent==='opencode'?opencodeStamp:agent==='deepseek'?deepseekStamp:agent==='acp'?customStamp:undefined);
+        }
+        // On failure the previous source and its stamp stay untouched: the source
+        // still belongs to the previous config and the round remains retryable.
         this.pickerPending.delete(agent);
       }
       })();
@@ -311,7 +389,7 @@ export class AgentSessions {
       return read;
     }));
     const models=[...this.pickerSources.values()].flat();
-    sortAgentModels(models);this.catalog={at:Date.now(),models,deepseekStamp,opencodeStamp};return models;
+    sortAgentModels(models);this.catalog={at:Date.now(),models,deepseekStamp,opencodeStamp,customStamp};return models;
   }
   async validate(model?:string,id?:string){
     if(model?.startsWith('deepseek::'))model='deepseek::'+canonicalDeepseekModel(model.slice('deepseek::'.length));
@@ -434,14 +512,19 @@ export class AgentSessions {
     if(model?.startsWith('deepseek::'))model='deepseek::'+canonicalDeepseekModel(model.slice('deepseek::'.length));
 
     const agent=(id?threadAgent(id):modelAgent(model)) as Exclude<Agent,'codex'>;
+    const custom=agent==='acp'?parseCustomAcpModel(model||''):undefined;
+    const customIdentity=custom?JSON.stringify([custom.config.id,custom.config.command,custom.config.args]):undefined;
+    if(custom&&meta.customIdentity&&meta.customIdentity!==customIdentity)throw Error('此会话的 ACP 配置已更改，请恢复原配置或新建会话');
+    if(custom&&id&&meta.model&&parseCustomAcpModel(meta.model).config.id!==custom.config.id)throw Error('当前会话属于另一个 ACP 助手，请新建会话');
     const official=(command.agentTransport==='acp'||meta.transport==='acp')&&(agent==='claude'||agent==='antigravity');
     if(official&&meta.session&&meta.transport!=='acp')throw Error('原会话使用 CLI 协议，请创建新的 ACP 助理任务');
     if(official){const catalog=await this.officialModels(agent);if(!catalog.available)throw Error(catalog.reason);if(model&&!catalog.models.some(entry=>entry.model===model))throw Error('该模型不在 ACP 目录中');}
     else await this.validate(model,id);
-    if(['grok','deepseek','hermes','opencode'].includes(agent)&&command.mode==='plan'&&this.planCapabilities.get(agent)!==true)throw Error(`${agentNames[agent]} 当前配置未提供计划模式`);
+    if(['grok','deepseek','hermes','opencode','pi','acp'].includes(agent)&&command.mode==='plan'&&this.planCapabilities.get(agent)!==true)throw Error(`${agentNames[agent]} 当前配置未提供计划模式`);
     if(command.fast===true)throw Error('当前助手未提供快速模式切换');
     if(!official&&command.images?.length&&agent!=='antigravity'&&this.imageCapabilities.get(agent)===false)throw Error(`当前 ${agentNames[agent]} CLI 不支持图片消息；请使用支持图片的后端，或作为文件附件发送。`);
     const text=command.initialText??command.text??'';
+    if((agent==='pi'||agent==='acp')&&(text.trim()||command.images?.length||command.files?.length)&&command.permission!=='full')throw Error(`${agentNames[agent]} 未保证逐项工具审批，请选择完全访问后使用`);
     if(agent==='antigravity'&&!official&&(text.trim()||command.images?.length||command.files?.length)&&!['auto','full'].includes(command.permission)){
       throw Error('Antigravity CLI 无逐条审批能力，不能执行“询问”权限任务；请选择自动审批或完全访问，或改用支持审批的后端。');
     }
@@ -451,7 +534,7 @@ export class AgentSessions {
     const imageFiles=agent==='antigravity'&&!official?await resolveImageFiles(command.images):[];
     const images=imageFiles.length?[]:await imageInputs(command.images);
     let effort=(command.effort||(model===meta.model?meta.effort:undefined)) as string|undefined;
-    if(agent==='deepseek'||agent==='hermes'||agent==='opencode'||agent==='zcode'){
+    if(agent==='deepseek'||agent==='hermes'||agent==='opencode'||agent==='zcode'||agent==='pi'||agent==='acp'){
       const entry=(await this.modelsForAgent(agent)).find(m=>m.model===model);
       if(!command.effort&&effort&&!entry?.supportedReasoningEfforts.some(level=>level.reasoningEffort===effort))effort=entry?.defaultReasoningEffort;
       if(agent==='zcode'){
@@ -468,7 +551,7 @@ export class AgentSessions {
       if(effort&&(!agyEfforts.includes(effort)||(entry?.supportedReasoningEfforts?.length&&!entry.supportedReasoningEfforts.some(e=>e.reasoningEffort===effort))))throw Error('此模型不支持所选推理强度，请刷新模型列表');
       model=base;
     }
-    const executable:AgentExecutable=official?{command:'',source:'path'}:await this.executable(agent);
+    const executable:AgentExecutable=custom?{command:custom.config.command,source:'configured'}:official?{command:'',source:'path'}:await this.executable(agent);
     if(model!==meta.model)delete meta.actualModel;
     if(command.type==='thread.start'){
       id=`${agent}-${randomUUID()}`;
@@ -476,7 +559,7 @@ export class AgentSessions {
       this.starting.add(id);
       await this.onThreadCreated?.(command.requestId,id);
       const thread=await this.store.upsertThread({id,projectPath:command.projectPath,title:command.initialText?.trim().slice(0,60)||'新会话',status:'idle'});
-      this.store.writeAgentMeta(id,{model,effort,...(official||agent==='opencode'?{transport:'acp'}:{})});
+      this.store.writeAgentMeta(id,{model,effort,...(customIdentity?{customIdentity}:{}),...(official||agent==='opencode'?{transport:'acp'}:{})});
       this.hub.publish({type:'thread.started',threadId:id,thread,requestId:command.requestId});
     }
     if(!text.trim()&&!command.images?.length&&!files.length)return;
@@ -487,7 +570,7 @@ export class AgentSessions {
       content.push({type:'image',source:{type:'base64',media_type:match[1],data:match[2]}});
     }
     const args:string[]=[];let input:string|undefined;
-    const rawModel=model?.slice(model.indexOf('::')+2);
+    const rawModel=custom?.model||model?.slice(model.indexOf('::')+2);
     if(agent==='claude'){
       args.push('-p','--verbose','--include-partial-messages','--permission-prompt-tool','stdio','--input-format','stream-json','--output-format','stream-json','--permission-mode',command.mode==='plan'?'plan':command.permission==='full'?'bypassPermissions':command.permission==='auto'?'acceptEdits':'default');
       if(meta.session)args.push('--resume',meta.session);
@@ -506,12 +589,27 @@ export class AgentSessions {
     if(agent==='antigravity'&&!official){if(effort)args.push('--effort',effort);}
     else if(effort)args.push(agent==='grok'?'--reasoning-effort':'--effort',effort);
     const cwd=command.projectPath||this.store.threads.find(t=>t.id===id)?.projectPath;
-    const acpOptions={command:executable.command,cwd,session:meta.session,model:rawModel,effort,mode:command.mode,permission:command.permission,content,approve:(params:any)=>this.approve(id,params)};
-    const child=agent==='zcode'?zcodeRun({executable,cwd:cwd||process.cwd(),session:meta.session,model:rawModel!,effort,mode:command.mode,permission:command.permission,prompt,images:await resolveImageFiles(command.images),approve:acpOptions.approve,ask:params=>this.askQuestions(id,params)},this.launch,this.terminate):official?officialAcp({agent,cwd,session:meta.session,model:rawModel,effort,permission:command.permission,mode:command.mode,content,approve:acpOptions.approve},this.launch,this.terminate):agent==='grok'?grokAcp(acpOptions,this.launch,this.terminate):agent==='deepseek'||agent==='hermes'||agent==='opencode'?harnessAcp({agent,...acpOptions},this.launch,this.terminate):agent==='antigravity'?(await this.agyCli.run(id,executable.command,args,cwd,input!)).process:this.launch(executable.command,args,{cwd,windowsHide:true,reject:false,buffer:false,stdin:'pipe'});
+    const acpOptions={command:executable.command,cwd,session:meta.session,model:rawModel,effort,mode:command.mode,permission:command.permission,content,approve:(params:any)=>this.approve(id,params),...(custom?{customArgs:custom.config.args}:{})};
+    const child=agent==='zcode'?zcodeRun({executable,cwd:cwd||process.cwd(),session:meta.session,model:rawModel!,effort,mode:command.mode,permission:command.permission,prompt,images:await resolveImageFiles(command.images),approve:acpOptions.approve,ask:params=>this.askQuestions(id,params)},this.launch,this.terminate):official?officialAcp({agent,cwd,session:meta.session,model:rawModel,effort,permission:command.permission,mode:command.mode,content,approve:acpOptions.approve},this.launch,this.terminate):agent==='grok'?grokAcp(acpOptions,this.launch,this.terminate):agent==='deepseek'||agent==='hermes'||agent==='opencode'||agent==='pi'||agent==='acp'?harnessAcp({agent,...acpOptions},this.launch,this.terminate):agent==='antigravity'?(await this.agyCli.run(id,executable.command,args,cwd,input!)).process:this.launch(executable.command,args,{cwd,windowsHide:true,reject:false,buffer:false,stdin:'pipe'});
     if(agent==='claude'&&'stdin' in child)child.stdin?.write(input!);
     const turnId=randomUUID();
     const run={process:child,stopped:false,turnId};this.active.set(id,run);
-    meta.model=model;meta.effort=effort;if(official||agent==='opencode')meta.transport='acp';this.store.writeAgentMeta(id,meta);
+    meta.model=model;meta.effort=effort;if(customIdentity)meta.customIdentity=customIdentity;if(official||agent==='opencode')meta.transport='acp';this.store.writeAgentMeta(id,meta);
+    if('promptDispatch' in child){
+      const dispatch=await child.promptDispatch;
+      if(dispatch.session)meta.session=dispatch.session;
+      if(dispatch.actualModel!==undefined)meta.actualModel=dispatch.actualModel;
+      this.store.writeAgentMeta(id,meta);
+      if(dispatch.phase!=='written'){
+        // The process is still closing after dispatch settles. Keep ownership until
+        // it finishes so another turn cannot race its native session cleanup.
+        try{await Promise.resolve(child);}catch{}
+        finally{if(this.active.get(id)===run)this.active.delete(id);}
+        const detail=dispatch.error instanceof Error?dispatch.error.message:String(dispatch.error||'任务在发送前已停止');
+        if(dispatch.phase==='uncertain')throw new SubmissionFailure('uncertain',`发送结果待确认，请检查会话后再操作：${detail}`);
+        throw new SubmissionFailure('not_started',detail);
+      }
+    }
     await this.store.upsertThread({id,status:'running'});
     this.hub.publish({type:'user.message',threadId:id,turnId,text,images:command.images,files:command.files,requestId:command.requestId});
     this.hub.publish({type:'turn.started',threadId:id,turnId,requestId:command.requestId});

@@ -536,7 +536,7 @@ export class StateStore {
   eventsForThread(threadId: string, limit = 200): GatewayEvent[] {
     const transient=this.transientThreads.get(threadId);
     if(transient)return transient.events.slice(-limit).map(event=>event.type==='message.delta'||event.type==='reasoning.summary'?{...event,eventId:`history:side:${event.eventId}`,textComplete:true}:event);
-    if (/^(antigravity|claude|grok|deepseek|hermes|opencode|zcode)-/.test(threadId)) {
+    if (/^(antigravity|claude|grok|deepseek|hermes|opencode|zcode|pi|acp)-/.test(threadId)) {
       // External CLIs have no Codex rollout reader. Their transcript must outlive
       // both the reconnect ring and unrelated threads producing streaming events.
       this.requireDb();
@@ -569,7 +569,7 @@ export class StateStore {
 
   eventsForIds(threadId:string,ids:readonly string[]):GatewayEvent[] {
     const wanted=new Set(ids),found=new Map(this.state.events.filter(event=>'threadId' in event&&event.threadId===threadId&&event.eventId&&wanted.has(event.eventId)).map(event=>[event.eventId!,event]));
-    const table=/^(antigravity|claude|grok|deepseek|hermes|opencode|zcode)-/.test(threadId)?'agent_history':'codex_live_events';
+    const table=/^(antigravity|claude|grok|deepseek|hermes|opencode|zcode|pi|acp)-/.test(threadId)?'agent_history':'codex_live_events';
     const read=this.requireDb().prepare(`SELECT payload FROM ${table} WHERE event_key=? AND thread_id=?`);
     for(const id of wanted)if(!found.has(id)){
       const row=read.get(id,threadId) as EventRow|undefined;if(row)found.set(id,JSON.parse(row.payload) as GatewayEvent);
@@ -583,7 +583,7 @@ export class StateStore {
   }
 
   private archiveAgentEvent(event: GatewayEvent,encoded?:string): void {
-    if (!("threadId" in event) || !event.threadId || !/^(antigravity|claude|grok|deepseek|hermes|opencode|zcode)-/.test(event.threadId) ||
+    if (!("threadId" in event) || !event.threadId || !/^(antigravity|claude|grok|deepseek|hermes|opencode|zcode|pi|acp)-/.test(event.threadId) ||
         !(isThreadConversationEvent(event) || event.type === 'turn.started')) return;
     const payload = encoded??JSON.stringify(event);
     const inserted=this.eventWrites().archiveAgent.run(event.eventId || payload, event.threadId, payload);

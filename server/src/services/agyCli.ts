@@ -26,7 +26,12 @@ class AgyConnection {
     reader.on('line',line=>{
       const turn=this.current;if(!turn)return;
       let record;try{record=JSON.parse(line);}catch{turn.stdout.write(line+'\n');return;}
-      if(record.event==='init'&&typeof record.conversation_id==='string')this.session=record.conversation_id;
+      if(record.event==='init'&&typeof record.conversation_id==='string'){
+        this.session=record.conversation_id;
+        // A new session's first turn starts before the CLI announces the conversation,
+        // so sample the native cursor as soon as init arrives; never replace one.
+        if(this.current&&!this.current.cursor)this.current.cursor=readAgyTurnCursor(this.session);
+      }
       const update=record.step_update;
       if(update?.step_type==='agent_response'&&typeof update.text_delta==='string'){
         const id=String(update.step_index);turn.responses.set(id,(turn.responses.get(id)||'')+update.text_delta);
@@ -49,7 +54,10 @@ class AgyConnection {
     if(!this.exit||!this.drained)return;
     this.ended=true;clearTimeout(this.idleTimer);this.removed();
     if(this.current&&this.stderr)this.current.stderr.write(this.stderr);
-    this.finish(this.exit.exitCode);
+    // If the exit wins the race against the result's seal, a received terminal result
+    // still means the turn ended through its own SUCCESS/ERROR payload, not the exit code.
+    const resultSeen=this.current?.terminal===true;
+    this.finish(resultSeen?0:this.exit.exitCode);
   }
   private finish(exitCode:number){
     const turn=this.current;if(!turn)return;

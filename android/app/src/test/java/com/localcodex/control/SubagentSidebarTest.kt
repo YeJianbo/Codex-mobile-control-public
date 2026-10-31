@@ -35,6 +35,13 @@ class SubagentSidebarTest {
         assertTrue(threadFamilyRunning(parent,mapOf("main" to listOf(child),"child" to listOf(nested.copy(status="running")))))
         assertFalse(threadFamilyRunning(parent,mapOf("main" to listOf(child),"child" to listOf(nested))))
     }
+    @Test fun unreadOnlyIncludesUnreadConversations(){
+        val unreadChild=child.copy(unread=true)
+        assertTrue(sidebarInactiveAgents(listOf(parent,unreadChild),filter=NativeThreadFilter.UNREAD).isEmpty())
+        assertTrue(sidebarThreadRoots(listOf(parent,unreadChild),filter=NativeThreadFilter.UNREAD).isEmpty())
+        val unreadParent=parent.copy(unread=true,status="running")
+        assertEquals(listOf(unreadParent),sidebarThreadRoots(listOf(unreadParent,unreadChild),filter=NativeThreadFilter.UNREAD))
+    }
     @Test fun runningNestedAgentsRemainReachableAfterTheirParentStops(){
         val running=nested.copy(status="running")
         val unrelated=ThreadRecord("other",status="running",subagent=NativeSubagent("another"))
@@ -42,6 +49,13 @@ class SubagentSidebarTest {
         assertEquals(listOf(running),conversationRunningAgents(listOf(running,child,parent),"child"))
         assertTrue(conversationRunningAgents(listOf(running,child,parent),"nested").isEmpty())
         assertTrue(conversationRunningAgents(listOf(nested,child,parent),"main").isEmpty())
+    }
+    @Test fun finishedAgentsStayWithTheirConversation(){
+        val running=nested.copy(status="running")
+        val other=ThreadRecord("unrelated",subagent=NativeSubagent("other"))
+        assertEquals(listOf(child),conversationFinishedAgents(listOf(parent,child,running,other),"main"))
+        assertEquals(listOf(running),conversationRunningAgents(listOf(parent,child,running,other),"main"))
+        assertEquals(listOf(nested),conversationFinishedAgents(listOf(parent,child,nested),"child"))
     }
     @Test fun cyclicAgentMetadataRemainsHidden(){
         val a=ThreadRecord("a",subagent=NativeSubagent("b"));val b=ThreadRecord("b",subagent=NativeSubagent("a"))

@@ -14,7 +14,7 @@ const originalModelsFetch=process.env.OPENCODE_DISABLE_MODELS_FETCH;
 process.env.OPENCODE_DISABLE_MODELS_FETCH='true';
 after(()=>{if(originalModelsFetch===undefined)delete process.env.OPENCODE_DISABLE_MODELS_FETCH;else process.env.OPENCODE_DISABLE_MODELS_FETCH=originalModelsFetch;});
 
-function fixture({resume=false,cancel=false,nativeFirst=false,modelIds=['provider/model-a','private/folder/model-b'],onLaunch=()=>{}}={}){
+function fixture({resume=false,cancel=false,nativeFirst=false,initFailure=false,initGate=null,modelIds=['provider/model-a','private/folder/model-b'],onLaunch=()=>{}}={}){
   const requests=[],stdin=new PassThrough(),stdout=new PassThrough(),stderr=new PassThrough();
   let finish,promptId,model=modelIds[0],mode='build',effort='__default';
   let policyHooks,policyReady=Promise.resolve(),hookDecision=Promise.resolve();
@@ -37,7 +37,7 @@ function fixture({resume=false,cancel=false,nativeFirst=false,modelIds=['provide
   stdin.on('data',buffer=>{for(const line of buffer.toString().trim().split('\n')){
     const message=JSON.parse(line);requests.push(message);
     queueMicrotask(async()=>{
-      if(message.method==='initialize'){await policyReady;send({id:message.id,result:{agentCapabilities:{loadSession:true,promptCapabilities:{image:true},sessionCapabilities:{close:{},...(resume?{resume:{}}:{})}}}});}
+      if(message.method==='initialize'){await policyReady;if(initGate)await initGate;if(initFailure){send({id:message.id,error:{code:-32000,message:'catalog unavailable'}});return;}send({id:message.id,result:{agentCapabilities:{loadSession:true,promptCapabilities:{image:true},sessionCapabilities:{close:{},...(resume?{resume:{}}:{})}}}});}
       else if(['session/new','session/load','session/resume'].includes(message.method)){
         // OpenCode's modern load response omits legacy models/modes and sessionId.
         update({sessionUpdate:'agent_message_chunk',content:{type:'text',text:'old response'}});
@@ -97,8 +97,11 @@ test('OpenCode load suppresses old text and tools, applies opaque model/effort/p
   assert(run.requests.some(request=>request.method==='session/load'));
   assert(!run.requests.some(request=>request.method==='session/new'));
   assert.equal(run.requests.find(request=>request.method==='session/set_mode').params.modeId,'plan');
-  assert.equal(lines.find(line=>line.type==='system').session_id,'saved-opencode');
-  assert.equal(lines.find(line=>line.type==='system').model,'private/folder/model-b');
+  // The native session id is emitted alone before any config change can fail, so a
+  // retry resumes the same session; a second system event reports the applied model.
+  const systems=lines.filter(line=>line.type==='system');
+  assert.deepEqual(systems[0],{type:'system',session_id:'saved-opencode'});
+  assert.deepEqual(systems.find(line=>line.model),{type:'system',session_id:'saved-opencode',model:'private/folder/model-b'});
   assert.deepEqual(lines.flatMap(line=>line.message?.content||[]).filter(block=>block.type==='text').map(block=>block.text),['fresh response']);
   assert(!lines.flatMap(line=>line.message?.content||[]).some(block=>block.id==='old-tool'));
 });
@@ -163,6 +166,120 @@ test('OpenCode config updates invalidate the model cache before validating a new
     await assert.rejects(sessions.validate('opencode::provider/model-a'),/模型已不在当前可用目录，请重新选择/);
     const backend=(await sessions.backends()).find(backend=>backend.agent==='opencode');
     assert.equal(backend.supportsPlan,true);assert.equal(backend.supportsPlanMode,true);assert.equal(backend.supportsImages,true);
+  }finally{
+    for(const key of keys)if(saved[key]===undefined)delete process.env[key];else process.env[key]=saved[key];
+    assert(path.resolve(folder).startsWith(path.resolve(os.tmpdir())+path.sep));rmSync(folder,{recursive:true,force:true});
+  }
+});
+
+test('OpenCode config changed during the first catalog read cannot validate the old model',async()=>{
+  const keys=['CODEX_MOBILE_CONTROL_AGENTS','OPENCODE_CONFIG','OPENCODE_CONFIG_CONTENT','OPENCODE_PERMISSION'];
+  const saved=Object.fromEntries(keys.map(key=>[key,process.env[key]]));
+  const folder=mkdtempSync(path.join(os.tmpdir(),'cmc-opencode-first-read-')),config=path.join(folder,'opencode.json');
+  try{
+    process.env.CODEX_MOBILE_CONTROL_AGENTS='opencode';process.env.OPENCODE_CONFIG=config;delete process.env.OPENCODE_CONFIG_CONTENT;delete process.env.OPENCODE_PERMISSION;
+    writeFileSync(config,'{}');
+    let release;const gated=new Promise(resolve=>release=resolve);
+    let reads=0,run;
+    const sessions=new AgentSessions({}, {},undefined,()=>{
+      reads++;
+      // The first read starts against the old config; any later round must see the new one.
+      run=fixture({modelIds:reads===1?['provider/model-a']:['provider/model-new'],initGate:reads===1?gated:null});
+      return run.child;
+    },undefined,async()=>({command:'fixture',source:'configured'}));
+    const pending=sessions.validate('opencode::provider/model-a');
+    for(let index=0;index<500&&!(run&&run.requests.some(request=>request.method==='initialize'));index++)await new Promise(resolve=>setTimeout(resolve,2));
+    assert(run&&run.requests.some(request=>request.method==='initialize'));
+    // The first read is now parked inside initialize: change the config mid-read.
+    await new Promise(resolve=>setTimeout(resolve,20));
+    writeFileSync(config,'{"model":"provider/model-new"}');const changed=new Date(Date.now()+1000);utimesSync(config,changed,changed);
+    release();
+    // The stale first catalog must never validate the old model; either the retry
+    // round rejects it directly or validation reports the in-flight re-discovery.
+    await assert.rejects(pending,/模型已不在当前可用目录|模型目录正在重新发现/);
+    await sessions.models();
+    await assert.rejects(sessions.validate('opencode::provider/model-a'),/模型已不在当前可用目录，请重新选择/);
+    await sessions.validate('opencode::provider/model-new');
+    assert.deepEqual((await sessions.models()).map(model=>model.model),['opencode::default','opencode::provider/model-new']);
+    assert.equal(reads,2);
+  }finally{
+    for(const key of keys)if(saved[key]===undefined)delete process.env[key];else process.env[key]=saved[key];
+    assert(path.resolve(folder).startsWith(path.resolve(os.tmpdir())+path.sep));rmSync(folder,{recursive:true,force:true});
+  }
+});
+
+test('OpenCode failed reads after a config change never restamp the old source with the new config',async()=>{
+  const keys=['CODEX_MOBILE_CONTROL_AGENTS','OPENCODE_CONFIG','OPENCODE_CONFIG_CONTENT','OPENCODE_PERMISSION'];
+  const saved=Object.fromEntries(keys.map(key=>[key,process.env[key]]));
+  const folder=mkdtempSync(path.join(os.tmpdir(),'cmc-opencode-failed-read-')),config=path.join(folder,'opencode.json');
+  try{
+    process.env.CODEX_MOBILE_CONTROL_AGENTS='opencode';process.env.OPENCODE_CONFIG=config;delete process.env.OPENCODE_CONFIG_CONTENT;delete process.env.OPENCODE_PERMISSION;
+    writeFileSync(config,'{}');
+    let reads=0,healed=false,run;
+    const sessions=new AgentSessions({}, {},undefined,()=>{
+      reads++;
+      // Round 1 succeeds against the old config; every round after the config
+      // change fails until the test heals the source with the new catalog.
+      run=fixture(healed?{modelIds:['provider/model-new']}:reads===1?{modelIds:['provider/model-a']}:{initFailure:true});
+      return run.child;
+    },undefined,async()=>({command:'fixture',source:'configured'}));
+    await sessions.validate('opencode::provider/model-a');assert.equal(reads,1);
+    writeFileSync(config,'{"model":"provider/model-new"}');const changed=new Date(Date.now()+1000);utimesSync(config,changed,changed);
+    // The old source (read against the old config) keeps its old stamp, so
+    // validation must keep retrying instead of trusting it under the new config;
+    // with every retry failing it can only report a retryable error.
+    await assert.rejects(sessions.validate('opencode::provider/model-a'),/模型目录验证未能在新配置下完成|模型目录正在重新发现/);
+    await assert.rejects(sessions.validate('opencode::provider/model-new'),/模型目录验证未能在新配置下完成|模型目录正在重新发现/);
+    // The last usable picker still shows the old models while no fresh read exists.
+    assert.deepEqual((await sessions.models()).map(model=>model.model),['opencode::default','opencode::provider/model-a']);
+    // Once a read succeeds under the new config the stamps finally line up and
+    // the new model validates while the old one is gone from the fresh catalog.
+    healed=true;
+    await sessions.validate('opencode::provider/model-new');
+    await assert.rejects(sessions.validate('opencode::provider/model-a'),/模型已不在当前可用目录，请重新选择/);
+  }finally{
+    for(const key of keys)if(saved[key]===undefined)delete process.env[key];else process.env[key]=saved[key];
+    assert(path.resolve(folder).startsWith(path.resolve(os.tmpdir())+path.sep));rmSync(folder,{recursive:true,force:true});
+  }
+});
+
+test('OpenCode validation completes from its own settled read without waiting for a slow harness',async()=>{
+  const keys=['CODEX_MOBILE_CONTROL_AGENTS','OPENCODE_CONFIG','OPENCODE_CONFIG_CONTENT','OPENCODE_PERMISSION'];
+  const saved=Object.fromEntries(keys.map(key=>[key,process.env[key]]));
+  const folder=mkdtempSync(path.join(os.tmpdir(),'cmc-opencode-race-read-')),config=path.join(folder,'opencode.json');
+  try{
+    process.env.CODEX_MOBILE_CONTROL_AGENTS='opencode,deepseek';process.env.OPENCODE_CONFIG=config;delete process.env.OPENCODE_CONFIG_CONTENT;delete process.env.OPENCODE_PERMISSION;
+    writeFileSync(config,'{}');
+    const run=fixture({modelIds:['provider/model-a']});
+    // Slow harness launches park on deferred gates so the finally block can
+    // release them and let the discovery round settle before the test exits.
+    const gates=[];const slowLaunch=()=>{let release;const gate=new Promise(resolve=>release=resolve);gates.push(release);return gate;};
+    const sessions=new AgentSessions({}, {},undefined,command=>{
+      // Deepseek resolves to a different command and its catalog read never settles;
+      // opencode must not be blocked behind it once its own read is done.
+      if(command==='slow-cli')return slowLaunch();
+      return run.child;
+    },undefined,async agent=>({command:agent==='deepseek'?'slow-cli':'opencode-fixture',source:'configured'}));
+    try{
+      void sessions.models();
+      for(let index=0;index<500&&!run.requests.some(request=>request.method==='session/close');index++)await new Promise(resolve=>setTimeout(resolve,2));
+      assert(run.requests.some(request=>request.method==='session/close'));
+      // Let the settled read publish its per-agent source before validating.
+      await new Promise(resolve=>setTimeout(resolve,10));
+      await sessions.validate('opencode::provider/model-a');
+      // A harness excluded from discovery must fail fast with a retryable error
+      // instead of waiting on the round that will never produce a source for it;
+      // the exact message may vary with the round's progress.
+      process.env.CODEX_MOBILE_CONTROL_AGENTS='deepseek';
+      const excluded=new AgentSessions({}, {},undefined,()=>slowLaunch(),undefined,async()=>({command:'slow-cli',source:'configured'}));
+      void excluded.models();
+      await new Promise(resolve=>setTimeout(resolve,10));
+      const started=Date.now();
+      await assert.rejects(excluded.validate('opencode::provider/model-a'),error=>{assert.equal(error.retryable,true);return true;});
+      assert(Date.now()-started<5000);
+    }finally{
+      for(const release of gates)release();
+    }
   }finally{
     for(const key of keys)if(saved[key]===undefined)delete process.env[key];else process.env[key]=saved[key];
     assert(path.resolve(folder).startsWith(path.resolve(os.tmpdir())+path.sep));rmSync(folder,{recursive:true,force:true});

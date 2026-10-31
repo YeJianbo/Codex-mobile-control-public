@@ -3,6 +3,7 @@ import {readAndroidRelease} from './services/androidUpdates.js';
 import {registerThreadToolsRoutes} from './services/threadToolsRoutes.js';
 import {registerAgentInstructions} from './services/agentInstructions.js';
 import {DesktopBrowser,registerDesktopBrowser} from './services/desktopBrowser.js';
+import {DesktopControl,registerDesktopControl,isLocalDesktopSocket} from './services/desktopControl.js';
 import {registerGatewaySettings} from './routes/gatewaySettings.js';
 import {registerModelDirectory} from './routes/modelDirectory.js';
 import {AssistantModelCatalog} from './services/assistantModelCatalog.js';
@@ -26,7 +27,7 @@ import {sidebarPage,sidebarPageQuery,nativeSidebarAgents} from './services/sideb
 import {SidebarDeltaCache} from './services/sidebarDelta.js';
 import {SidebarStatusCache} from './services/sidebarStatus.js';
 import {subagentSidebarPage,subagentThreadScope} from './services/subagentThreads.js';
-import {archiveOrCloseSubagent,subagentCanArchive} from './services/subagentClose.js';
+import {archiveOrCloseSubagent,isCrossVolumeArchiveError,subagentCanArchive} from './services/subagentClose.js';
 import {desktopThreadIsSubagent,desktopArchivedThreads,desktopThreadSections} from './services/desktopSidebar.js';
 import {GoalCompletionTracker,readCodexGoalSnapshot} from './services/codexGoals.js';
 import Fastify from "fastify";
@@ -54,7 +55,7 @@ import { LocalTerminal } from "./services/localTerminal.js";
 import { httpsListenOptions, readHttpsConfig, updateHttpsConfig } from "./services/httpsConfig.js";
 import { protocolMetadata } from "./protocol.js";
 import { checkCodexUpgrade } from "./services/codexUpgrade.js";
-import { formatDesktopQuestionReply, listThreadsWithCodexHistory, pendingDesktopQuestions, readCodexThreadEvents, readRecentSearchEvents, selectConversationWindow, selectConversationPage, readCodexConversationPreview, selectConversationTurns, deferMobileActivityDetails, readCodexActivityEventById, mobileDeferredActivityTypes } from "./services/codexSessions.js";
+import { formatDesktopQuestionReply, listThreadsWithCodexHistory, pendingDesktopQuestions, readCodexThreadEvents, readCodexQuestionEvents, readRecentSearchEvents, selectConversationWindow, selectConversationPage, readCodexConversationPreview, selectConversationTurns, deferMobileActivityDetails, readCodexActivityEventById, mobileDeferredActivityTypes } from "./services/codexSessions.js";
 import {readCodexThreadCompletion} from './services/codexSessions.js';
 import {withThreadReadState,watchDesktopReadState} from './services/threadReadState.js';
 import {activityOutputImageText,listThreadOutputDirectory,OutputDirectoryError,resolveMarkdownOutputImage,resolvePublicOutputImage,resolveThreadDirectoryFile,resolveThreadOutputFile,storedOutputMessage} from './services/threadOutputFiles.js';
@@ -77,6 +78,7 @@ import {UsageReader} from './services/usage.js';
 import {watchDeepSeekSessions,deepseekNativeSessions} from './services/deepseekNativeSessions.js';
 import {watchZcodeSessions,zcodeNativeSessions} from './services/zcodeNativeSessions.js';
 import {zcodeSubagents} from './services/zcodeSubagents.js';
+import {zcodeDesktopSteer} from './services/zcodeDesktopSteer.js';
 import {readCodexGoals} from './services/codexGoals.js';
 import {verifyDeviceProof,deviceProofTarget} from './services/deviceProof.js';
 import {normalizePublicAccessUrl} from './services/publicAccessUrl.js';
@@ -555,7 +557,7 @@ app.get('/api/local-tasks/:requestId',async(request,reply)=>{
   const receipt=await sessions.receipts.get(requestId);
   return receipt?{request:receipt}:reply.code(404).send({error:'未找到此请求的提交记录。'});
 });
-const assistantTransports:Record<string,'app-server'|'acp'|'unavailable'>={codex:'app-server',zcode:'app-server',grok:'acp',deepseek:'acp',hermes:'acp',opencode:'acp',claude:'acp',antigravity:'acp'};
+const assistantTransports:Record<string,'app-server'|'acp'|'unavailable'>={codex:'app-server',zcode:'app-server',grok:'acp',deepseek:'acp',hermes:'acp',opencode:'acp',claude:'acp',antigravity:'acp',pi:'acp',acp:'acp'};
 function assertAssistantLocal(request:{headers:Record<string,unknown>}){
   if(publicProxySecret!=null&&request.headers['x-public-proxy-secret']===publicProxySecret)throw Error('个人助理执行接口仅支持本地连接');
 }
@@ -702,7 +704,7 @@ app.get("/api/threads", async (request) => {
   }
   const annotated=await withThreadReadState(candidates,store);
   const matching=query.filter==='running'?subagentThreadScope(annotated,thread=>thread.status==='running')
-    :query.filter==='unread'?subagentThreadScope(annotated,thread=>!!thread.unread&&thread.status!=='running'):annotated;
+    :query.filter==='unread'?subagentThreadScope(annotated,thread=>!thread.subagent&&!!thread.unread):annotated;
   const page=query.filter&&query.filter!=='all'?subagentSidebarPage(matching,query.limit,thread=>(thread.pinnedIndex??-1)>=0||included.has(thread.id)):{rows:matching,hasMore:initialPage.hasMore};
   // Include the current conversation's fresh metadata without making it consume
   // a filtered page. Clients hide nonmatching families in the sidebar itself.
@@ -810,8 +812,11 @@ app.get('/api/threads/:threadId/queue',async request=>{
   const agent=threadAgent(threadId);
   // An older host keeps its running AGY tasks during an idle upgrade. Its
   // settings predate canSteer, but the persisted transport still identifies CLI.
-  const agentCanSteer=status==='running'&&agent!=='codex'&&sessions.agents.owns(threadId)
-    ?(await sessions.agents.settings(threadId)).canSteer??(agent==='antigravity'&&store.readAgentMeta(threadId)?.transport!=='acp'):false;
+  const agentCanSteer=status==='running'&&agent!=='codex'
+    ?sessions.agents.owns(threadId)
+      ?(await sessions.agents.settings(threadId)).canSteer??(agent==='antigravity'&&store.readAgentMeta(threadId)?.transport!=='acp')
+      :agent==='zcode'&&await zcodeDesktopSteer.canSteer(threadId)
+    :false;
   const canSteer=status==='running'&&(agent==='codex'||agentCanSteer);
   return {canSteer,messages:followups.list(threadId).map(message=>({...message,canSteer:canSteer&&(!viaPublic||message.sourcePublic===true)})),drafts:followups.drafts(threadId).filter(message=>!viaPublic||message.sourcePublic===true)};
 });
@@ -898,7 +903,7 @@ app.get("/api/threads/:threadId/events",{compress:historyCompression}, async (re
   const nativeDeepSeek=params.threadId.startsWith('deepseek-')?await deepseekNativeSessions.read(params.threadId):null;
   const nativeZcode=params.threadId.startsWith('zcode-')?(await zcodeNativeSessions.list()).find(session=>session.thread.id===params.threadId):null;
   const merged=confirmedToolChanges((nativeZcode?mergeZcodeThreadEvents(historicalEvents,storedEvents,sessions.agents.owns(params.threadId)):nativeDeepSeek?mergeDeepSeekThreadEvents(historicalEvents,storedEvents,sessions.agents.owns(params.threadId)):mergeMobileThreadEvents(historicalEvents, storedEvents)).filter(isVisibleMobileThreadEvent).map(event=>event.type==='approval.resolved'&&event.decision==='decline'&&expiredApprovals.has(event.approvalId)?{...event,decision:'resolved' as const}:event));
-  const external=/^(antigravity|claude|grok|deepseek|hermes|opencode|zcode)-/.test(params.threadId);
+  const external=/^(antigravity|claude|grok|deepseek|hermes|opencode|zcode|pi|acp)-/.test(params.threadId);
   const selected=turns!==undefined?selectConversationTurns(merged,turns):count===undefined&&!external?selectConversationWindow(merged):selectConversationPage(merged,count??200);
   const restoredAttachments=await recoverMobileUploadImages(await recoverMobileUploadFiles(selected.map(event=>event.type==='user.message'&&event.eventId?.startsWith('history:')?{
     ...event,attachments:event.attachments?.map((file,index)=>({
@@ -1012,6 +1017,8 @@ registerAgentInstructions(app,async(_request,threadId)=>assertProjectAccess(unde
 registerDesktopBrowser(app,new DesktopBrowser(),request=>{
   if(publicProxySecret!=null&&request.headers['x-public-proxy-secret']===publicProxySecret&&!publicAgentAllowed('codex'))throw Error('此助手的公网访问已关闭');
 });
+const remoteDesktop=new DesktopControl();
+registerDesktopControl(app,remoteDesktop,request=>bearerToken(request)??new URL(request.url,'http://gateway').searchParams.get('token')??'');
 
 app.post('/api/threads/:threadId/compact',async request=>{
   const {threadId}=request.params as {threadId:string};
@@ -1211,7 +1218,12 @@ app.post('/api/threads/:threadId/archive',async(request,reply)=>{
   if(threadAgent(threadId)==='codex'){
     store.sessionUsage?.observeThread(thread);
     await usageReader.capture(threadId);
-    await codex.request('thread/archive',{threadId});
+    try{await codex.request('thread/archive',{threadId});}
+    catch(error){
+      if(!isCrossVolumeArchiveError(error))throw error;
+      store.closeSubagents([thread]);
+      return {ok:true,threadId,archived:false,closureKind:'gatewayClosed'};
+    }
   }
   store.archiveThread(threadId,thread);
   return {ok:true,threadId,archived:true};
@@ -1235,7 +1247,7 @@ app.get("/api/approvals", async request => {
   const questionThreads=new Set(store.events.flatMap(event=>event.type==='approval.requested'&&event.approvalType==='question'&&event.approvalId?.startsWith('desktop-question:')?[event.threadId]:[]));
   for(const id of questionThreads)if(!pendingDesktopQuestions(id,store.recentEventsForThread(id),[],resolvedIds).length)questionThreads.delete(id);
   if(threadId)questionThreads.add(threadId);
-  const desktop=(await Promise.all([...questionThreads].map(async id=>pendingDesktopQuestions(id,await readCodexThreadEvents(id,undefined,'background'),await store.readThreadEvents(id),resolvedIds)))).flat();
+  const desktop=(await Promise.all([...questionThreads].map(async id=>pendingDesktopQuestions(id,await readCodexQuestionEvents(id),await store.readThreadEvents(id),resolvedIds)))).flat();
   const pendingIds=new Set(desktop.map(item=>item.id));
   return {approvals:[...store.approvals.filter(item=>!pendingIds.has(item.id)),...desktop]};
 });
@@ -1243,7 +1255,7 @@ app.get("/api/approvals", async request => {
 app.post('/api/approvals/:approvalId/answer',async(request)=>{
   const {approvalId}=request.params as {approvalId:string};
   const approval=store.approvals.find(item=>item.id===approvalId);
-  if(request.headers['x-public-proxy-secret']===publicProxySecret&&publicProxySecret!=null&&approval&&threadAgent(approval.threadId)!=='codex')throw new Error('公网仅支持 Codex 审批');
+  if(request.headers['x-public-proxy-secret']===publicProxySecret&&publicProxySecret!=null&&approval&&!publicAgentAllowed(threadAgent(approval.threadId)))throw new Error('此助手的公网访问已关闭');
   const body=z.object({threadId:z.string().optional(),answers:z.record(z.string(),z.object({answers:z.array(z.string().max(20000)).length(1)}))}).parse(request.body);
   if(approvalId.startsWith('desktop-question:')){
     const threadId=body.threadId;
@@ -1273,7 +1285,7 @@ app.post('/api/approvals/:approvalId/answer',async(request)=>{
 app.post("/api/approvals/:approvalId/resolve", async (request) => {
   const params = request.params as { approvalId: string };
   const approval=store.approvals.find(item=>item.id===params.approvalId);
-  if(request.headers['x-public-proxy-secret']===publicProxySecret&&publicProxySecret!=null&&approval&&threadAgent(approval.threadId)!=='codex')throw new Error('公网仅支持 Codex 审批');
+  if(request.headers['x-public-proxy-secret']===publicProxySecret&&publicProxySecret!=null&&approval&&!publicAgentAllowed(threadAgent(approval.threadId)))throw new Error('此助手的公网访问已关闭');
   const body = resolveApprovalSchema.parse(request.body);
   await sessions.resolveApproval(params.approvalId, body.decision);
   return { ok: true };
@@ -1317,7 +1329,7 @@ app.put('/api/settings/public-access/password',async request=>{
 });
 const usageReader=new UsageReader(codex,threadId=>hub.publish({type:'usage.updated',threadId}),store.sessionUsage??undefined);
 app.get('/api/usage',async request=>{
-  const query=z.object({threadId:z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/).optional(),agent:z.enum(['codex','claude','antigravity','grok','deepseek','hermes','opencode','zcode']).optional(),model:z.string().max(200).optional(),days:z.coerce.number().int().min(1).max(90).optional()}).parse(request.query);
+  const query=z.object({threadId:z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/).optional(),agent:z.enum(['codex','claude','antigravity','grok','deepseek','hermes','opencode','zcode','pi','acp']).optional(),model:z.string().max(200).optional(),days:z.coerce.number().int().min(1).max(90).optional()}).parse(request.query);
   const agent=query.threadId?threadAgent(query.threadId):query.agent||'codex';
   if(agent==='codex')return usageReader.read(query.threadId,query.days);
   const usage=await sessions.agents.usage(query.threadId||'',agent,query.model);
@@ -1401,9 +1413,19 @@ if(codex.desktopApprovalStatus().bridgeConfigured)void codex.start().catch(error
 setTimeout(()=>void usageReader.sampleQuota().catch(()=>{}),30000).unref();
 setInterval(()=>void usageReader.sampleQuota().catch(()=>{}),300000).unref();
 const wss = new WebSocketServer({ noServer: true });
+const desktopWss=new WebSocketServer({noServer:true,maxPayload:2*1024*1024});
 app.server.on("upgrade", (request, socket, head) => {
   if (handlePreviewUpgrade(request, socket, head)) return;
-  if (new URL(request.url ?? "/", "http://gateway").pathname !== "/ws") { socket.destroy(); return; }
+  const url=new URL(request.url??'/', 'http://gateway');
+  if(url.pathname==='/ws/desktop'){
+    const header=request.headers.authorization;
+    const token=typeof header==='string'&&header.startsWith('Bearer ')?header.slice(7):url.searchParams.get('token')||'';
+    const cert=token===config.token?undefined:store.certificateForToken(token);
+    if(!isLocalDesktopSocket(request)||!token||(token!==config.token&&!store.isValidDeviceToken(token))||(cert&&!verifyDeviceProof(cert,'GET',deviceProofTarget(request.url??'/ws/desktop',request.headers,publicProxySecret),request.headers))){socket.destroy();return;}
+    desktopWss.handleUpgrade(request,socket,head,client=>remoteDesktop.attach(url.searchParams.get('session')||'',token,request.socket.remoteAddress||'',client,()=>token===config.token||store.isValidDeviceToken(token)));
+    return;
+  }
+  if (url.pathname !== "/ws") { socket.destroy(); return; }
   wss.handleUpgrade(request, socket, head, client => wss.emit("connection", client, request));
 });
 

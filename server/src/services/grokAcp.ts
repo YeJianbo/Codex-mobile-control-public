@@ -3,6 +3,7 @@ import {PassThrough} from 'node:stream';
 import {createInterface} from 'node:readline';
 import path from 'node:path';
 import {acpFileChanges} from './agentFileChanges.js';
+import {attemptAcpPrompt,createAcpDispatch,type AcpDispatch} from './acpPromptDispatch.js';
 
 // ACP keeps images off the Windows command line and cancels the specific session.
 export function grokAcp(options:{command?:string;cwd:string;session?:string;model?:string;effort?:string;permission?:string;content:any[];approve:(params:any)=>Promise<boolean>},launch:typeof execa=execa,terminate:typeof execa=execa){
@@ -17,6 +18,8 @@ export function grokAcp(options:{command?:string;cwd:string;session?:string;mode
   const stdout=new PassThrough(),stderr=new PassThrough();
   process.stderr?.pipe(stderr,{end:false});
   let sequence=0,session=options.session,stopped=false,settled=false,promptStarted=false;
+  const dispatch=createAcpDispatch();let phase:AcpDispatch['phase']='not_started',dispatchError:unknown;
+  const settleDispatch=()=>dispatch.settle({phase,...(dispatchError?{error:dispatchError}:{}),...(session?{session}:{})});
   const pending=new Map<number,{resolve:(value:any)=>void;reject:(error:Error)=>void;timer?:NodeJS.Timeout}>();
   const tools=new Map<string,any>(),completedTools=new Set<string>();
   const send=(message:any)=>{if(process.stdin?.writable)process.stdin.write(JSON.stringify({jsonrpc:'2.0',...message})+'\n');};
@@ -70,7 +73,9 @@ export function grokAcp(options:{command?:string;cwd:string;session?:string;mode
       if(stopped)return {exitCode:0};
       promptStarted=true;
       const prompt=options.content.map(c=>c.type==='image'?{type:'image',mimeType:c.source.media_type,data:c.source.data}:c);
-      const result=await request('session/prompt',{sessionId:session,prompt},0);
+      const attempt=attemptAcpPrompt(process.stdin,++sequence,{sessionId:session,prompt},pending,'Grok');
+      phase=attempt.phase;dispatchError=attempt.error;settleDispatch();
+      const result=await attempt.request;
       // EOF lets the CLI finish its output before the public stream is closed.
       process.stdin?.end();
       let drainTimer:NodeJS.Timeout|undefined;
@@ -80,8 +85,8 @@ export function grokAcp(options:{command?:string;cwd:string;session?:string;mode
       const contextWindow=init._meta?.modelState?.availableModels?.find((m:any)=>m.modelId===actualModel)?._meta?.totalContextTokens;
       emit({type:'result',session_id:session,is_error:false,result:'',stopReason:result.stopReason,model:actualModel,usage:usage?{input_tokens:usage.inputTokens,output_tokens:usage.outputTokens,cache_read_input_tokens:usage.cachedReadTokens,total_tokens:usage.totalTokens,thinking_tokens:usage.reasoningTokens,context_window:contextWindow}:undefined});
       return {exitCode:0};
-    }catch(error){stderr.write(String((error as Error).message));emit({type:'result',is_error:true,result:String((error as Error).message)});return {exitCode:1};}
-    finally{process.stdin?.end();process.kill();await process;reader.close();stdout.end();stderr.end();settled=true;}
+    }catch(error){if(phase!=='written'&&!dispatchError)dispatchError=error;settleDispatch();stderr.write(String((error as Error).message));emit({type:'result',is_error:true,result:String((error as Error).message)});return {exitCode:1};}
+    finally{settleDispatch();process.stdin?.end();process.kill();await process;reader.close();stdout.end();stderr.end();settled=true;}
   })();
   const interrupt=async()=>{
     stopped=true;
@@ -96,5 +101,5 @@ export function grokAcp(options:{command?:string;cwd:string;session?:string;mode
       await done;
     }
   };
-  return {get pid(){return process.pid;},stdout,stderr,then:done.then.bind(done),interrupt,kill(){void interrupt();return true;}};
+  return {get pid(){return process.pid;},stdout,stderr,promptDispatch:dispatch.promise,then:done.then.bind(done),interrupt,kill(){void interrupt();return true;}};
 }

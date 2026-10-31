@@ -1,11 +1,11 @@
 {
   "name": "codex-mobile-control-server",
-  "version": "0.6.181",
+  "version": "0.6.184",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/build-hidden-console.mjs",
     "start": "node dist/index.js",
     "smoke": "node scripts/smoke-test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",

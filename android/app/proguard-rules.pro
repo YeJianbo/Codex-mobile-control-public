@@ -8,3 +8,6 @@
 -dontwarn org.openjsse.javax.net.ssl.SSLParameters
 -dontwarn org.openjsse.javax.net.ssl.SSLSocket
 -dontwarn org.openjsse.net.ssl.OpenJSSE
+
+# The native library resolves these methods by their JNI names.
+-keep class net.sp00nz.vncfree.Rfb { *; }

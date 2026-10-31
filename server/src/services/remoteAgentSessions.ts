@@ -3,6 +3,7 @@ import type {AgentSessionPort,AgentSettings} from './agentSessions.js';
 import type {GatewayEvent} from '../types.js';
 import {readAgyThreadTokens} from './agySessionTokens.js';
 import {modelAgent,threadAgent} from './agentProtocol.js';
+import {SubmissionFailure} from './submissionErrors.js';
 
 type ClientFactory=(events:(event:unknown)=>void,running:(ids:string[])=>void,created:(requestId:string|undefined,threadId:string)=>void,scope:string)=>AgentHostClient;
 const replaceZcode=<T extends {agent:string}>(primary:T[],current:T[])=>[...primary.filter(row=>row.agent!=='zcode'),...current.filter(row=>row.agent==='zcode')];
@@ -13,6 +14,7 @@ export class RemoteAgentSessions implements AgentSessionPort {
   private readonly zcodeClient:AgentHostClient;
   private readonly owners=new Map<AgentHostClient,Set<string>>();
   private readonly interactions=new Map<string,AgentHostClient>();
+  private readonly createdReceipts=new Map<string,Promise<unknown>>();
   private readonly restartTimers=new Map<AgentHostClient,ReturnType<typeof setTimeout>>();
   constructor(private readonly publish:(event:GatewayEvent)=>void,createClient:ClientFactory=(events,running,created,scope)=>new AgentHostClient(events,running,created,undefined,scope)){
     const create=(scope:string)=>{
@@ -20,7 +22,11 @@ export class RemoteAgentSessions implements AgentSessionPort {
       client=createClient(
         event=>{const value=event as GatewayEvent;this.track(value,client,owned);this.publish(value);},
         ids=>{owned.clear();for(const id of ids)owned.add(id);},
-        (requestId,threadId)=>{owned.add(threadId);void this.onThreadCreated?.(requestId,threadId);},scope,
+        (requestId,threadId)=>{
+          owned.add(threadId);
+          const saved=Promise.resolve().then(()=>this.onThreadCreated?.(requestId,threadId)).then(()=>null,error=>error);
+          if(requestId)this.createdReceipts.set(requestId,saved);
+        },scope,
       );
       this.owners.set(client,owned);return client;
     };
@@ -94,7 +100,18 @@ export class RemoteAgentSessions implements AgentSessionPort {
   async steer(id:string,text:string,images:Parameters<AgentSessionPort['steer']>[2]=[],files:Parameters<AgentSessionPort['steer']>[3]=[]){await this.forThread(id).request('steer',[id,text,images,files]);}
   settings(id:string){return this.forThread(id).request('settings',[id]) as Promise<AgentSettings>;}
   async resume(id:string){await this.forThread(id).request('resume',[id]);}
-  async handle(command:unknown){const value=command as {threadId?:string;model?:string};await this.forThread(value.threadId,value.model).request('handle',[command]);}
+  async handle(command:unknown){
+    const value=command as {threadId?:string;model?:string;requestId?:string};
+    try{await this.forThread(value.threadId,value.model).request('handle',[command]);}
+    finally{
+      const saved=value.requestId?this.createdReceipts.get(value.requestId):undefined;
+      if(saved){
+        const error=await saved;
+        if(this.createdReceipts.get(value.requestId!)===saved)this.createdReceipts.delete(value.requestId!);
+        if(error)throw new SubmissionFailure('uncertain',`会话记录保存失败，发送结果待确认：${String(error instanceof Error?error.message:error)}`);
+      }
+    }
+  }
   async resolveApproval(id:string,decision:'accept'|'decline'){await (this.interactions.get(id)||this.client).request('resolveApproval',[id,decision]);}
   async answerQuestions(id:string,answers:Record<string,{answers:string[]}>){await (this.interactions.get(id)||this.client).request('answerQuestions',[id,answers]);}
   async forget(id:string){await this.forThread(id).request('forget',[id]);}

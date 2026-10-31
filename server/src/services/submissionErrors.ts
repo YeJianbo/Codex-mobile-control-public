@@ -11,7 +11,7 @@ export class SubmissionFailure extends Error {
 export function submissionFailureKind(error: unknown): SubmissionFailureKind {
   if (error instanceof SubmissionFailure) return error.kind;
   const message = error instanceof Error ? error.message : String(error);
-  if (/active writer|正在桌面执行|当前任务仍在运行/i.test(message)) return 'writer_occupied';
+  if (/active writer|正在桌面执行|当前任务仍在运行|任务仍在运行，请将消息加入队列/i.test(message)) return 'writer_occupied';
   if (/timeout|timed out|EPIPE|ECONNRESET|ETIMEDOUT|broken pipe|超时|退出|closed|disconnect|断开|连接中断|已关闭|结果待确认/i.test(message)) return 'uncertain';
   return 'failed';
 }

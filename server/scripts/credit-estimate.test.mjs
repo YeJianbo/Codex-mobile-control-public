@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {normalizeCredits} from '../../components/local-console/src/credit-balance.mjs';
-import {estimateCredits,subscriptionEstimate,creditConsumption} from '../../components/local-console/src/credit-estimate.mjs';
+import {estimateCredits,subscriptionEstimate,creditConsumption,historicalCalibration} from '../../components/local-console/src/credit-estimate.mjs';
+import {agyQuotaEstimates} from '../../components/local-console/src/agy-quota-estimate.mjs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -28,6 +29,33 @@ test('subscription calibration needs enough observations within the same plan an
   const result=subscriptionEstimate([point(1,3,100),point(1,3,100)]).windows[0];
   assert.equal(result.state,'estimated');assert.equal(result.minimumCredits,2000);assert.equal(result.requests,4);
   assert.equal(subscriptionEstimate([point(1,3,100),{...point(1,3,100),plan:'plus'}]).windows[0].state,'collecting');
+});
+
+test('historical calibration never joins a different account, reset or sampling gap',()=>{
+  const record=(timestamp,accountKey='account',reset=1)=>({timestamp,accountKey,plan:'pro',primaryUsedPercent:timestamp/600,primaryResetAt:reset,credits:{balance:100}});
+  const points=[record(0),record(600),record(1200),record(1800),record(2400),record(3000),record(3600),record(4200,'other'),record(4800),record(6600),record(7200,'account',2)];
+  const rows=historicalCalibration(points,'account','pro',()=>[{model:'gpt-6.1-sol',tier:'standard',inputTokens:1000,cachedTokens:0,outputTokens:100}]);
+  assert.equal(rows.length,1);assert.equal(rows[0].calibration.primary.percent,6);
+});
+
+test('AGY estimate uses only consecutive same-account observations in the same pool and cycle',()=>{
+  const start=Date.parse('2026-10-01T00:00:00Z'),reset='2026-10-02T00:00:00.000Z';
+  const sample=(minutes,account,remaining)=>({at:new Date(start+minutes*60000).toISOString(),source:'cli-live',accountId:account,windows:[{poolId:'pool',window:'weekly',group:'Gemini Models',resetsAt:reset,remainingPercent:remaining}]});
+  const usage=()=>[{time:start+60000,model:'gemini-3.8-flash',displayModel:'Gemini 3.8 Flash',input:1000,cached:0,cacheWrite:0,output:100,messageId:'1'}];
+  const valid=agyQuotaEstimates([sample(0,'a',80),sample(10,'a',75)],'a',usage);
+  assert.equal(valid.get(JSON.stringify(['pool','weekly',reset])).tokens,1100);
+  assert.equal(agyQuotaEstimates([sample(0,'a',80),sample(5,'b',79),sample(10,'a',75)],'a',usage).size,0);
+});
+
+test('native telemetry accepts an explicitly verified official HTTPS provider alias only',async t=>{
+  const home=await fs.mkdtemp(path.join(os.tmpdir(),'credit-provider-'));t.after(()=>fs.rm(home,{recursive:true,force:true}));
+  const file=path.join(home,'activity.sqlite'),db=new DatabaseSync(file);
+  db.exec('CREATE TABLE events (kind TEXT,time INTEGER,session TEXT,model TEXT,tier TEXT,input INTEGER,cached INTEGER,output INTEGER,credit_meter TEXT)');
+  const insert=db.prepare('INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)');
+  for(const provider of ['official-http','relay'])for(const time of [1,2])insert.run('token',time,provider,'gpt-6.1-sol','standard',100,0,10,JSON.stringify({account:'account',provider}));
+  db.close();
+  assert.equal(nativeCreditRequests(file,'account',0,3).length,0);
+  assert.deepEqual(nativeCreditRequests(file,'account',0,3,[],['openai','official-http']).map(row=>row.sessionId),['official-http']);
 });
 
 test('native index preserves credit ownership and calibrates only matching official windows',async t=>{

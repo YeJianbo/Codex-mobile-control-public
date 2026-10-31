@@ -55,6 +55,10 @@ class GatewayClient(
             chain.proceed(if(useDeviceCertificate)DeviceCertificate.sign(request) else request)
         }.build()
     private val connectionHttp=http.connectionTransport()
+    internal fun desktopWebSocket(session:String,listener:WebSocketListener):WebSocket {
+        val address=baseUrl.replace("http://","ws://").replace("https://","wss://")+"/ws/desktop?session="+session.urlEncode()
+        return connectionHttp.newWebSocket(Request.Builder().url(address).header("Authorization","Bearer $token").build(),listener)
+    }
     internal fun forkEventClient()=GatewayClient(baseUrl,token,trustSelfSigned,remotePassword,certificateSha256,useDeviceCertificate)
     private val jsonType = "application/json".toMediaType()
     @Volatile private var socket: WebSocket? = null
@@ -299,6 +303,10 @@ class GatewayClient(
         cloudListError=result.optString("cloudError")
         return parseThreads(result) to result.optBoolean("hasMore")
     }
+    suspend fun sidebarUnreadThreads(limit:Int):Pair<List<ThreadRecord>,Boolean> {
+        val result=sidebarRequest("/api/threads?limit=$limit&filter=unread")
+        return withContext(Dispatchers.Default){parseThreads(result) to result.optBoolean("hasMore")}
+    }
     suspend fun sidebarProjectPage(limit:Int,include:String,threadId:String,keep:Set<String> = emptySet()):Triple<List<Project>,List<Project>,Boolean> {
         val result=sidebarRequest("/api/sidebar?limit=$limit&include=${include.urlEncode()}&threadId=${threadId.urlEncode()}&keep=${keep.sorted().joinToString(",").urlEncode()}")
         fun projects(key:String):List<Project>{
@@ -368,7 +376,7 @@ class GatewayClient(
     fun deleteThread(threadId: String) {
         request("DELETE", "/api/threads/${threadId.urlEncode()}")
     }
-    fun archiveThread(threadId:String){request("POST","/api/threads/${threadId.urlEncode()}/archive",JSONObject())}
+    fun archiveThread(threadId:String):JSONObject=JSONObject(request("POST","/api/threads/${threadId.urlEncode()}/archive",JSONObject()))
     fun subagentClosePreview(threadId:String):JSONObject=nativeJson("GET","/api/threads/${threadId.urlEncode()}/close-preview")
     fun closeSubagent(threadId:String,parentThreadId:String,stopRunning:Boolean):JSONObject=nativeJson("POST","/api/threads/${threadId.urlEncode()}/close",JSONObject().put("parentThreadId",parentThreadId).put("stopRunning",stopRunning))
     suspend fun archivedThreads(agent:String):List<ThreadRecord> = parseThreads(nativeJsonAsync("GET","/api/threads/archived?agent=${agent.urlEncode()}"))

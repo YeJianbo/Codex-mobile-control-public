@@ -302,7 +302,7 @@ function mountModelSettings() {
           const agent=option.dataset.agent||'codex';
           const heading=document.createElement('p');heading.className='agent-section-heading';
           const group=option.dataset.group?`${agent}:${option.dataset.group}`:agent;
-          heading.textContent=option.dataset.groupLabel||({codex:'Codex',claude:'Claude Code',antigravity:'Antigravity',grok:'Grok Build',deepseek:'DeepSeek Harness',hermes:'Hermes',opencode:'OpenCode',zcode:'ZCode'})[agent]||agent;
+          heading.textContent=option.dataset.groupLabel||({codex:'Codex',claude:'Claude Code',antigravity:'Antigravity',grok:'Grok Build',deepseek:'DeepSeek Harness',hermes:'Hermes',opencode:'OpenCode',zcode:'ZCode',pi:'Pi',acp:'自定义 ACP'})[agent]||agent;
           const section=group!==lastGroup?[heading]:[];lastGroup=group;
           const item=document.createElement('button');item.type='button';item.className='choice-option';
           item.dataset.value=option.value;item.dataset.search=`${option.textContent} ${option.value} ${option.dataset.groupLabel||''}`.toLowerCase();item.disabled=!enabledOption(option);

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {formatDesktopQuestionReply,pendingDesktopQuestions,readCodexThreadEvents,readRecentSearchEvents,selectConversationWindow,selectConversationPage,historyToolPresentation,visibleThreadTitle,splitDesktopAttachments,selectConversationTurns,readCodexConversationEvents,readCodexActivityEventById} from '../src/services/codexSessions.ts';
+import {formatDesktopQuestionReply,pendingDesktopQuestions,readCodexThreadEvents,readCodexQuestionEvents,readRecentSearchEvents,selectConversationWindow,selectConversationPage,historyToolPresentation,visibleThreadTitle,splitDesktopAttachments,selectConversationTurns,readCodexConversationEvents,readCodexActivityEventById} from '../src/services/codexSessions.ts';
 
 test('ten-turn pagination counts exchanges independently of command traffic',()=>{
  const rows=Array.from({length:12},(_,turn)=>[{type:'user.message',text:`question ${turn}`},...Array.from({length:80},(_,n)=>({type:'tool.completed',itemId:`${turn}-${n}`})),{type:'message.delta',text:`answer ${turn}`},{type:'turn.completed'}]).flat();
@@ -186,6 +186,36 @@ test('desktop async question becomes a phone prompt and its reply is shown as an
     assert.equal(pendingDesktopQuestions(threadId,events).length,0);
     assert.equal(events.filter(event=>event.type==='user.message').at(-1).text,'公网');
     assert.deepEqual(events.filter(event=>event.type==='user.message').at(-1).questionReplies,[{question:'选择连接方式',answer:'公网'}]);
+  }finally{
+    if(previous===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previous;
+    await fs.rm(home,{recursive:true,force:true});
+  }
+});
+
+test('question history retains the latest turn across steering without reading old archives',async()=>{
+  const home=await fs.mkdtemp(path.join(os.tmpdir(),'cmc-question-window-')),previous=process.env.CODEX_HOME;
+  const threadId='bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',dir=path.join(home,'sessions');
+  const file=path.join(dir,`rollout-new-${threadId}.jsonl`),archive=path.join(dir,`rollout-old-${threadId}.jsonl.zst`);
+  const row=(type,payload)=>JSON.stringify({timestamp:new Date().toISOString(),type,payload})+'\n';
+  const message=text=>row('response_item',{type:'message',role:'user',content:[{type:'input_text',text}]});
+  try{
+    process.env.CODEX_HOME=home;await fs.mkdir(dir,{recursive:true});
+    await fs.writeFile(archive,'not a zstd archive');await fs.utimes(archive,new Date(0),new Date(0));
+    await fs.writeFile(file,row('event_msg',{type:'task_started',turn_id:'current'})+message('first')+
+      row('response_item',{type:'function_call',name:'request_user_input_async',call_id:'call-window',arguments:JSON.stringify({questions:[{title:'选择',options:['是','否']}]})}));
+    let events=await readCodexQuestionEvents(threadId);
+    assert.equal(pendingDesktopQuestions(threadId,events).length,1);
+    await fs.appendFile(file,message('steer one')+message('steer two')+message('steer three'));
+    events=await readCodexQuestionEvents(threadId);
+    const questions=pendingDesktopQuestions(threadId,events);
+    assert.deepEqual(questions.map(q=>q.id),['desktop-question:call-window']);
+    const reply=formatDesktopQuestionReply(questions[0].id,questions[0].detail,{'0':{answers:['是']}});
+    await fs.appendFile(file,message(reply));
+    events=await readCodexQuestionEvents(threadId);
+    assert.equal(pendingDesktopQuestions(threadId,events).length,0);
+    await fs.appendFile(file,row('event_msg',{type:'task_started',turn_id:'next'})+message('next')+message('steer next'));
+    events=await readCodexQuestionEvents(threadId);
+    assert.equal(pendingDesktopQuestions(threadId,events).length,0);
   }finally{
     if(previous===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=previous;
     await fs.rm(home,{recursive:true,force:true});

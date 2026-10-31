@@ -1,4 +1,5 @@
 import type {execa} from 'execa';
+import {agyProcess} from './agyProcess.js';
 
 type Window={name:string;durationMins:number|null;remainingPercent:number;resetsAt:number|null;family:'gemini'|'third-party'|undefined};
 type Snapshot={windows:Window[];updatedAt:string|null;source:string;stale:boolean};
@@ -28,7 +29,8 @@ export class AgyUsageReader {
     this.pending=(async()=>{
       try{
         // A read-only slash command: no agent turn, conversation, or quota consumption.
-        const result=await this.discover(await this.command(),['-p','/usage','--output-format','json'],{timeout:30000,windowsHide:true,reject:false});
+        const target=agyProcess(await this.command(),['-p','/usage','--output-format','json']);
+        const result=await this.discover(target.command,target.args,{timeout:30000,windowsHide:true,reject:false});
         if(result.exitCode!==0)throw Error('AGY 额度读取失败');
         const windows=agyQuotaWindows(JSON.parse(result.stdout));
         this.cached={windows,updatedAt:new Date().toISOString(),source:'antigravity',stale:false};

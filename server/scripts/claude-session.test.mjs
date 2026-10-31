@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {PassThrough} from 'node:stream';
 import {AgentSessions} from '../src/services/agentSessions.ts';
+import {configurePublicAgentAccess} from '../src/services/agentProtocol.ts';
 const fixtureExecutable=async agent=>({command:agent==='antigravity'?'agy':agent,source:'path'});
 
 
@@ -143,8 +144,14 @@ test('unavailable executable fails before visible thread creation and launch',as
  const f=fixture(t);f.manager.locate=async()=>{throw Error('CLI 路径无效')};
  await assert.rejects(f.start(),/路径无效/);assert.equal(f.threads.length,0);assert.equal(f.runs.length,0);
 });
-test('public capability metadata retains Claude refusal while allowing the LAN backend',async t=>{
+test('public capability metadata allows Claude by default and an explicit disable still refuses',async t=>{
  const f=fixture(t);f.manager.executables.set('claude',{command:'claude',source:'path'});
- const local=(await f.manager.backends()).find(x=>x.agent==='claude');assert.equal(local.available,true);assert.equal(local.accountStatus,'not-checked');
- const remote=(await f.manager.backends(true)).find(x=>x.agent==='claude');assert.equal(remote.available,false);assert.match(remote.reason,/公网/);
+ configurePublicAgentAccess();
+ try{
+  const local=(await f.manager.backends()).find(x=>x.agent==='claude');assert.equal(local.available,true);assert.equal(local.accountStatus,'not-checked');
+  const remote=(await f.manager.backends(true)).find(x=>x.agent==='claude');assert.equal(remote.available,true);assert.equal(remote.publicAllowed,true);
+  configurePublicAgentAccess({claude:false});
+  const disabled=(await f.manager.backends(true)).find(x=>x.agent==='claude');assert.equal(disabled.available,false);assert.equal(disabled.publicAllowed,false);assert.match(disabled.reason,/公网/);
+  const lan=(await f.manager.backends()).find(x=>x.agent==='claude');assert.equal(lan.available,true);
+ }finally{configurePublicAgentAccess();}
 });

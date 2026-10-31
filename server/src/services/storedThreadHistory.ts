@@ -20,7 +20,7 @@ export async function readStoredThreadEvents(threadId:string,deferred:boolean|'l
     reader={file,db,history:new ParsedEventHistory(db),prefixes:new Map()};
   }
   const {db,history,prefixes}=reader;
-  const table=/^(antigravity|claude|grok|deepseek|hermes|opencode|zcode)-/.test(threadId)?'agent_history':'codex_live_events';
+  const table=/^(antigravity|claude|grok|deepseek|hermes|opencode|zcode|pi|acp)-/.test(threadId)?'agent_history':'codex_live_events';
   const prefix=(db.prepare(`SELECT seq FROM ${table} WHERE thread_id=? ORDER BY seq LIMIT 1`).get(threadId) as {seq:number}|undefined)?.seq??0;
   if(prefixes.get(threadId)!==prefix)history.invalidate(table,threadId);
   else history.markDirty(table,threadId);

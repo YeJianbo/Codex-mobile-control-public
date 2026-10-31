@@ -30,6 +30,16 @@ function processMock(onRequest,onResponse=()=>{}){
  return {stdin,stdout,stderr,then:done.then.bind(done),kill:()=>{stdout.end();stderr.end();exit({exitCode:0});},requests,emit,exit};
 }
 
+test('ZCode preflight failure keeps the created native session and does not submit a prompt',async t=>{
+ fixture(t);let child;
+ const launch=()=>child=processMock(({id,method},emit)=>emit(method==='session/setMode'?{id,error:{code:-1,message:'fixture failure'}}:{id,result:{}}));
+ const run=zcodeRun({executable:{command:process.execPath,args:['fixture.cjs'],source:'configured'},cwd:process.cwd(),model:'account/GLM-5.3',prompt:'fixture',approve:async()=>true,ask:async()=>null},launch);
+ const dispatch=await run.promptDispatch;assert.equal(dispatch.phase,'not_started');assert.match(dispatch.session,/^sess_/);
+ assert.equal((await run).exitCode,1);
+ assert(!child.requests.some(request=>request.method==='session/send'));
+ assert.equal(dispatch.session,child.requests.find(request=>request.method==='session/create').params.sessionId);
+});
+
 test('native model catalog reads image capability from the input-format object',async t=>{
  fixture(t);let child;
  const launch=()=>child=processMock(({id,method},emit)=>emit({id,result:method==='session/create'?{settings:{model:{available:[
@@ -55,6 +65,7 @@ test('ZCode streams a turn, handles approval and questions, and keeps persistent
  });
  const run=zcodeRun({executable:{command:process.execPath,args:['fixture.cjs'],source:'configured'},cwd:process.cwd(),session:'sess_existing',model:'account%3Abigmodel-start-plan/GLM-5.3',prompt:'fixture',approve:async()=>{permission=true;return true;},ask:async()=>{question=true;return {'选择':'A'};}},launch);
  const output=[];run.stdout.on('data',data=>output.push(...data.toString().trim().split('\n').map(JSON.parse)));
+ assert.equal((await run.promptDispatch).phase,'written');
  assert.equal((await run).exitCode,0);assert(permission&&question);
  assert(child.requests.some(r=>r.method==='session/resume'&&r.params.sessionId==='sess_existing'));
  assert(!child.requests.some(r=>r.method==='session/create'||r.method==='session/close'));

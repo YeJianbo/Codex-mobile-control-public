@@ -25,7 +25,7 @@ const text=value=>typeof value==='string'?value.replace(/[\u0000-\u001f]/g,'').s
 const endpoint=value=>{try{const url=new URL(value);return url.protocol+'//'+url.host+url.pathname.replace(/\/+$/,'');}catch{return '';}};
 
 export function deepseekQuote(row){
-  const model=String(row.model||'').split('::').at(-1).toLowerCase();
+  const model=String(row.model||'').split('::').at(-1).split('/').at(-1).toLowerCase();
   const flash=['deepseek-flash','deepseek-v4.1-flash','deepseek-v4-flash','deepseek-v4-flash-vision-exp','ecnu-max'].includes(model);
   const pro=model==='deepseek-v4-pro';
   if((!flash&&!pro)||row.partialUsage||row.cacheWrite>0||!Number.isFinite(row.time))return null;
@@ -43,9 +43,9 @@ export function deepseekQuote(row){
 
 // User-selected ECNU reference prices; the original model/provider attribution stays intact.
 export function ecnuQuote(row){
-  const model=String(row.model||'').split('::').at(-1).toLowerCase();
+  const model=String(row.model||'').split('::').at(-1).split('/').at(-1).toLowerCase();
   if(model==='ecnu-max')return deepseekQuote(row);
-  if(model!=='ecnu-plus'||row.partialUsage||row.cacheRead+row.cacheWrite>row.input)return null;
+  if(!['ecnu-plus','qwen3.8-flash','qwen3.8-flash-next'].includes(model)||row.partialUsage||row.cacheRead+row.cacheWrite>row.input)return null;
   const usd=((row.input-row.cacheRead-row.cacheWrite)*.15+row.cacheRead*.016+row.cacheWrite*.2+row.output*.47)/1e6;
   return {usd,basis:'official_reference',date:HARNESS_PRICE_DATE,priceModel:'Qwen3.8-Flash-Next'};
 }
@@ -192,8 +192,8 @@ export function harnessSummary(source,rows,{since,until},coverage){
   }
   totals.sessions=new Set(rows.filter(row=>row.time>=since&&row.time<=until).map(row=>row.sessionId)).size;
   const finishCost=c=>({...c,usd:c.pricedRecords?c.usd:null,actualUsd:c.actualRecords?c.actualUsd:null,estimatedUsd:c.estimatedRecords?c.estimatedUsd:null});
-  const aliases=new Set(rows.filter(row=>row.time>=since&&row.time<=until).map(row=>String(row.model||'').split('::').at(-1).toLowerCase()));
+  const aliases=new Set(rows.filter(row=>row.time>=since&&row.time<=until).map(row=>String(row.model||'').split('::').at(-1).split('/').at(-1).toLowerCase()));
   const hasGlm=rows.some(row=>row.time>=since&&row.time<=until&&glmQuote(row));
-  const priceSources=source==='opencode'?[]:[...(source==='deepseek'||aliases.has('ecnu-max')?[DEEPSEEK_PRICE_SOURCE,holidaySource]:[]),...(aliases.has('ecnu-plus')?[QWEN_PRICE_SOURCE]:[]),...(hasGlm?[GLM_PRICE_SOURCE]:[])];
+  const priceSources=source==='opencode'?[]:[...(source==='deepseek'||aliases.has('ecnu-max')?[DEEPSEEK_PRICE_SOURCE,holidaySource]:[]),...([...aliases].some(model=>['ecnu-plus','qwen3.8-flash','qwen3.8-flash-next'].includes(model))?[QWEN_PRICE_SOURCE]:[]),...(hasGlm?[GLM_PRICE_SOURCE]:[])];
   return {source,since,until,totals,groups:[...groups.values()].map(group=>({...group,cost:finishCost(group.cost),usd:group.cost.pricedRecords?group.cost.usd:null})).sort((a,b)=>b.input+b.output-a.input-a.output),modelSeries:[...daily.values()],cost:{...finishCost(cost),basis:source==='opencode'?'native_recorded':'native_and_reference',date:hasGlm?GLM_PRICE_DATE:priceSources.length?HARNESS_PRICE_DATE:null,currency:'USD',sources:priceSources},coverage};
 }

@@ -6,7 +6,7 @@ import path from 'node:path';
 import {CommandReceipts} from '../src/services/commandReceipts.ts';
 import {EventHub} from '../src/services/eventHub.ts';
 import {modelAgent} from '../src/services/agentProtocol.ts';
-import {isWriterOccupied,SubmissionFailure} from '../src/services/submissionErrors.ts';
+import {isWriterOccupied,submissionFailureKind,SubmissionFailure} from '../src/services/submissionErrors.ts';
 import {modelHarness,modelDisplayName,compactModelName} from '../public/model-identity.js';
 
 const home=await fs.mkdtemp(path.join(os.tmpdir(),'cmc-structure-'));
@@ -78,6 +78,15 @@ test('writer classification survives text changes and unknown timeouts cannot ru
   const unknown={...command,requestId:'unknown'};let calls=0;
   await assert.rejects(receipts.run(unknown,async()=>{calls++;throw Error('RPC timeout');},()=>{}));
   await assert.rejects(receipts.run(unknown,async()=>{calls++;},()=>{}));assert.equal(calls,1);
+});
+
+test('plain Error from agent host keeps queueable writer classification across the process boundary',async()=>{
+  const receipts=ledger(path.join(home,'queued.json')),command={type:'turn.start',threadId:'t',requestId:'queued'};
+  const plain=Error('任务仍在运行，请将消息加入队列');
+  assert.equal(submissionFailureKind(plain),'writer_occupied');assert(isWriterOccupied(plain));
+  await assert.rejects(receipts.run(command,async()=>{throw plain;},()=>{}),isWriterOccupied);
+  assert.equal((await receipts.get('queued')).retryAllowed,true);
+  await receipts.markQueued('queued','t');assert.equal((await receipts.get('queued')).state,'accepted');
 });
 
 test('history failure warns once without stopping the live stream and clears after recovery',async()=>{

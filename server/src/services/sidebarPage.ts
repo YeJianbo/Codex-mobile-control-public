@@ -8,7 +8,7 @@ export function nativeSidebarAgents(agent?:string,retained:Iterable<string>=[]):
 
 export const sidebarPageQuery=z.object({
   limit:z.coerce.number().int().min(1).max(20000).optional(),
-  agent:z.enum(['codex','claude','antigravity','grok','deepseek','hermes','opencode','zcode']).optional(),
+  agent:z.enum(['codex','claude','antigravity','grok','deepseek','hermes','opencode','zcode','pi','acp']).optional(),
   project:z.string().max(4096).optional(),
   filter:z.enum(['all','running','unread']).optional(),
   threadId:z.string().max(256).optional(),

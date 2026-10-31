@@ -1,7 +1,7 @@
 const apiBase=document.querySelector('meta[name="local-api-base"]')?.content||'/api/';
 const gateway=document.querySelector('meta[name="console-gateway"]')?.content==='true';
 const escape=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
-const sources={all:'全部来源',codex:'Codex',router:'网关请求',agy:'Antigravity',claude:'Claude Code',zcode:'ZCode',grok:'Grok',hermes:'Hermes',deepseek:'DeepSeek',opencode:'OpenCode'};
+const sources={all:'全部来源',codex:'Codex',router:'网关请求',agy:'Antigravity',claude:'Claude Code',zcode:'ZCode',grok:'Grok',hermes:'Hermes',deepseek:'DeepSeek',opencode:'OpenCode',pi:'Pi',research:'自动科研 Agent'};
 const count=value=>value==null?'—':value>=1e8?(value/1e8).toFixed(2)+'亿':value>=1e4?(value/1e4).toFixed(2)+'万':value.toLocaleString('zh-CN');
 const seconds=value=>value==null?'—':(value/1000).toFixed(2)+' 秒';
 const money=cost=>cost?.basis==='subscription_included'?'套餐内':cost?.usd==null?'—':'$'+cost.usd.toFixed(cost.usd<.01?6:4);

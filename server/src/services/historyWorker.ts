@@ -11,6 +11,7 @@ const methods={
   invalidateCodexHistory:history.invalidateCodexHistory,
   readRecentSearchEvents:history.readRecentSearchEvents,
   readCodexThreadEvents:history.readCodexThreadEvents,
+  readCodexQuestionEvents:history.readCodexQuestionEvents,
   readCodexConversationEvents:history.readCodexConversationEvents,
   readCodexActivityEventsByIds:history.readCodexActivityEventsByIds,
   readCodexThreadEventById:history.readCodexThreadEventById,

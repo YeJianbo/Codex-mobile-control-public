@@ -1,9 +1,9 @@
 {
   "packageName": "com.localcodex.control",
-  "versionName": "0.6.505",
-  "versionCode": 477,
-  "size": 3388678,
-  "sha256": "c51b6b7b34eec42b365917f7a1c2510233bc5209da041b5360eab424e0c5196b",
-  "notes": "修复工作区指令文件位置和编辑页面显示。\r\n",
-  "publishedAt": "2026-10-29T01:47:53.268Z"
+  "versionName": "0.6.520",
+  "versionCode": 492,
+  "size": 7925081,
+  "sha256": "efb1e48d6f278a46ea3d8e64efd842735fe834804a0a227821bf2107270756f0",
+  "notes": "",
+  "publishedAt": "2026-10-31T10:09:02.949Z"
 }

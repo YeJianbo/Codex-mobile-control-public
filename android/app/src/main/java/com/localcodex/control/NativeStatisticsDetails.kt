@@ -52,7 +52,7 @@ import kotlin.math.ceil
 import kotlin.math.roundToInt
 
 private val detailTabs=listOf("tokens" to "Token","requests" to "请求","speed" to "速度","activity" to "活跃","sessions" to "会话","tools" to "工具","skills" to "Skills","changes" to "改动","quota" to "配额")
-private val detailSources=listOf("all" to "全部来源","codex" to "Codex","agy" to "Antigravity","claude" to "Claude Code","zcode" to "ZCode","grok" to "Grok","hermes" to "Hermes","deepseek" to "DeepSeek","opencode" to "OpenCode")
+private val detailSources=listOf("all" to "全部来源","codex" to "Codex","agy" to "Antigravity","claude" to "Claude Code","zcode" to "ZCode","grok" to "Grok","hermes" to "Hermes","deepseek" to "DeepSeek","opencode" to "OpenCode","pi" to "Pi","research" to "自动科研 Agent")
 private val detailRanges=listOf("today" to "今天","yesterday" to "昨天","week" to "本周","month" to "本月","year" to "今年","custom" to "时间段")
 private val detailMuted:Color @Composable get()=MaterialTheme.colors.onSurface.copy(alpha=.62f)
 private val detailDivider:Color @Composable get()=MaterialTheme.colors.onSurface.copy(alpha=.07f)
@@ -170,13 +170,16 @@ private fun detailError(error:Exception)=if(error is LocalConsoleRequestExceptio
     NativeManagementPage("详细统计","",back,modifier.testTag("statisticsManagement"),actions={ChromeButton(R.drawable.ic_lucide_rotate_cw,"刷新",onRefresh,enabled=connected&&!state.loading&&state.busy.isBlank())}){
         val scroll=rememberScrollState()
         LaunchedEffect(selection.tab){scroll.scrollTo(0)}
-        Column(Modifier.weight(1f).nativeManagementScroll(scroll).padding(16.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){
+        Column(Modifier.weight(1f).nativeManagementScroll(scroll).padding(horizontal=16.dp,vertical=10.dp),verticalArrangement=Arrangement.spacedBy(10.dp)){
             StatisticsTabStrip(detailTabs,selection.tab,{onSelection(selection.copy(tab=it,range=if(selection.range=="rolling"&&it!="quota")"week" else selection.range))})
-            if(selection.tab!="activity")StatisticsTabStrip(detailRanges,selection.range,{onSelection(selection.copy(range=it))})
+            if(selection.tab=="tokens")Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(8.dp),verticalAlignment=Alignment.CenterVertically){
+                StatisticsTabStrip(detailRanges,selection.range,{onSelection(selection.copy(range=it))},Modifier.weight(1f))
+                StatisticsCompactSource(selection.source,{onSelection(selection.copy(source=it,model="all",tier="all",effort="all"))},connected,Modifier.widthIn(max=128.dp))
+            }else if(selection.tab!="activity")StatisticsTabStrip(detailRanges,selection.range,{onSelection(selection.copy(range=it))})
             if(selection.tab=="quota")StatisticsTabStrip(listOf("1" to "近 24 小时","7" to "近 7 天","30" to "近 30 天","90" to "近 90 天"),if(selection.range=="rolling")selection.days else "",{onSelection(selection.copy(range="rolling",days=it))})
             if(selection.range=="custom"&&selection.tab!="activity")StatisticsDateRange(selection.from,selection.to,connected){from,to->onSelection(selection.copy(from=from,to=to))}
             when(selection.tab){
-                "tokens","activity"->StatisticsPicker("来源",selection.source,detailSources,{onSelection(selection.copy(source=it,model="all",tier="all",effort="all"))},enabled=connected)
+                "activity"->StatisticsPicker("来源",selection.source,detailSources,{onSelection(selection.copy(source=it,model="all",tier="all",effort="all"))},enabled=connected)
                 "speed"->{
                     StatisticsPicker("速度来源",selection.speedSource,listOf("native" to "Codex 会话（含直连）","router" to "工作台请求"),{onSelection(selection.copy(speedSource=it,speedModel="all",provider="all"))},enabled=connected)
                     val options=data?.optJSONObject("options")
@@ -229,12 +232,26 @@ private fun detailError(error:Exception)=if(error is LocalConsoleRequestExceptio
         // Selection only moves this horizontal list; ancestor relocation also moves the page.
         if(item==null||item.offset<layout.viewportStartOffset||item.offset+item.size>layout.viewportEndOffset)scroll.animateScrollToItem(index)
     }
-    LazyRow(modifier.fillMaxWidth(),state=scroll,horizontalArrangement=Arrangement.spacedBy(6.dp)){
+    LazyRow(modifier.fillMaxWidth().clip(Radius.Control).background(MaterialTheme.colors.onSurface.copy(alpha=.045f)).padding(3.dp),state=scroll,horizontalArrangement=Arrangement.spacedBy(2.dp)){
         items(options,key={it.first}){(id,label)->
             val chosen=id==selected
-            Surface(shape=Radius.Control,color=if(chosen)MaterialTheme.colors.primary.copy(alpha=.1f) else MaterialTheme.colors.onSurface.copy(alpha=.035f)){
-                Text(label,Modifier.clickable(onClick={if(!chosen)onSelect(id)}).padding(horizontal=13.dp,vertical=12.dp),fontSize=13.sp,fontWeight=if(chosen)FontWeight.SemiBold else FontWeight.Normal,color=if(chosen)MaterialTheme.colors.primary else detailMuted)
+            Surface(shape=Radius.Control,color=if(chosen)MaterialTheme.colors.surface else Color.Transparent){
+                Text(label,Modifier.clickable(onClick={if(!chosen)onSelect(id)}).padding(horizontal=12.dp,vertical=8.dp),fontSize=13.sp,fontWeight=if(chosen)FontWeight.SemiBold else FontWeight.Normal,color=if(chosen)MaterialTheme.colors.primary else detailMuted,maxLines=1)
             }
+        }
+    }
+}
+
+@Composable private fun StatisticsCompactSource(value:String,onSelect:(String)->Unit,enabled:Boolean,modifier:Modifier=Modifier){
+    var expanded by remember{mutableStateOf(false)}
+    Box(modifier){
+        Row(Modifier.clip(Radius.Control).background(MaterialTheme.colors.onSurface.copy(alpha=.045f))
+            .clickable(enabled=enabled){expanded=true}.heightIn(min=40.dp).padding(horizontal=10.dp),verticalAlignment=Alignment.CenterVertically){
+            Text(detailSources.find{it.first==value}?.second?:value,Modifier.weight(1f,fill=false),fontSize=12.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
+            ModernIcon(R.drawable.ic_lucide_chevron_down,"选择来源",Modifier.padding(start=4.dp).size(14.dp),detailMuted)
+        }
+        NativeDropdownMenu(expanded,onDismissRequest={expanded=false},modifier=Modifier.heightIn(max=340.dp)){
+            detailSources.forEach{(id,title)->DropdownMenuItem(onClick={expanded=false;onSelect(id)}){Text(title,fontSize=13.sp,maxLines=1,overflow=TextOverflow.Ellipsis)}}
         }
     }
 }
@@ -264,11 +281,9 @@ private fun statisticsOptions(data:JSONObject?,key:String,extra:List<Pair<String
     var expanded by remember{mutableStateOf(false)}
     val entries=if(options.any{it.first==value})options else options+(value to when(value){"all"->"全部";"missing"->"未记录";"pending"->"待回填";else->value.removePrefix("v:")})
     Box(modifier){
-        OutlinedButton(onClick={expanded=true},enabled=enabled,modifier=Modifier.fillMaxWidth(),shape=Radius.Control,contentPadding=PaddingValues(horizontal=12.dp,vertical=8.dp)){
-            Column(Modifier.weight(1f),verticalArrangement=Arrangement.spacedBy(3.dp)){
-                Text(label,fontSize=10.sp,color=detailMuted)
-                Text(entries.find{it.first==value}?.second.orEmpty(),fontSize=13.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
-            }
+        OutlinedButton(onClick={expanded=true},enabled=enabled,modifier=Modifier.fillMaxWidth(),shape=Radius.Control,contentPadding=PaddingValues(horizontal=12.dp,vertical=4.dp)){
+            Text(label,fontSize=12.sp,color=detailMuted,maxLines=1)
+            Text(entries.find{it.first==value}?.second.orEmpty(),Modifier.weight(1f).padding(start=8.dp),fontSize=13.sp,maxLines=1,overflow=TextOverflow.Ellipsis)
             ModernIcon(R.drawable.ic_lucide_chevron_down,"选择$label",Modifier.padding(start=8.dp).size(14.dp),detailMuted)
         }
         NativeDropdownMenu(expanded,onDismissRequest={expanded=false},modifier=Modifier.heightIn(max=340.dp)){
@@ -307,10 +322,18 @@ private fun statisticsOptions(data:JSONObject?,key:String,extra:List<Pair<String
     if(!data.available){StatisticsResultCard("Token 总量"){Text("本机尚未发现此来源的用量数据库",fontSize=13.sp,color=detailMuted)};return}
     val tokens=data.tokens
     val input=tokens.input?:0;val cached=tokens.cached?:0
+    val hitRate=if(input>0&&cached<=input)detailPercent(cached.toDouble()/input*100) else "—"
     StatisticsResultCard("Token 总量"){
-        Text(consoleCount(tokens.total),fontSize=34.sp,lineHeight=42.sp,fontWeight=FontWeight.SemiBold,letterSpacing=(-.7).sp)
-        StatisticsMetrics(listOf("非缓存输入" to if(cached<=input)nativeTokenCount(input-cached) else "—","缓存输入" to consoleCount(tokens.cached),"输出（含推理）" to consoleCount(tokens.output),"推理输出" to consoleCount(tokens.reasoning),"输入缓存命中率" to if(input>0&&cached<=input)detailPercent(cached.toDouble()/input*100) else "—","缓存写入" to consoleCount(tokens.cacheWrite)))
-        Text("${consoleCount(tokens.records)} 条计量记录",fontSize=11.sp,color=detailMuted)
+        Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.Bottom,horizontalArrangement=Arrangement.spacedBy(12.dp)){
+            Column(Modifier.weight(1f)){
+                Text(consoleCount(tokens.total),fontSize=27.sp,lineHeight=33.sp,fontWeight=FontWeight.SemiBold,letterSpacing=(-.5).sp,maxLines=1)
+                Text("${consoleCount(tokens.records)} 条记录",fontSize=11.sp,color=detailMuted,maxLines=1)
+            }
+            Column(horizontalAlignment=Alignment.End){
+                Text(hitRate,fontSize=20.sp,fontWeight=FontWeight.SemiBold,maxLines=1)
+                Text("缓存命中率",fontSize=11.sp,color=detailMuted,maxLines=1)
+            }
+        }
         if(cached>input)Text("日志缓存计数大于输入，当前无法计算命中率",fontSize=12.sp,color=MaterialTheme.colors.error)
     }
     val coverage=raw.optJSONObject("tokenCoverage")
@@ -319,6 +342,19 @@ private fun statisticsOptions(data:JSONObject?,key:String,extra:List<Pair<String
     if(data.series.isNotEmpty()||data.modelSeries.isNotEmpty())DashboardCard{
         val hourly=selection.range=="today"||selection.range=="yesterday"||selection.range=="custom"&&selection.from.take(10)==selection.to.take(10)
         StatisticsZoomableTokenTrend(if(hourly)data.copy(range="today") else data,selection.source+selection.range+selection.from+selection.to)
+    }
+    DashboardCard{
+        Text("Token 明细",fontSize=14.sp,fontWeight=FontWeight.SemiBold)
+        val metrics=listOf("非缓存输入" to if(cached<=input)nativeTokenCount(input-cached) else "—","缓存输入" to consoleCount(tokens.cached),"输出（含推理）" to consoleCount(tokens.output),"推理输出" to consoleCount(tokens.reasoning),"缓存写入" to consoleCount(tokens.cacheWrite))
+        Column(verticalArrangement=Arrangement.spacedBy(8.dp)){
+            metrics.chunked(2).forEach{row->Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.spacedBy(16.dp)){
+                row.forEach{(label,value)->Row(Modifier.weight(1f),verticalAlignment=Alignment.CenterVertically){
+                    Text(label,Modifier.weight(1f),fontSize=11.sp,color=detailMuted,maxLines=2,overflow=TextOverflow.Ellipsis)
+                    Text(value,fontSize=14.sp,fontWeight=FontWeight.Medium,maxLines=1)
+                }}
+                if(row.size==1)Spacer(Modifier.weight(1f))
+            }}
+        }
     }
     val sources=raw.detailRows("sourceTotals")
     if(sources.isNotEmpty())DashboardCard{
@@ -378,13 +414,6 @@ private fun statisticsOptions(data:JSONObject?,key:String,extra:List<Pair<String
     var position by rememberSaveable(chartKey){mutableFloatStateOf(0f)}
     val scroll=rememberScrollState()
     LaunchedEffect(position,scroll.maxValue,zoom){scroll.scrollTo((scroll.maxValue*position).roundToInt())}
-    Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(3.dp)){
-        TextButton(onClick={zoom=(zoom-.5f).coerceAtLeast(1f)},enabled=zoom>1f,contentPadding=PaddingValues(8.dp)){Text("缩小",fontSize=12.sp)}
-        Slider(zoom,{zoom=it},Modifier.weight(1f),valueRange=1f..3f,steps=3)
-        TextButton(onClick={zoom=(zoom+.5f).coerceAtMost(3f)},enabled=zoom<3f,contentPadding=PaddingValues(8.dp)){Text("放大",fontSize=12.sp)}
-        TextButton(onClick={zoom=1f;position=0f},contentPadding=PaddingValues(8.dp)){Text("全部",fontSize=12.sp)}
-        TextButton(onClick={position=1f},contentPadding=PaddingValues(8.dp)){Text("最新",fontSize=12.sp)}
-    }
     BoxWithConstraints(Modifier.fillMaxWidth()){
         val chartWidth=maxWidth*zoom
         Box(Modifier.fillMaxWidth().horizontalScroll(scroll,enabled=false)){
@@ -394,6 +423,13 @@ private fun statisticsOptions(data:JSONObject?,key:String,extra:List<Pair<String
     if(zoom>1f)Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)){
         Text("定位",fontSize=11.sp,color=detailMuted)
         Slider(position,{position=it},Modifier.weight(1f),valueRange=0f..1f)
+    }
+    Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(2.dp)){
+        IconButton(onClick={zoom=(zoom-.5f).coerceAtLeast(1f)},enabled=zoom>1f,modifier=Modifier.size(40.dp)){ModernIcon(R.drawable.ic_lucide_zoom_out,"缩小",Modifier.size(18.dp))}
+        Slider(zoom,{zoom=it},Modifier.weight(1f),valueRange=1f..3f,steps=3)
+        IconButton(onClick={zoom=(zoom+.5f).coerceAtMost(3f)},enabled=zoom<3f,modifier=Modifier.size(40.dp)){ModernIcon(R.drawable.ic_lucide_zoom_in,"放大",Modifier.size(18.dp))}
+        TextButton(onClick={zoom=1f;position=0f},contentPadding=PaddingValues(horizontal=8.dp)){Text("全部",fontSize=12.sp)}
+        TextButton(onClick={position=1f},contentPadding=PaddingValues(horizontal=8.dp)){Text("最新",fontSize=12.sp)}
     }
 }
 

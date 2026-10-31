@@ -5,6 +5,7 @@ let quotaCatalog=[],sourcesLoading=false,sourcesError='';
 const quotaSources=()=>quotaCatalog.filter(source=>source.supported);
 const esc=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
 const at=value=>value?new Date(value).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}):'未读取';
+const tokenCount=value=>value>=1e8?`${Number((value/1e8).toFixed(1))}亿`:value>=1e4?`${Number((value/1e4).toFixed(1))}万`:String(Math.round(value));
 let dialog,tab='quotas',epoch=0,catalog=null,catalogError='',catalogLoading=false;
 const quotas=new Map(),errors=new Map(),reading=new Set(),timers=new Map(),controllers=new Set();
 function active(ticket){return dialog?.open&&ticket===epoch&&!document.hidden;}
@@ -31,12 +32,16 @@ function keyedChildren(parent,values,key,create,update){
 }
 function renderWindows(host,windows){
   keyedChildren(host,windows,(window,index)=>window.name+':'+index,
-    ()=>element('<div class="overview-window"><div><span></span><b><span></span><small>%</small></b></div><progress max="100"></progress><small></small></div>'),
+    ()=>element('<div class="overview-window"><div><span></span><b><span></span><small>%</small></b></div><progress max="100"></progress><small data-reset></small><small data-estimate></small></div>'),
     (node,window)=>{
       text(node.querySelector('div>span'),window.name);text(node.querySelector('b>span'),window.remainingPercent.toFixed(0));
       const progress=node.querySelector('progress');if(progress.value!==window.remainingPercent)progress.value=window.remainingPercent;
       const label=`${window.name}剩余 ${window.remainingPercent.toFixed(1)}%`;if(progress.getAttribute('aria-label')!==label)progress.setAttribute('aria-label',label);
-      text(node.querySelector(':scope>small'),window.resetsAt?at(window.resetsAt)+' 重置':'重置时间未提供');
+      text(node.querySelector('[data-reset]'),window.resetsAt?at(window.resetsAt)+' 重置':'重置时间未提供');
+      const estimate=node.querySelector('[data-estimate]');estimate.hidden=!window.estimate;
+      const amount=window.estimate;
+      text(estimate,amount?.state==='estimated'?`本机折算 ${tokenCount(amount.tokens)} Token · ${amount.usd==null?'金额暂无价格':`${amount.partial?'部分金额 ':''}$${amount.usd.toFixed(2)}`}`:amount?'估算采样中':'');
+      estimate.title=amount?'按本机用量及额度变化推算；本机记录无法确认账号归属':'';
     });
 }
 function fillQuotaDetails(node){
@@ -50,6 +55,9 @@ function renderAccount(node,row,source){
   const plan=node.querySelector('[data-plan]');plan.hidden=!row.plan;text(plan,row.plan);
   const empty=node.querySelector('[data-no-windows]');empty.hidden=!!row.windows.length;text(empty,row.configured===false?'未登录':'暂无额度记录');
   renderWindows(node.querySelector('[data-quota-first]'),row.windows.slice(0,4));
+  let estimateNote=node.querySelector('[data-estimate-note]');
+  if(row.windows.some(window=>window.estimate)){if(!estimateNote){estimateNote=document.createElement('p');estimateNote.dataset.estimateNote='';estimateNote.className='overview-muted';node.querySelector('[data-quota-first]').after(estimateNote);}text(estimateNote,'本机用量折算，账号归属无法确认');}
+  else estimateNote?.remove();
   const details=node.querySelector('details');details.dataset.quotaOwner=source;details.dataset.quotaAccount=String(row.id);details.hidden=row.windows.length<=4;
   text(details.querySelector('summary'),`其余 ${Math.max(0,row.windows.length-4)} 项额度`);fillQuotaDetails(details);
   text(node.querySelector('[data-collected]'),(row.updatedAt?at(row.updatedAt)+' 采集':'尚无采集记录')+(row.stale?' · 上次成功数据':''));

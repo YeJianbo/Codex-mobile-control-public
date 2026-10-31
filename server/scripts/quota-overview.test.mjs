@@ -38,6 +38,16 @@ test('AGY never attaches unowned or another login history to the current account
   assert(!JSON.stringify(rows).includes('other'));
 });
 
+test('AGY overview exposes a local model-pool estimate after matching samples',async()=>{
+  const start=Date.parse('2026-10-25T00:00:00Z'),reset='2026-10-26T00:00:00.000Z';
+  const point=(minutes,remainingPercent)=>({accountId:'google:user-a',source:'cli-live',at:new Date(start+minutes*60000).toISOString(),windows:[{name:'Gemini',group:'Gemini Models',poolId:'gemini',window:'weekly',remainingPercent,resetsAt:reset}]});
+  const usage={time:start+60000,model:'gemini-3.8-flash',displayModel:'Gemini 3.8 Flash',input:1000,output:100,cached:0,cacheWrite:0,messageId:'1'};
+  const service=fixture({now:()=>start+12*60000,agy:{list:async()=>({items:[],current:{configured:true,quotaAccountId:'google:user-a'}}),history:()=>({points:[point(0,80),point(10,75)]})},
+    agyUsage:()=>({refresh(){},db:{prepare:()=>({all:()=>[{data:JSON.stringify(usage)}]})}})});
+  const row=(await service.read('agy')).sources[0].accounts[0].windows[0];
+  assert.equal(row.estimate.state,'estimated');assert.equal(row.estimate.tokens,22000);assert(row.estimate.usd>0);
+});
+
 test('Claude overview uses each account history instead of the account selected on another page',async()=>{
   const service=fixture({claude:{list:async()=>({items:[{id:'saved',name:'Saved',active:false}],current:{name:'Native',configured:true},currentAccountId:'native-owner',selectedId:'saved'}),history:()=>[
     {accountId:'saved',at:'2026-10-25T00:00:00Z',status:'ok',windows:[{name:'7d',remainingPercent:10}]},

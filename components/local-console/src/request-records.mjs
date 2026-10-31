@@ -6,7 +6,7 @@ import {estimateTokenCost} from './token-pricing.mjs';
 import {agyPrice} from './agy-usage.mjs';
 import {ecnuQuote,deepseekQuote,glmQuote} from './harness-usage.mjs';
 
-export const REQUEST_SOURCES=['codex','router','agy','claude','zcode','grok','hermes','deepseek','opencode'];
+export const REQUEST_SOURCES=['codex','router','agy','claude','zcode','grok','hermes','deepseek','opencode','pi','research'];
 const number=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0?value:null;
 const text=value=>typeof value==='string'?value.slice(0,300):null;
 const knownPrice=(row,basis)=>[row.input,row.cached,row.output].every(value=>number(value)!==null)?estimateTokenCost(row,basis):null;

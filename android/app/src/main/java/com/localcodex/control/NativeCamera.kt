@@ -16,6 +16,8 @@ import java.io.File
     val context=LocalContext.current
     var pendingPath by rememberSaveable{mutableStateOf("")}
     var pendingTarget by rememberSaveable{mutableStateOf("")}
+    var permissionTarget by rememberSaveable{mutableStateOf("")}
+    val currentTarget by rememberUpdatedState(target)
     val camera=rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()){success->
         val file=pendingPath.takeIf{it.isNotBlank()}?.let(::File)
         val original=pendingTarget
@@ -31,7 +33,7 @@ import java.io.File
             }
         }
     }
-    return {
+    fun launchCamera(){
         if(pendingPath.isBlank()){
             try{
                 val directory=File(context.cacheDir,"outputs").apply{mkdirs()}
@@ -43,5 +45,17 @@ import java.io.File
                 pendingPath="";pendingTarget="";onError("无法打开相机，请确认手机已安装相机应用")
             }
         }
+    }
+    val permission=rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()){granted->
+        val requested=permissionTarget;permissionTarget=""
+        when{
+            !granted->onError("请允许相机权限后拍照")
+            requested!=currentTarget->onError("会话已改变，请在当前会话重新拍照")
+            else->launchCamera()
+        }
+    }
+    return {
+        if(androidx.core.content.ContextCompat.checkSelfPermission(context,android.Manifest.permission.CAMERA)==android.content.pm.PackageManager.PERMISSION_GRANTED)launchCamera()
+        else {permissionTarget=target;permission.launch(android.Manifest.permission.CAMERA)}
     }
 }
